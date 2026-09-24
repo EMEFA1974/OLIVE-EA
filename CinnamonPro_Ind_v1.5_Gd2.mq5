@@ -1,29 +1,29 @@
 #property copyright "CinnamonPro"
 #property link      ""
-#property version   "1.00"
+#property version   "1.50"
 #property indicator_chart_window
 #property indicator_buffers 4
 #property indicator_plots   4
 
 #property indicator_label1  "Buy"
 #property indicator_type1   DRAW_ARROW
-#property indicator_color1  clrTeal
-#property indicator_width1  2
+#property indicator_color1  clrAqua
+#property indicator_width1  1
 
 #property indicator_label2  "Sell"
 #property indicator_type2   DRAW_ARROW
-#property indicator_color2  clrCrimson
-#property indicator_width2  2
+#property indicator_color2  clrMagenta
+#property indicator_width2  1
 
 #property indicator_label3  "ReBuy"
 #property indicator_type3   DRAW_ARROW
 #property indicator_color3  clrGold
-#property indicator_width3  2
+#property indicator_width3  1
 
 #property indicator_label4  "ReSell"
 #property indicator_type4   DRAW_ARROW
-#property indicator_color4  clrDarkOrange
-#property indicator_width4  2
+#property indicator_color4  clrYellow
+#property indicator_width4  1
 
 enum ENUM_PEND_TYPE
   {
@@ -130,6 +130,12 @@ input color  InpSellColor    = clrMagenta;
 input color  InpReBuyColor   = clrGold;
 input color  InpReSellColor  = clrYellow;
 input int    InpArrowShift   = 12;
+input int    InpArrowCodeUp  = 233;     // buffer (solid) arrow, Wingdings code
+input int    InpArrowCodeDn  = 234;
+input int    InpHollowCodeUp = 241;     // hollow signal arrow, Wingdings code
+input int    InpHollowCodeDn = 242;
+input int    InpHollowWidth  = 1;
+input double InpHollowOffATR = 0.60;    // hollow arrow distance from wick, x ATR (digit independent)
 input int    InpPanelX       = 12;
 input int    InpPanelY       = 18;
 input string InpPanelTitle   = "CINNAMON PRO";
@@ -137,14 +143,19 @@ input string InpPanelTitle   = "CINNAMON PRO";
 input group "=== Zones ==="
 input bool   InpShowZones     = true;
 input bool   InpKeepLastZone  = false;  // only current signal zones/levels on the chart
-input int    InpZoneRightBars = 18;
+input int    InpZoneRightBars = 18;      // box extends this many bars right of the current bar
+input int    InpLineExtBars   = 16;      // levels continue past the box so labels sit on them
+input ENUM_LINE_STYLE InpLineStyle = STYLE_DOT;
+input int    InpLineWidth     = 1;
+input int    InpLabelSize     = 8;
+input string InpLabelFont     = "Consolas";
 input color  InpZoneSL        = C'64,28,32';
 input color  InpZoneTP1       = C'16,48,42';
 input color  InpZoneTP2       = C'16,36,56';
-input color  InpLineEntry     = C'168,168,168';
-input color  InpLineSL        = C'168,78,84';
-input color  InpLineTP1       = C'64,150,132';
-input color  InpLineTP2       = C'64,120,168';
+input color  InpLineEntry     = C'200,200,200';
+input color  InpLineSL        = C'220,90,96';
+input color  InpLineTP1       = C'64,200,160';
+input color  InpLineTP2       = C'64,150,220';
 
 double BuyBuf[];
 double SellBuf[];
@@ -174,6 +185,7 @@ struct Idea
    double    origEntry, origSL, origTP2;
    double    riskEntry;
    datetime  signalTime, slTime, fillTime, artTime;
+   datetime  zoneTime;          // bar where the current set of levels was armed
    int       reCount, slBarAge, pendAge;
    int       recoverCount;
    bool      tp1Done;
@@ -227,10 +239,10 @@ int OnInit()
    ArraySetAsSeries(ReBuyBuf, true);
    ArraySetAsSeries(ReSellBuf, true);
 
-   PlotIndexSetInteger(0, PLOT_ARROW, 241);
-   PlotIndexSetInteger(1, PLOT_ARROW, 242);
-   PlotIndexSetInteger(2, PLOT_ARROW, 241);
-   PlotIndexSetInteger(3, PLOT_ARROW, 242);
+   PlotIndexSetInteger(0, PLOT_ARROW, InpArrowCodeUp);
+   PlotIndexSetInteger(1, PLOT_ARROW, InpArrowCodeDn);
+   PlotIndexSetInteger(2, PLOT_ARROW, InpArrowCodeUp);
+   PlotIndexSetInteger(3, PLOT_ARROW, InpArrowCodeDn);
    PlotIndexSetInteger(0, PLOT_ARROW_SHIFT,  InpArrowShift);
    PlotIndexSetInteger(1, PLOT_ARROW_SHIFT, -InpArrowShift);
    PlotIndexSetInteger(2, PLOT_ARROW_SHIFT,  InpArrowShift + 10);
@@ -244,7 +256,7 @@ int OnInit()
    PlotIndexSetDouble(2, PLOT_EMPTY_VALUE, EMPTY_VALUE);
    PlotIndexSetDouble(3, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "CinnamonPro Ind v1.0");
+   IndicatorSetString(INDICATOR_SHORTNAME, "CinnamonPro Ind v1.5");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
    lastAlertBar = 0;
    lastFillAlert = 0;
@@ -328,6 +340,7 @@ void ResetIdea(const bool mitigated = true)
    idea.origEntry = idea.origSL = idea.origTP2 = 0;
    idea.riskEntry = 0;
    idea.signalTime = idea.slTime = idea.fillTime = idea.artTime = 0;
+   idea.zoneTime = 0;
    idea.reCount = idea.slBarAge = idea.pendAge = 0;
    idea.recoverCount = 0;
    idea.tp1Done = false;
@@ -351,6 +364,24 @@ double UserPoint()
   }
 
 double PointBuf() { return (double)InpSLBufferPts * UserPoint(); }
+
+// Round to the broker tick so levels are identical on 2- and 3-digit feeds.
+double NormPrice(const double p)
+  {
+   if(p <= 0.0) return p;
+   double ts = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(ts <= 0.0) ts = _Point;
+   if(ts <= 0.0) return NormalizeDouble(p, _Digits);
+   return NormalizeDouble(MathRound(p / ts) * ts, _Digits);
+  }
+
+void NormalizeIdea()
+  {
+   idea.entry = NormPrice(idea.entry);
+   idea.sl    = NormPrice(idea.sl);
+   idea.tp1   = NormPrice(idea.tp1);
+   idea.tp2   = NormPrice(idea.tp2);
+  }
 
 bool UsePending()
   {
@@ -442,6 +473,7 @@ void ApplyLevels(const int dir, const double entry, const double sl)
       if(idea.tp1 >= entry) idea.tp1 = entry - minTp1;
       if(idea.tp2 >= idea.tp1) idea.tp2 = idea.tp1 - risk * MathMax(0.5, InpRR2-InpRR1);
      }
+   NormalizeIdea();
   }
 
 bool BuildPendingPrices(const int dir, const Candle &bar, const double slAnchor,
@@ -511,6 +543,7 @@ void ArmIdea(const int dir, const Candle &bar, const bool re, const double slAnc
            }
      }
    idea.signalTime = bar.t;
+   idea.zoneTime = bar.t;
    idea.slTime = 0;
    idea.fillTime = 0;
    idea.slBarAge = 0;
@@ -573,7 +606,7 @@ double StraddleGap()
 void ShiftIdeaLevels(const double delta)
   {
    if(MathAbs(delta) < _Point * 0.5) return;
-   idea.entry += delta;
+   idea.entry = NormPrice(idea.entry + delta);
   }
 
 void ArmLeg2()
@@ -604,6 +637,7 @@ void ArmLeg2()
    idea.tp2       = firstTP2;
    idea.leg2      = true;
    idea.tp1Done   = true;
+   NormalizeIdea();
    idea.pendAge   = 0;
    idea.fillTime  = 0;
    idea.limitOpen = true;
@@ -758,6 +792,9 @@ void ArmRecoveryInd(const Candle &bar)
    else
       ApplyLevels(idea.dir, idea.entry, idea.sl);
 
+   NormalizeIdea();
+   idea.riskEntry = idea.entry;
+   idea.zoneTime  = bar.t;
    idea.state = IDEA_PENDING;
   }
 
@@ -896,6 +933,7 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
       if(InpLeg2On && !idea.leg2)
         {
          ArmLeg2();
+         if(idea.leg2) idea.zoneTime = bar.t;
          return;
         }
       if(InpLeg2On && idea.leg2)
@@ -1056,15 +1094,38 @@ double RecentSwingLow(const int rates_total, const int i, const double &low[])
    return mn;
   }
 
-void HollowArrow(const datetime t, const double price, const int dir, const color clr, const bool re)
+// Distance of the hollow arrow from the wick. ATR based so it looks the same
+// on 2-digit and 3-digit feeds (raw points would differ by 10x).
+double ArrowGap(const datetime t, const double hi, const double lo)
+  {
+   double atr = 0.0;
+   if(gAtr != INVALID_HANDLE)
+     {
+      double a[];
+      if(CopyBuffer(gAtr, 0, t, 1, a) == 1 && a[0] > 0.0 && a[0] != EMPTY_VALUE)
+         atr = a[0];
+     }
+   if(atr <= 0.0) atr = hi - lo;
+   if(atr <= 0.0) atr = 10.0 * UserPoint();
+   return atr * MathMax(0.0, InpHollowOffATR);
+  }
+
+// Hollow (outlined) signal arrow. These are never removed with the zones, so
+// every past signal keeps its arrow.
+void HollowArrow(const datetime t, const double hi, const double lo, const int dir, const color clr, const bool re)
   {
    if(!InpHollowObj || t == 0) return;
-   string name = ARPRE + TimeToString(t, TIME_DATE|TIME_MINUTES) + (dir > 0 ? "_U" : "_D") + (re ? "R" : "");
+   string name = ARPRE + IntegerToString((long)t) + (dir > 0 ? "_U" : "_D") + (re ? "R" : "");
+   double gap = ArrowGap(t, hi, lo);
+   double price = (dir > 0 ? lo - gap : hi + gap);
    if(ObjectFind(0, name) < 0)
-      ObjectCreate(0, name, OBJ_ARROW, 0, t, price);
-   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, dir > 0 ? 241 : 242);
+      if(!ObjectCreate(0, name, OBJ_ARROW, 0, t, price))
+         return;
+   ObjectSetInteger(0, name, OBJPROP_TIME, 0, t);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, 0, price);
+   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, dir > 0 ? InpHollowCodeUp : InpHollowCodeDn);
    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
-   ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, MathMax(1, InpHollowWidth));
    ObjectSetInteger(0, name, OBJPROP_ANCHOR, dir > 0 ? ANCHOR_TOP : ANCHOR_BOTTOM);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
@@ -1073,10 +1134,11 @@ void HollowArrow(const datetime t, const double price, const int dir, const colo
 
 void PutRect(const string name, datetime t1, double p1, datetime t2, double p2, color fill)
   {
-   if(t1 <= 0) return;
+   if(t1 <= 0 || p1 <= 0.0 || p2 <= 0.0) return;
    if(t2 <= t1) t2 = t1 + PeriodSeconds(_Period) * 20;
    if(ObjectFind(0, name) < 0)
-      ObjectCreate(0, name, OBJ_RECTANGLE, 0, t1, p1, t2, p2);
+      if(!ObjectCreate(0, name, OBJ_RECTANGLE, 0, t1, p1, t2, p2))
+         return;
    ObjectSetInteger(0, name, OBJPROP_TIME, 0, t1);
    ObjectSetDouble(0, name, OBJPROP_PRICE, 0, p1);
    ObjectSetInteger(0, name, OBJPROP_TIME, 1, t2);
@@ -1088,100 +1150,106 @@ void PutRect(const string name, datetime t1, double p1, datetime t2, double p2, 
    ObjectSetInteger(0, name, OBJPROP_FILL, true);
    ObjectSetInteger(0, name, OBJPROP_BACK, true);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0, name, OBJPROP_HIDDEN, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
    ObjectSetInteger(0, name, OBJPROP_ZORDER, 0);
   }
 
+// Thin dotted level that stops a few bars past the box (no ray), so the
+// label drawn at the box edge sits on it.
 void PutLine(const string name, datetime t1, datetime t2, double price, color clr)
   {
    if(t1 <= 0 || price <= 0.0) return;
    if(t2 <= t1) t2 = t1 + PeriodSeconds(_Period) * 20;
    if(ObjectFind(0, name) < 0)
-      ObjectCreate(0, name, OBJ_TREND, 0, t1, price, t2, price);
+      if(!ObjectCreate(0, name, OBJ_TREND, 0, t1, price, t2, price))
+         return;
    ObjectSetInteger(0, name, OBJPROP_TIME, 0, t1);
    ObjectSetDouble(0, name, OBJPROP_PRICE, 0, price);
    ObjectSetInteger(0, name, OBJPROP_TIME, 1, t2);
    ObjectSetDouble(0, name, OBJPROP_PRICE, 1, price);
    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
-   ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_SOLID);
-   ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
-   ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, true);
+   ObjectSetInteger(0, name, OBJPROP_STYLE, InpLineStyle);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, MathMax(1, InpLineWidth));
+   ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
+   ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0, name, OBJPROP_HIDDEN, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
    ObjectSetInteger(0, name, OBJPROP_BACK, false);
    ObjectSetInteger(0, name, OBJPROP_ZORDER, 2);
   }
 
+// Label anchored by its lower-left corner on the level price: the text sits
+// on top of the line. Updated in place (no delete/re-create) to avoid flicker.
 void PutLabel(const string name, datetime t, double price, const string text, color clr)
   {
    if(price <= 0.0 || t <= 0) return;
-   if(ObjectFind(0, name) >= 0)
-      ObjectDelete(0, name);
-   if(!ObjectCreate(0, name, OBJ_TEXT, 0, t, price))
-      return;
-   ObjectSetInteger(0, name, OBJPROP_TIME, t);
-   ObjectSetDouble(0, name, OBJPROP_PRICE, price);
-   ObjectSetString(0, name, OBJPROP_TEXT, "   " + text);
+   if(ObjectFind(0, name) < 0)
+      if(!ObjectCreate(0, name, OBJ_TEXT, 0, t, price))
+         return;
+   ObjectSetInteger(0, name, OBJPROP_TIME, 0, t);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, 0, price);
+   if(ObjectGetString(0, name, OBJPROP_TEXT) != text)
+      ObjectSetString(0, name, OBJPROP_TEXT, text);
    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
-   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 9);
-   ObjectSetString(0, name, OBJPROP_FONT, "Arial");
-   ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_LEFT);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, MathMax(6, InpLabelSize));
+   ObjectSetString(0, name, OBJPROP_FONT, InpLabelFont);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_LEFT_LOWER);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0, name, OBJPROP_HIDDEN, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
    ObjectSetInteger(0, name, OBJPROP_BACK, false);
    ObjectSetInteger(0, name, OBJPROP_ZORDER, 10);
   }
 
+string PriceText(const double p)
+  {
+   return DoubleToString(NormPrice(p), _Digits);
+  }
+
+// Only the idea that is pending or live is drawn. Anything else (idle,
+// SL hit / waiting) wipes every zone object, so nothing is left behind.
 void DrawLiveZone()
   {
-   if(!InpShowZones)
-     {
-      ClearZones();
-      return;
-     }
-
    Idea z = idea;
-   if(z.state == IDEA_IDLE || z.signalTime == 0 || z.entry <= 0.0 || z.sl <= 0.0)
+   bool active = (z.state == IDEA_PENDING || z.state == IDEA_LIVE);
+   if(!InpShowZones || !active || z.dir == 0 || z.signalTime == 0
+      || z.entry <= 0.0 || z.sl <= 0.0 || z.tp1 <= 0.0 || z.tp2 <= 0.0)
      {
       ClearZones();
       return;
      }
 
-   datetime t1 = z.signalTime;
+   int ps = PeriodSeconds(_Period);
+   datetime t1 = (z.zoneTime > 0 ? z.zoneTime : z.signalTime);
    datetime nowT = iTime(_Symbol, _Period, 0);
    if(nowT <= 0) nowT = TimeCurrent();
-   int boxBars = MathMax(10, InpZoneRightBars);
-   datetime tBox = nowT + (datetime)boxBars * PeriodSeconds(_Period);
-   if(tBox <= t1)
-      tBox = t1 + PeriodSeconds(_Period) * 10;
-   datetime tLab = nowT + PeriodSeconds(_Period);
-   datetime tLine = tLab + (datetime)40 * PeriodSeconds(_Period);
+   datetime tBox = nowT + (datetime)MathMax(2, InpZoneRightBars) * ps;
+   if(tBox <= t1) tBox = t1 + (datetime)10 * ps;
+   datetime tLab = tBox + ps;
+   datetime tEnd = tBox + (datetime)MathMax(4, InpLineExtBars) * ps;
 
-   PutRect(ZPRE+"ZSL0",  t1, z.entry, tBox, z.sl,  InpZoneSL);
-   PutRect(ZPRE+"ZT10",  t1, z.entry, tBox, z.tp1, InpZoneTP1);
-   PutRect(ZPRE+"ZT20",  t1, z.tp1,   tBox, z.tp2, InpZoneTP2);
+   PutRect(ZPRE+"ZSL0", t1, z.entry, tBox, z.sl,  InpZoneSL);
+   PutRect(ZPRE+"ZT10", t1, z.entry, tBox, z.tp1, InpZoneTP1);
+   PutRect(ZPRE+"ZT20", t1, z.tp1,   tBox, z.tp2, InpZoneTP2);
 
-   PutLine(ZPRE+"LEN0", t1, tLine, z.entry, InpLineEntry);
-   PutLine(ZPRE+"LSL0", t1, tLine, z.sl,    InpLineSL);
-   PutLine(ZPRE+"LT10", t1, tLine, z.tp1,   InpLineTP1);
-   PutLine(ZPRE+"LT20", t1, tLine, z.tp2,   InpLineTP2);
+   PutLine(ZPRE+"LEN0", t1, tEnd, z.entry, InpLineEntry);
+   PutLine(ZPRE+"LSL0", t1, tEnd, z.sl,    InpLineSL);
+   PutLine(ZPRE+"LT10", t1, tEnd, z.tp1,   InpLineTP1);
+   PutLine(ZPRE+"LT20", t1, tEnd, z.tp2,   InpLineTP2);
 
    string tag = "";
    if(z.recovering) tag += " RC";
-   else if(z.re) tag += " RE";
+   else if(z.re)    tag += " RE";
    if(z.state == IDEA_PENDING)
      {
-      if(z.recovering) tag += "  REC LIMIT";
-      else tag += (z.leg2 ? "  L2 LIMIT" : (InpPendingType == PEND_LIMIT ? "  LIMIT" : "  STOP"));
+      if(z.recovering) tag += " [REC LIMIT]";
+      else tag += (z.leg2 ? " [L2 LIMIT]" : (InpPendingType == PEND_LIMIT ? " [LIMIT]" : " [STOP]"));
      }
-   if(z.state == IDEA_SL_WAIT) tag += " [SL hit]";
-   if(z.state == IDEA_LIVE)    tag += " [FILLED]";
-   if(idea.state == IDEA_IDLE && InpKeepLastZone) tag += " [LAST]";
+   if(z.state == IDEA_LIVE) tag += " [FILLED]";
 
-   PutLabel(ZPRE+"NEN0", tLab, z.entry, "Entry  " + DoubleToString(z.entry, _Digits) + tag, InpLineEntry);
-   PutLabel(ZPRE+"NSL0", tLab, z.sl,    "SL  "    + DoubleToString(z.sl,    _Digits),       InpLineSL);
-   PutLabel(ZPRE+"NT10", tLab, z.tp1,   "TP1  "   + DoubleToString(z.tp1,   _Digits),       InpLineTP1);
-   PutLabel(ZPRE+"NT20", tLab, z.tp2,   "TP2  "   + DoubleToString(z.tp2,   _Digits),       InpLineTP2);
+   PutLabel(ZPRE+"NEN0", tLab, z.entry, "Entry  " + PriceText(z.entry) + tag, InpLineEntry);
+   PutLabel(ZPRE+"NSL0", tLab, z.sl,    "SL  "    + PriceText(z.sl),         InpLineSL);
+   PutLabel(ZPRE+"NT10", tLab, z.tp1,   "TP1  "   + PriceText(z.tp1),        InpLineTP1);
+   PutLabel(ZPRE+"NT20", tLab, z.tp2,   "TP2  "   + PriceText(z.tp2),        InpLineTP2);
 
    ChartRedraw(0);
   }
@@ -1437,6 +1505,9 @@ int OnCalculate(const int rates_total,
    ArraySetAsSeries(close, true);
 
    const bool full = (prev_calculated <= 0);
+   // wait for ATR so arrow offsets / SL filters are computed on real values
+   if(full && gAtr != INVALID_HANDLE && BarsCalculated(gAtr) < rates_total)
+      return(0);
    const bool newBar = (!full && time[1] != gLastClosedBar);
    int start = 0;
    if(full)
@@ -1452,6 +1523,7 @@ int OnCalculate(const int rates_total,
       ResetIdea();
       ResetCounts();
       ClearZones();
+      ObjectsDeleteAll(0, ARPRE);   // arrows are rebuilt below, drop any stale ones
       gLastClosedBar = 0;
       start = MathMin(rates_total - 5, 800);
      }
@@ -1515,7 +1587,7 @@ int OnCalculate(const int rates_total,
                idea.artTime = time[i];
                if(idea.dir > 0) ReBuyBuf[i] = low[i];
                else             ReSellBuf[i] = high[i];
-               HollowArrow(time[i], (idea.dir > 0 ? low[i] : high[i]), idea.dir,
+               HollowArrow(time[i], high[i], low[i], idea.dir,
                            (idea.dir > 0 ? InpReBuyColor : InpReSellColor), true);
               }
            }
@@ -1556,7 +1628,7 @@ int OnCalculate(const int rates_total,
             idea.reCount = rc;
             lastBuyTime = bar.t;
             gCntBuy++; gTodaySig++;
-            HollowArrow(time[i], low[i], 1, InpReBuyColor, true);
+            HollowArrow(time[i], high[i], low[i], 1, InpReBuyColor, true);
             didRe = true;
            }
          else if(idea.dir < 0 && trigS && allowS)
@@ -1567,7 +1639,7 @@ int OnCalculate(const int rates_total,
             idea.reCount = rc;
             lastSellTime = bar.t;
             gCntSell++; gTodaySig++;
-            HollowArrow(time[i], high[i], -1, InpReSellColor, true);
+            HollowArrow(time[i], high[i], low[i], -1, InpReSellColor, true);
             didRe = true;
            }
         }
@@ -1584,7 +1656,7 @@ int OnCalculate(const int rates_total,
             lastBuyTime = bar.t;
             ArmIdea(1, bar, false, slLo);
             gCntBuy++; gTodaySig++;
-            HollowArrow(time[i], low[i], 1, InpBuyColor, false);
+            HollowArrow(time[i], high[i], low[i], 1, InpBuyColor, false);
            }
          else if(free && trigS && allowS && coolS)
            {
@@ -1592,7 +1664,7 @@ int OnCalculate(const int rates_total,
             lastSellTime = bar.t;
             ArmIdea(-1, bar, false, slHi);
             gCntSell++; gTodaySig++;
-            HollowArrow(time[i], high[i], -1, InpSellColor, false);
+            HollowArrow(time[i], high[i], low[i], -1, InpSellColor, false);
            }
         }
      }
