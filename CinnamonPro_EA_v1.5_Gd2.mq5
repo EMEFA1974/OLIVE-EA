@@ -1,5 +1,5 @@
 #property copyright "CinnamonPro"
-#property version   "1.50"
+#property version   "1.51"
 #property strict
 #property description "CinnamonPro EA v1.5 — replica executor aligned to the indicator, optional SL-free grid."
 
@@ -127,8 +127,9 @@ input color  InpLineSL        = C'220,90,96';
 input color  InpLineTP1       = C'64,200,160';
 input color  InpLineTP2       = C'64,150,220';
 input color  InpLineBasketTP  = C'255,196,72';
-input int    InpZoneRightBars = 18;      // box extends this many bars right of the current bar
-input int    InpLineExtBars   = 16;      // levels continue past the box so labels sit on them
+input int    InpZoneBackBars  = 12;      // box starts at most this many bars before the current bar
+input int    InpZoneRightBars = 6;       // box extends this many bars right of the current bar
+input int    InpLineExtBars   = 10;      // levels continue past the box so labels sit on them
 input ENUM_LINE_STYLE InpLineStyle = STYLE_DOT;
 input int    InpLineWidth     = 1;
 input int    InpLabelSize     = 8;
@@ -1496,6 +1497,10 @@ void DrawLiveZone()
    datetime t1 = (z.zoneTime > 0 ? z.zoneTime : z.signalTime);
    datetime nowT = iTime(_Symbol, _Period, 0);
    if(nowT <= 0) nowT = TimeCurrent();
+   // Keep the zone compact: an idea that has been open for hours would
+   // otherwise stretch the boxes across the whole chart.
+   datetime tMin = nowT - (datetime)MathMax(1, InpZoneBackBars) * ps;
+   if(t1 < tMin) t1 = tMin;
    datetime tBox = nowT + (datetime)MathMax(2, InpZoneRightBars) * ps;
    if(tBox <= t1) tBox = t1 + (datetime)10 * ps;
    datetime tLab = tBox + ps;
@@ -1840,6 +1845,7 @@ int OnInit()
    gAllowTrade = false;
    gWarmed = false;
    gLastClosedBar = 0;
+   ClearZones();   // drop zones left by an earlier build/instance
    Print("CinnamonPro EA v1.5 init | fixed lot asked=", DoubleToString(InpFixedLot, 2),
          " norm=", DoubleToString(NormalizeLot(InpFixedLot), 2),
          " min=", DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN), 2),

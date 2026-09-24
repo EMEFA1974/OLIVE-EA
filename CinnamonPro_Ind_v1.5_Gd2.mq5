@@ -1,6 +1,6 @@
 #property copyright "CinnamonPro"
 #property link      ""
-#property version   "1.50"
+#property version   "1.51"
 #property indicator_chart_window
 #property indicator_buffers 4
 #property indicator_plots   4
@@ -143,8 +143,9 @@ input string InpPanelTitle   = "CINNAMON PRO";
 input group "=== Zones ==="
 input bool   InpShowZones     = true;
 input bool   InpKeepLastZone  = false;  // only current signal zones/levels on the chart
-input int    InpZoneRightBars = 18;      // box extends this many bars right of the current bar
-input int    InpLineExtBars   = 16;      // levels continue past the box so labels sit on them
+input int    InpZoneBackBars  = 12;      // box starts at most this many bars before the current bar
+input int    InpZoneRightBars = 6;       // box extends this many bars right of the current bar
+input int    InpLineExtBars   = 10;      // levels continue past the box so labels sit on them
 input ENUM_LINE_STYLE InpLineStyle = STYLE_DOT;
 input int    InpLineWidth     = 1;
 input int    InpLabelSize     = 8;
@@ -270,6 +271,7 @@ int OnInit()
    gPanelX = InpPanelX;
    gPanelY = InpPanelY;
    ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, true);
+   ObjectsDeleteAll(0, ZPRE);   // drop zones left by an earlier build/instance
    return(INIT_SUCCEEDED);
   }
 
@@ -1222,6 +1224,10 @@ void DrawLiveZone()
    datetime t1 = (z.zoneTime > 0 ? z.zoneTime : z.signalTime);
    datetime nowT = iTime(_Symbol, _Period, 0);
    if(nowT <= 0) nowT = TimeCurrent();
+   // Keep the zone compact: an idea that has been open for hours would
+   // otherwise stretch the boxes across the whole chart.
+   datetime tMin = nowT - (datetime)MathMax(1, InpZoneBackBars) * ps;
+   if(t1 < tMin) t1 = tMin;
    datetime tBox = nowT + (datetime)MathMax(2, InpZoneRightBars) * ps;
    if(tBox <= t1) tBox = t1 + (datetime)10 * ps;
    datetime tLab = tBox + ps;
