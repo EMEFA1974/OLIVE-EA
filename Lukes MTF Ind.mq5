@@ -98,8 +98,8 @@ input int    InpChartShiftPct = 30;       // chart shift size in % of chart widt
 input color  InpZoneSL        = C'220,50,50';
 input color  InpZoneTP1       = C'30,170,100';
 input color  InpZoneTP2       = C'40,100,230';
-input int    InpZoneOpacity   = 18;       // box opacity % (0-100): lower = fainter / more see-through
-input int    InpLineOpacity   = 60;       // level line opacity % (0-100); labels stay full colour
+input int    InpZoneOpacity   = 35;       // box opacity % (0-100): lower = fainter / more see-through
+input int    InpLineOpacity   = 80;       // level line opacity % (0-100); labels stay full colour
 input color  InpLineEntry     = C'200,200,200';
 input color  InpLineSL        = C'235,90,80';
 input color  InpLineTP1       = C'70,200,170';
