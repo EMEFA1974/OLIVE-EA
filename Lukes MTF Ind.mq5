@@ -95,9 +95,11 @@ input int    InpZoneFontSize  = 7;
 input string InpZoneFont      = "Segoe UI Light";   // thin font for zone labels (e.g. "Segoe UI Light", "Calibri Light", "Arial")
 input bool   InpAutoChartShift = true;    // turn on chart shift so the box and labels have room
 input int    InpChartShiftPct = 30;       // chart shift size in % of chart width (10-50)
-input color  InpZoneSL        = C'110,24,24';
-input color  InpZoneTP1       = C'14,70,40';
-input color  InpZoneTP2       = C'16,34,110';
+input color  InpZoneSL        = C'220,50,50';
+input color  InpZoneTP1       = C'30,170,100';
+input color  InpZoneTP2       = C'40,100,230';
+input int    InpZoneOpacity   = 18;       // box opacity % (0-100): lower = fainter / more see-through
+input int    InpLineOpacity   = 60;       // level line opacity % (0-100); labels stay full colour
 input color  InpLineEntry     = C'200,200,200';
 input color  InpLineSL        = C'235,90,80';
 input color  InpLineTP1       = C'70,200,170';
@@ -642,6 +644,18 @@ void PutLabel(const string name, datetime t, double price, const string text, co
    ObjectSetInteger(0, name, OBJPROP_BACK, false);
   }
 
+// MT5 chart objects have no alpha channel, so fake transparency by
+// blending the colour into the chart background colour.
+color Faint(const color c, const int opacityPct)
+  {
+   double a = MathMax(0, MathMin(100, opacityPct)) / 100.0;
+   color bg = (color)ChartGetInteger(0, CHART_COLOR_BACKGROUND);
+   int r = (int)MathRound(( bg        & 0xFF) + (( c        & 0xFF) - ( bg        & 0xFF)) * a);
+   int g = (int)MathRound(((bg >> 8)  & 0xFF) + (((c >> 8)  & 0xFF) - ((bg >> 8)  & 0xFF)) * a);
+   int b = (int)MathRound(((bg >> 16) & 0xFF) + (((c >> 16) & 0xFF) - ((bg >> 16) & 0xFF)) * a);
+   return (color)(r | (g << 8) | (b << 16));
+  }
+
 color SignalColor(const int dir, const bool re)
   {
    if(dir > 0) return (re ? InpReBuyColor  : InpBuyColor);
@@ -692,14 +706,14 @@ void DrawLiveZone()
    color sig = SignalColor(gz.dir, gz.re);
    string side = (gz.dir > 0 ? (gz.re ? "RE-BUY" : "BUY") : (gz.re ? "RE-SELL" : "SELL"));
 
-   PutRect(ZPRE+"ZSL0",  t1, gz.entry, t2, gz.sl,  InpZoneSL);
-   PutRect(ZPRE+"ZT10",  t1, gz.entry, t2, gz.tp1, InpZoneTP1);
-   PutRect(ZPRE+"ZT20",  t1, gz.tp1,   t2, gz.tp2, InpZoneTP2);
+   PutRect(ZPRE+"ZSL0",  t1, gz.entry, t2, gz.sl,  Faint(InpZoneSL,  InpZoneOpacity));
+   PutRect(ZPRE+"ZT10",  t1, gz.entry, t2, gz.tp1, Faint(InpZoneTP1, InpZoneOpacity));
+   PutRect(ZPRE+"ZT20",  t1, gz.tp1,   t2, gz.tp2, Faint(InpZoneTP2, InpZoneOpacity));
 
-   PutLine(ZPRE+"LEN0", t1, t3, gz.entry, sig);
-   PutLine(ZPRE+"LSL0", t1, t3, gz.sl,    InpLineSL);
-   PutLine(ZPRE+"LT10", t1, t3, gz.tp1,   InpLineTP1);
-   PutLine(ZPRE+"LT20", t1, t3, gz.tp2,   InpLineTP2);
+   PutLine(ZPRE+"LEN0", t1, t3, gz.entry, Faint(sig,        InpLineOpacity));
+   PutLine(ZPRE+"LSL0", t1, t3, gz.sl,    Faint(InpLineSL,  InpLineOpacity));
+   PutLine(ZPRE+"LT10", t1, t3, gz.tp1,   Faint(InpLineTP1, InpLineOpacity));
+   PutLine(ZPRE+"LT20", t1, t3, gz.tp2,   Faint(InpLineTP2, InpLineOpacity));
 
    PutLabel(ZPRE+"NEN0", tl, gz.entry, "Entry  " + DoubleToString(gz.entry, _Digits) + "  " + side + gz.status, sig);
    PutLabel(ZPRE+"NSL0", tl, gz.sl,    "SL  "    + DoubleToString(gz.sl,    _Digits), InpLineSL);
