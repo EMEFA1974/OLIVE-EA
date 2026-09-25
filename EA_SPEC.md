@@ -117,3 +117,4 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 - 2026-09-25 – Panel fix: text was hidden behind the background. Panels moved to the left edge, draggable and collapsible (D6).
 - 2026-09-25 – Panels: thin fonts (Segoe UI Light / Semilight, inputs `InpPanelFontName`, `InpPanelFontHead`), width 270, shorter values to stop overlapping text.
 - 2026-09-25 – Brighter panel colours and zone label colours (SL 255,75,75 / TP1 0,255,170 / TP2 70,170,255); fonts Segoe UI Semilight (was Light, too dim).
+- 2026-09-25 – Panels are solid: chart-on-foreground turned off, and the panel is rebuilt on top when other objects appear. Colours brightened again (headings/info light blue, TP2 line).

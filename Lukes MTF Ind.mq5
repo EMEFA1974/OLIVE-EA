@@ -110,9 +110,9 @@ input color  InpZoneTP2       = C'40,100,230';
 input int    InpZoneOpacity   = 35;       // box opacity % (0-100): lower = fainter / more see-through
 input int    InpLineOpacity   = 80;       // level line opacity % (0-100); labels stay full colour
 input color  InpLineEntry     = C'235,235,235';
-input color  InpLineSL        = C'255,75,75';
-input color  InpLineTP1       = C'0,255,170';
-input color  InpLineTP2       = C'70,170,255';
+input color  InpLineSL        = C'255,100,100';
+input color  InpLineTP1       = C'60,255,190';
+input color  InpLineTP2       = C'120,200,255';
 
 double BuyBuf[];
 double SellBuf[];
@@ -784,17 +784,31 @@ string StateText()
 //+------------------------------------------------------------------+
 #define PPRE    "CSMTF_P_"
 int  gPX = 0, gPY = 0, gPanelH = 0;
+int  gOtherObjs = -1;
+
+// objects on the chart that are not part of either Lukes panel
+int OtherObjCount()
+  {
+   int n = 0, total = ObjectsTotal(0);
+   for(int i = 0; i < total; i++)
+     {
+      string nm = ObjectName(0, i);
+      if(StringFind(nm, "CSMTF_P_") == 0 || StringFind(nm, "LEA_P_") == 0) continue;
+      n++;
+     }
+   return n;
+  }
 bool gCollapsed = false, gAutoBottom = false;
 bool gDrag = false, gPrevDown = false, gScrollWas = true;
 int  gDragDX = 0, gDragDY = 0, gDownX = 0, gDownY = 0;
-#define C_HEAD  C'90,190,255'
-#define C_LBL   C'220,225,235'
+#define C_HEAD  C'130,215,255'
+#define C_LBL   C'235,240,248'
 #define C_TXT   C'255,255,255'
-#define C_UP    C'0,255,120'
-#define C_DN    C'255,70,70'
-#define C_WARN  C'255,215,0'
-#define C_INFO  C'0,225,255'
-#define C_MUTE  C'165,172,185'
+#define C_UP    C'60,255,150'
+#define C_DN    C'255,95,95'
+#define C_WARN  C'255,225,60'
+#define C_INFO  C'110,245,255'
+#define C_MUTE  C'190,196,208'
 
 int    gRow = 0, gMaxRow = 0;
 int    gEmaFast = INVALID_HANDLE, gEmaSlow = INVALID_HANDLE;
@@ -904,6 +918,13 @@ void DrawPanel(const bool force = false)
 
    // background is created BEFORE any text, otherwise it is drawn on top and hides it
    string bg = PPRE + "BG";
+   int others = OtherObjCount();
+   if(others != gOtherObjs)
+     {
+      // objects created after the panel are drawn over it: rebuild the panel on top
+      ObjectDelete(0, bg);
+      gOtherObjs = others;
+     }
    if(ObjectFind(0, bg) < 0)
      {
       ObjectsDeleteAll(0, PPRE);
@@ -1018,6 +1039,7 @@ void PanelInit()
    if(gPY < 0) gPY = 20;
    gCollapsed = (GlobalVariableCheck(PosKey("c")) && GlobalVariableGet(PosKey("c")) > 0);
    ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, true);
+   ChartSetInteger(0, CHART_FOREGROUND, false);   // "chart on foreground" would draw candles/grid over the panel
   }
 
 void PanelSave()
