@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Lukes MTF EA"
 #property link      ""
-#property version   "1.08"
+#property version   "1.09"
 
 #include <Trade/Trade.mqh>
 
@@ -1395,9 +1395,12 @@ int SignalsToday()
 
 // Closed EA trades today. Deals that close within 5 s of each other in the
 // same direction are one trade (a grid basket closing together counts once).
-void TodayStats(int &trades, int &wins, int &losses, double &pl)
+void TodayStats(int &trades, int &wins, int &losses, double &pl,
+                int &entries, int &gridAdds, int &gridBaskets)
   {
    trades = wins = losses = 0; pl = 0;
+   entries = gridAdds = gridBaskets = 0;
+   int gSize = 0;
    if(!HistorySelect(DayStart(), TimeCurrent() + 60)) return;
    int n = HistoryDealsTotal();
    datetime gT = 0; long gType = -1; double gPL = 0; bool open = false;
@@ -1408,17 +1411,24 @@ void TodayStats(int &trades, int &wins, int &losses, double &pl)
       if(HistoryDealGetString(tk, DEAL_SYMBOL) != _Symbol) continue;
       if(HistoryDealGetInteger(tk, DEAL_MAGIC) != InpMagic) continue;
       long entry = HistoryDealGetInteger(tk, DEAL_ENTRY);
+      if(entry == DEAL_ENTRY_IN)
+        {
+         // first trade of a signal: comment "LukesEA|<signal time>"; grid levels: "LukesEA|gridN"
+         if(StringFind(HistoryDealGetString(tk, DEAL_COMMENT), "|grid") >= 0) gridAdds++;
+         else entries++;
+         continue;
+        }
       if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY) continue;
       datetime t   = (datetime)HistoryDealGetInteger(tk, DEAL_TIME);
       long     typ = HistoryDealGetInteger(tk, DEAL_TYPE);
       double   p   = HistoryDealGetDouble(tk, DEAL_PROFIT) + HistoryDealGetDouble(tk, DEAL_SWAP)
                      + HistoryDealGetDouble(tk, DEAL_COMMISSION);
       pl += p;
-      if(open && typ == gType && t - gT <= 5) { gPL += p; gT = t; continue; }
-      if(open) { trades++; if(gPL >= 0) wins++; else losses++; }
-      open = true; gT = t; gType = typ; gPL = p;
+      if(open && typ == gType && t - gT <= 5) { gPL += p; gT = t; gSize++; continue; }
+      if(open) { trades++; if(gPL >= 0) wins++; else losses++; if(gSize > 1) gridBaskets++; }
+      open = true; gT = t; gType = typ; gPL = p; gSize = 1;
      }
-   if(open) { trades++; if(gPL >= 0) wins++; else losses++; }
+   if(open) { trades++; if(gPL >= 0) wins++; else losses++; if(gSize > 1) gridBaskets++; }
   }
 
 string SessionName(color &c)
@@ -1526,7 +1536,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.08  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.09  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -1549,9 +1559,18 @@ void UpdatePanel(const bool force = false)
    PRow("Spread", StringFormat("%.0f pts", spr), (spr > 50 ? C_WARN : C_TXT));
 
    int tr, w, l; double pl;
-   TodayStats(tr, w, l, pl);
+   int ent, gAdd, gBsk;
+   TodayStats(tr, w, l, pl, ent, gAdd, gBsk);
+   int sigT = SignalsToday();
+   int waiting = ((idea.state == IDEA_PENDING && CountOrders() > 0) ? 1 : 0);
+   int notTraded = (int)MathMax(0, sigT - ent - waiting);
    PSection("TODAY");
-   PRow("Signals", IntegerToString(SignalsToday()), C_INFO);
+   PRow("Signals", IntegerToString(sigT), C_INFO);
+   PRow("  traded", IntegerToString(ent), C_TXT);
+   if(waiting > 0) PRow("  pending order", IntegerToString(waiting), C_WARN);
+   PRow("  not traded", IntegerToString(notTraded), (notTraded > 0 ? C_MUTE : C_TXT));
+   PRow("Grid trades added", IntegerToString(gAdd), (gAdd > 0 ? C_WARN : C_TXT));
+   PRow("Grid baskets closed", IntegerToString(gBsk), C_TXT);
    PRow("Trades closed", IntegerToString(tr), C_TXT);
    PRow("TP (wins)", IntegerToString(w), C_UP);
    PRow("SL (losses)", IntegerToString(l), C_DN);
@@ -1584,7 +1603,7 @@ void UpdatePanel(const bool force = false)
       PRow("Floating P/L", StringFormat("%+.2f", b.profit), (b.profit >= 0 ? C_UP : C_DN));
       if(InpMode == MODE_GRID)
         {
-         PRow("Grid", StringFormat("%d/%d  gap %d", b.count, InpGridMaxTrades, GridGapPts((int)MathMax(1, b.count))), C_TXT);
+         PRow("Grid trades open", StringFormat("%d/%d  gap %d", b.count, InpGridMaxTrades, GridGapPts((int)MathMax(1, b.count))), C_TXT);
          double bs = LoadBStop();
          if(InpBasketBEOn || InpBasketTrailOn) PRow("Basket stop", (bs > 0 ? Px(bs) : "not active"), (bs > 0 ? C_UP : C_MUTE));
         }

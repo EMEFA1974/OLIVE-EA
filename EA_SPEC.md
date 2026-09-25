@@ -91,6 +91,7 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 | D1 | Styled panel (dark background, blue section headers, coloured values), replaces the plain text panel. Header shows status: SIGNALS ONLY / WAITING / IN TRADE / NOT TRADING. | Done (v1.07) |
 | D2 | MARKET: session (GMT: Asia, London, London + NY, New York, Sydney, Closed), EMA trend (`InpTrendTF`, EMA `InpTrendFast`/`InpTrendSlow`), D1/H4/H1/M5 bias, align B/S, spread. | Done (v1.07) |
 | D3 | TODAY: signals, trades closed, TP (wins), SL (losses), win rate, P/L. A grid basket closing together counts as one trade. Win = closed at profit >= 0. | Done (v1.07) |
+| D3b | TODAY also shows: signals traded / pending order / not traded (signals-only mode, pending never filled, cancelled, skipped), grid trades added (levels after the first trade), grid baskets closed. CURRENT shows grid trades open (n / max). | Done (v1.09) |
 | D4 | EA: mode, entry type, trading enabled, equity protector. CURRENT: signal state + levels, last signal, position/basket, floating P/L, grid level, basket stop. | Done (v1.07) |
 
 | D5 | **Indicator** (v1.80) uses the same panel style: MARKET (session, trend, bias, align, spread), TODAY (signals, TP1/TP2/SL hits, running, win rate = TP1 / (TP1 + SL before TP1)), RUNNING TOTAL over chart history, CURRENT SIGNAL. Indicator panel at X 10, EA panel next to it at X 280. | Done |
@@ -118,3 +119,4 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 - 2026-09-25 – Panels: thin fonts (Segoe UI Light / Semilight, inputs `InpPanelFontName`, `InpPanelFontHead`), width 270, shorter values to stop overlapping text.
 - 2026-09-25 – Brighter panel colours and zone label colours (SL 255,75,75 / TP1 0,255,170 / TP2 70,170,255); fonts Segoe UI Semilight (was Light, too dim).
 - 2026-09-25 – Panels are solid: chart-on-foreground turned off, and the panel is rebuilt on top when other objects appear. Colours brightened again (headings/info light blue, TP2 line).
+- 2026-09-25 – EA v1.09: panel explains signals vs trades and counts grid trades (D3b).
