@@ -47,6 +47,7 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 | R1 | Own starting lot (`InpGridStartLot`), separate from single-trade lot. | Done |
 | R2 | First grid trade opens on a signal (market or pending, per G5). | Done |
 | R3 | Add a grid trade each time price moves a **fixed distance** (`InpGridDistPts`, points) against the most adverse open grid trade. | Done |
+| R3b | **Widening gaps** (toggle `InpGridWidenOn`, default off): gap to trade #2 = `InpGridDistPts`, each next gap × `InpGridGapMult` (e.g. 500, 600, 720, 864…). Optional cap `InpGridMaxGapPts` (0 = none). | Done (v1.03) |
 | R4 | Lot of each new grid trade = start lot × `InpGridMultiplier` ^ (trades already open). | Done |
 | R5 | `InpGridMaxTrades`: when this many trades are running, stop adding grid trades. | Done |
 | R6 | **Basket TP** closes all grid trades. Adjustable: money profit (`InpBasketTPMoney`, $) or points beyond the basket average (`InpBasketTPPts`), selected by `InpBasketTPType`. | Done |
@@ -80,6 +81,7 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 |---|---|---|
 | 1–3 | Signals, single trades, grid | Built (v1.00–1.01), awaiting demo verification |
 | 4 | Grid risk controls: basket break-even / trailing (user chose this only) | Built (v1.02) |
+| 4b | Widening grid gaps (R3b) | Built (v1.03) |
 | 5 | Protections (hours filter, Friday close, spread filter, dashboard) | Not requested for now |
 
 ## Verification plan (no Strategy Tester)
@@ -94,3 +96,4 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 - 2026-09-25 – Spec created. Single-trade and grid rules confirmed by user. Indicator v1.70: once-per-bar processing fix + auto-digits.
 - 2026-09-25 – G2 changed: all EA distances now in points instead of $ (user request).
 - 2026-09-25 – Phase 4: basket break-even + trailing stop added (R11–R13). Other Phase 4/5 options offered, not chosen.
+- 2026-09-25 – Widening grid gaps added (R3b).

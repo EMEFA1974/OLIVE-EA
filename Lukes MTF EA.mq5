@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Lukes MTF EA"
 #property link      ""
-#property version   "1.02"
+#property version   "1.03"
 
 #include <Trade/Trade.mqh>
 
@@ -89,6 +89,9 @@ input group "=== Grid ==="
 input double         InpGridStartLot   = 0.01;
 input int            InpGridDistPts    = 500;           // add a trade every N points against the basket
 input double         InpGridMultiplier = 1.50;          // lot multiplier per grid level
+input bool           InpGridWidenOn    = false;         // widen the gap at each new grid level
+input double         InpGridGapMult    = 1.20;          // gap multiplier per level (1.20 = each gap 20% wider)
+input int            InpGridMaxGapPts  = 0;             // largest allowed gap in points (0 = no cap)
 input int            InpGridMaxTrades  = 5;             // max running trades (stop adding at this count)
 input bool           InpBasketTPOn     = true;          // off = close all grid trades at single-trade TP1
 input ENUM_BASKET_TP InpBasketTPType   = BASKET_MONEY;
@@ -689,7 +692,16 @@ double MinStop()
 double TrailStart() { return InpTrailStartPts * Pt(); }
 double TrailDist()  { return InpTrailDistPts  * Pt(); }
 double TrailStep()  { return InpTrailStepPts  * Pt(); }
-double GridDist()   { return InpGridDistPts   * Pt(); }
+// gap (points) before the next grid trade when `open` trades are running:
+// gap 1 (to trade #2) = base, gap 2 = base x mult, gap 3 = base x mult^2 ...
+int GridGapPts(const int open)
+  {
+   double g = InpGridDistPts;
+   if(InpGridWidenOn && open > 1) g *= MathPow(InpGridGapMult, open - 1);
+   if(InpGridMaxGapPts > 0 && g > InpGridMaxGapPts) g = InpGridMaxGapPts;
+   return (int)MathRound(g);
+  }
+double GridDist(const int open) { return GridGapPts(open) * Pt(); }
 double BasketDist() { return InpBasketTPPts   * Pt(); }
 
 bool Ours()
@@ -1083,7 +1095,7 @@ void ManageGrid(const Basket &b)
    // 2) add a grid trade
    if(b.count >= InpGridMaxTrades) return;
    if(TimeCurrent() < gNextGridTry) return;
-   bool add = (b.dir > 0 ? ask <= b.extreme - GridDist() : bid >= b.extreme + GridDist());
+   bool add = (b.dir > 0 ? ask <= b.extreme - GridDist(b.count) : bid >= b.extreme + GridDist(b.count));
    if(!add) return;
 
    double lot = NormLot(InpGridStartLot * MathPow(InpGridMultiplier, b.count));
@@ -1097,7 +1109,7 @@ void ManageGrid(const Basket &b)
       return;
      }
    string what = StringFormat("grid#%d %s lot %.2f @ %s (last %s, distance %d pts)", b.count + 1,
-                              (b.dir > 0 ? "BUY" : "SELL"), lot, Px(trade.ResultPrice()), Px(b.extreme), InpGridDistPts);
+                              (b.dir > 0 ? "BUY" : "SELL"), lot, Px(trade.ResultPrice()), Px(b.extreme), GridGapPts(b.count));
    Log("GRID_ADD", what);
    if(InpAlertTrades) Notify("GRID ADD " + what);
   }
@@ -1207,7 +1219,9 @@ void UpdatePanel()
    else
       s += "Trades: none\n";
    if(InpMode == MODE_GRID)
-      s += StringFormat("Grid: max %d  dist %d pts  x%.2f  exit: %s\n", InpGridMaxTrades, InpGridDistPts, InpGridMultiplier,
+      s += StringFormat("Grid: max %d  next gap %d pts%s  x%.2f  exit: %s\n", InpGridMaxTrades,
+                        GridGapPts(MathMax(1, b.count)), (InpGridWidenOn ? StringFormat(" (widen x%.2f)", InpGridGapMult) : ""),
+                        InpGridMultiplier,
                         (InpBasketTPOn ? (InpBasketTPType == BASKET_MONEY ? StringFormat("basket $%.2f", InpBasketTPMoney)
                                                                           : StringFormat("avg +/- %d pts", InpBasketTPPts))
                                        : "TP1 " + Px(LoadTP1())));
