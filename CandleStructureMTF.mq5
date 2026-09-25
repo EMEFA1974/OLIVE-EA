@@ -68,7 +68,7 @@ input int    InpReentryCool    = 3;
 input group "=== Alerts ==="
 input bool   InpAlertPopup   = true;
 input bool   InpAlertSound   = true;
-input bool   InpAlertPush    = false;
+input bool   InpAlertPush    = true;
 input bool   InpAlertEmail   = false;
 input string InpSoundFile    = "alert.wav";
 input bool   InpAlertOnLoad  = false;
