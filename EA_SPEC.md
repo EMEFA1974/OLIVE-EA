@@ -12,8 +12,8 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 | # | Rule | Status |
 |---|------|--------|
 | G1 | Symbol: XAUUSD on M5. Must work on 2-digit and 3-digit brokers. | Done |
-| G2 | EA-only distances (grid distance, trailing, basket distance) are entered in **price $** (e.g. 5.00 = $5 move in gold), so they are identical on 2- and 3-digit brokers. | Done |
-| G3 | Indicator/EA point inputs (pending pts, SL buffer, min SL gap) are auto-scaled x10 on 3/5-digit brokers (`InpAutoDigits`, default on). Same setting must be used in EA and indicator. | Done |
+| G2 | **All distances are in points** (grid distance, trailing, basket distance, plus the signal inputs). 1 point = 0.01 on XAUUSD. On 3-digit brokers the EA scales them x10 automatically (`InpAutoDigits`), so 500 points = $5.00 move on both broker types. | Changed |
+| G3 | Signal point inputs (pending pts, SL buffer, min SL gap) are auto-scaled x10 on 3/5-digit brokers (`InpAutoDigits`, default on). Same setting must be used in EA and indicator. | Done |
 | G4 | Mode toggle: **Signals only** (default) / **Single trades only** / **Full grid**. | Done |
 | G5 | Entry toggle: **Market price** at signal (default) / **Pending order** at the indicator's Entry level. | Done |
 | G6 | Trades identified by magic number + symbol. State is rebuilt from open positions/orders after a restart. | Done |
@@ -36,7 +36,7 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 | T1 | Own lot size (`InpSingleLot`), separate from grid lot. | Done |
 | T2 | **No partial profit.** Trade closes in full at **TP1**. | Done |
 | T3 | SL = indicator SL. TP = indicator TP1. Market entries: if TP1 is no longer valid (price already past it) or `InpTPFromFill` = true, TP is recalculated from the fill price with the same R-multiple (`InpRR1`). | Done |
-| T4 | Trailing stop with toggle (`InpTrailOn`): starts after `InpTrailStart` $ profit, trails `InpTrailDist` $ behind price, moves in steps of `InpTrailStep` $. | Done |
+| T4 | Trailing stop with toggle (`InpTrailOn`): starts after `InpTrailStartPts` points profit, trails `InpTrailDistPts` points behind price, moves in steps of `InpTrailStepPts` points. | Done |
 | T5 | New signal while a trade is open: same direction → ignored. Opposite direction → close and reverse (`InpCloseOnOpposite`, default on). | Done |
 | T6 | Pending entry mode: pending order is deleted when the indicator cancels/expires that idea, or after `InpPendingExpire` bars. | Done |
 
@@ -46,10 +46,10 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 |---|------|--------|
 | R1 | Own starting lot (`InpGridStartLot`), separate from single-trade lot. | Done |
 | R2 | First grid trade opens on a signal (market or pending, per G5). | Done |
-| R3 | Add a grid trade each time price moves a **fixed distance** (`InpGridDistance`, $) against the most adverse open grid trade. | Done |
+| R3 | Add a grid trade each time price moves a **fixed distance** (`InpGridDistPts`, points) against the most adverse open grid trade. | Done |
 | R4 | Lot of each new grid trade = start lot × `InpGridMultiplier` ^ (trades already open). | Done |
 | R5 | `InpGridMaxTrades`: when this many trades are running, stop adding grid trades. | Done |
-| R6 | **Basket TP** closes all grid trades. Adjustable: money profit (`InpBasketTPMoney`, $) or price distance beyond the basket average (`InpBasketTPDist`, $), selected by `InpBasketTPType`. | Done |
+| R6 | **Basket TP** closes all grid trades. Adjustable: money profit (`InpBasketTPMoney`, $) or points beyond the basket average (`InpBasketTPPts`), selected by `InpBasketTPType`. | Done |
 | R7 | Basket TP toggle (`InpBasketTPOn`). When **off**, all grid trades close when price reaches the single-trade **TP1** of the signal that started the basket. | Done |
 | R8 | In grid mode individual TP and SL are **not** used (orders are sent without SL/TP). | Done |
 | R9 | **One direction at a time**: while a basket is running, new signals (either direction) are ignored. | Done |
@@ -81,3 +81,4 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 ## Change history
 
 - 2026-09-25 – Spec created. Single-trade and grid rules confirmed by user. Indicator v1.70: once-per-bar processing fix + auto-digits.
+- 2026-09-25 – G2 changed: all EA distances now in points instead of $ (user request).

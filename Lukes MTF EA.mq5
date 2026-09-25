@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Lukes MTF EA"
 #property link      ""
-#property version   "1.00"
+#property version   "1.01"
 
 #include <Trade/Trade.mqh>
 
@@ -81,19 +81,19 @@ input double InpSingleLot       = 0.01;
 input bool   InpTPFromFill      = false;   // market entry: TP1 from fill price (same R) instead of indicator TP1
 input bool   InpCloseOnOpposite = true;    // opposite signal closes the trade and reverses
 input bool   InpTrailOn         = false;   // trailing stop
-input double InpTrailStart      = 3.00;    // start trailing after this profit ($ price move)
-input double InpTrailDist       = 2.00;    // trail this far behind price ($)
-input double InpTrailStep       = 0.50;    // move SL in steps of ($)
+input int    InpTrailStartPts   = 300;     // start trailing after this profit (points)
+input int    InpTrailDistPts    = 200;     // trail this far behind price (points)
+input int    InpTrailStepPts    = 50;      // move SL in steps of (points)
 
 input group "=== Grid ==="
 input double         InpGridStartLot   = 0.01;
-input double         InpGridDistance   = 5.00;          // add a trade every $ against the basket
+input int            InpGridDistPts    = 500;           // add a trade every N points against the basket
 input double         InpGridMultiplier = 1.50;          // lot multiplier per grid level
 input int            InpGridMaxTrades  = 5;             // max running trades (stop adding at this count)
 input bool           InpBasketTPOn     = true;          // off = close all grid trades at single-trade TP1
 input ENUM_BASKET_TP InpBasketTPType   = BASKET_MONEY;
 input double         InpBasketTPMoney  = 5.00;          // basket TP in account money
-input double         InpBasketTPDist   = 2.00;          // basket TP: $ price move beyond basket average
+input int            InpBasketTPPts    = 200;           // basket TP: points beyond basket average
 
 input group "=== Equity Protector ==="
 input bool   InpEquityProtOn  = true;
@@ -675,6 +675,13 @@ double MinStop()
    return (double)lvl * _Point;
   }
 
+// point inputs -> price distance (uses the same auto-digits unit as the signal engine)
+double TrailStart() { return InpTrailStartPts * Pt(); }
+double TrailDist()  { return InpTrailDistPts  * Pt(); }
+double TrailStep()  { return InpTrailStepPts  * Pt(); }
+double GridDist()   { return InpGridDistPts   * Pt(); }
+double BasketDist() { return InpBasketTPPts   * Pt(); }
+
 bool Ours()
   {
    return (PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagic);
@@ -929,18 +936,18 @@ void Trail()
       double tp  = PositionGetDouble(POSITION_TP);
       if(buy)
         {
-         if(bid - op < InpTrailStart) continue;
-         double nsl = NormalizeDouble(bid - InpTrailDist, _Digits);
+         if(bid - op < TrailStart()) continue;
+         double nsl = NormalizeDouble(bid - TrailDist(), _Digits);
          if(nsl > bid - ms) continue;
-         if(sl != 0 && nsl < sl + InpTrailStep) continue;
+         if(sl != 0 && nsl < sl + TrailStep()) continue;
          if(trade.PositionModify(tk, nsl, tp)) Log("TRAIL", StringFormat("ticket %I64u SL -> %s", tk, Px(nsl)));
         }
       else
         {
-         if(op - ask < InpTrailStart) continue;
-         double nsl = NormalizeDouble(ask + InpTrailDist, _Digits);
+         if(op - ask < TrailStart()) continue;
+         double nsl = NormalizeDouble(ask + TrailDist(), _Digits);
          if(nsl < ask + ms) continue;
-         if(sl != 0 && nsl > sl - InpTrailStep) continue;
+         if(sl != 0 && nsl > sl - TrailStep()) continue;
          if(trade.PositionModify(tk, nsl, tp)) Log("TRAIL", StringFormat("ticket %I64u SL -> %s", tk, Px(nsl)));
         }
      }
@@ -965,8 +972,8 @@ void ManageGrid(const Basket &b)
         }
       else
         {
-         close = (b.dir > 0 ? bid >= b.avg + InpBasketTPDist : ask <= b.avg - InpBasketTPDist);
-         why = StringFormat("basket TP distance: avg %s +/- %.2f", Px(b.avg), InpBasketTPDist);
+         close = (b.dir > 0 ? bid >= b.avg + BasketDist() : ask <= b.avg - BasketDist());
+         why = StringFormat("basket TP distance: avg %s +/- %d pts", Px(b.avg), InpBasketTPPts);
         }
      }
    else
@@ -987,7 +994,7 @@ void ManageGrid(const Basket &b)
    // 2) add a grid trade
    if(b.count >= InpGridMaxTrades) return;
    if(TimeCurrent() < gNextGridTry) return;
-   bool add = (b.dir > 0 ? ask <= b.extreme - InpGridDistance : bid >= b.extreme + InpGridDistance);
+   bool add = (b.dir > 0 ? ask <= b.extreme - GridDist() : bid >= b.extreme + GridDist());
    if(!add) return;
 
    double lot = NormLot(InpGridStartLot * MathPow(InpGridMultiplier, b.count));
@@ -1000,8 +1007,8 @@ void ManageGrid(const Basket &b)
       Log("GRID_FAIL", StringFormat("level %d lot %.2f retcode %u %s", b.count + 1, lot, rc, trade.ResultRetcodeDescription()));
       return;
      }
-   string what = StringFormat("grid#%d %s lot %.2f @ %s (last %s, distance %.2f)", b.count + 1,
-                              (b.dir > 0 ? "BUY" : "SELL"), lot, Px(trade.ResultPrice()), Px(b.extreme), InpGridDistance);
+   string what = StringFormat("grid#%d %s lot %.2f @ %s (last %s, distance %d pts)", b.count + 1,
+                              (b.dir > 0 ? "BUY" : "SELL"), lot, Px(trade.ResultPrice()), Px(b.extreme), InpGridDistPts);
    Log("GRID_ADD", what);
    if(InpAlertTrades) Notify("GRID ADD " + what);
   }
@@ -1111,9 +1118,9 @@ void UpdatePanel()
    else
       s += "Trades: none\n";
    if(InpMode == MODE_GRID)
-      s += StringFormat("Grid: max %d  dist %.2f  x%.2f  exit: %s\n", InpGridMaxTrades, InpGridDistance, InpGridMultiplier,
+      s += StringFormat("Grid: max %d  dist %d pts  x%.2f  exit: %s\n", InpGridMaxTrades, InpGridDistPts, InpGridMultiplier,
                         (InpBasketTPOn ? (InpBasketTPType == BASKET_MONEY ? StringFormat("basket $%.2f", InpBasketTPMoney)
-                                                                          : StringFormat("avg +/- %.2f", InpBasketTPDist))
+                                                                          : StringFormat("avg +/- %d pts", InpBasketTPPts))
                                        : "TP1 " + Px(LoadTP1())));
    if(InpEquityProtOn)
       s += StringFormat("Equity Protector: -%.1f%% = %.2f\n", InpEquityProtPct, -AccountInfoDouble(ACCOUNT_BALANCE) * InpEquityProtPct / 100.0);
