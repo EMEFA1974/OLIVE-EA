@@ -95,6 +95,8 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 
 | D5 | **Indicator** (v1.80) uses the same panel style: MARKET (session, trend, bias, align, spread), TODAY (signals, TP1/TP2/SL hits, running, win rate = TP1 / (TP1 + SL before TP1)), RUNNING TOTAL over chart history, CURRENT SIGNAL. Indicator panel at X 10, EA panel next to it at X 280. | Done |
 
+| D6 | Panels fixed (v1.08 EA / v1.81 indicator): background is drawn before the text (it used to hide it). Both panels on the **left edge**: indicator top-left, EA bottom-left. **Drag** a panel by its title area; **click** the title to collapse/expand. Position and collapsed state are remembered per chart. Default size: width 250, font 8, row 15. | Done |
+
 ## Verification plan (no Strategy Tester)
 
 1. Demo account, XAUUSD M5, indicator + EA on the same chart, EA in **Signals only**. Check every EA dot sits on a candle with an indicator arrow (history is drawn immediately on load).
@@ -112,3 +114,4 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 - 2026-09-25 – R8 changed: grid trades now carry a shared basket TP/SL (visible on PC + mobile). Single trades already had real SL/TP.
 - 2026-09-25 – New dashboard panel (D1–D4).
 - 2026-09-25 – Indicator v1.80: same styled panel (D5). EA panel moved beside it (X 280, Y 20).
+- 2026-09-25 – Panel fix: text was hidden behind the background. Panels moved to the left edge, draggable and collapsible (D6).

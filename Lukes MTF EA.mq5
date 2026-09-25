@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Lukes MTF EA"
 #property link      ""
-#property version   "1.07"
+#property version   "1.08"
 
 #include <Trade/Trade.mqh>
 
@@ -124,11 +124,11 @@ input string InpSoundFile    = "alert.wav";
 input group "=== Visuals / Log ==="
 input bool   InpDrawSignals  = true;       // dot on every EA signal candle (compare with indicator arrows)
 input bool   InpShowPanel    = true;
-input int    InpPanelX       = 280;      // right of the indicator's panel (indicator: X 10, width 260)
-input int    InpPanelY       = 20;
-input int    InpPanelWidth   = 260;
-input int    InpPanelFont    = 9;
-input int    InpPanelRowH    = 17;
+input int    InpPanelX       = 4;        // left edge
+input int    InpPanelY       = -1;       // -1 = bottom-left (indicator panel is top-left). Drag to move.
+input int    InpPanelWidth   = 250;
+input int    InpPanelFont    = 8;
+input int    InpPanelRowH    = 15;
 input ENUM_TIMEFRAMES InpTrendTF = PERIOD_H1;   // timeframe for the EMA trend line on the panel
 input int    InpTrendFast    = 50;
 input int    InpTrendSlow    = 200;
@@ -1340,6 +1340,10 @@ void CheckBlocker()
 //| Dashboard panel                                                  |
 //+------------------------------------------------------------------+
 #define PPRE    "LEA_P_"
+int  gPX = 0, gPY = 0, gPanelH = 0;
+bool gCollapsed = false, gAutoBottom = false;
+bool gDrag = false, gPrevDown = false, gScrollWas = true;
+int  gDragDX = 0, gDragDY = 0, gDownX = 0, gDownY = 0;
 #define C_HEAD  C'70,160,255'
 #define C_LBL   C'170,176,188'
 #define C_TXT   C'235,238,245'
@@ -1454,28 +1458,28 @@ void PText(const string name, const int x, const int y, const string text, const
    ObjectSetInteger(0, name, OBJPROP_BACK, false);
   }
 
-int RowY() { return InpPanelY + 46 + gRow * InpPanelRowH; }
+int RowY() { return gPY + 46 + gRow * InpPanelRowH; }
 
 void PSection(const string title)
   {
    if(gRow > 0) gRow++;   // small gap before a section
-   PText(PPRE + "L" + IntegerToString(gRow), InpPanelX + 10, RowY(), title, C_HEAD, InpPanelFont + 1, ANCHOR_LEFT_UPPER, "Arial Black");
+   PText(PPRE + "L" + IntegerToString(gRow), gPX + 10, RowY(), title, C_HEAD, InpPanelFont + 1, ANCHOR_LEFT_UPPER, "Arial Black");
    ObjectDelete(0, PPRE + "V" + IntegerToString(gRow));
    gRow++;
   }
 
 void PRow(const string label, const string value, const color vc)
   {
-   PText(PPRE + "L" + IntegerToString(gRow), InpPanelX + 12, RowY(), label, C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, "Segoe UI");
-   PText(PPRE + "V" + IntegerToString(gRow), InpPanelX + InpPanelWidth - 12, RowY(), value, vc, InpPanelFont, ANCHOR_RIGHT_UPPER, "Segoe UI Semibold");
+   PText(PPRE + "L" + IntegerToString(gRow), gPX + 12, RowY(), label, C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, "Segoe UI");
+   PText(PPRE + "V" + IntegerToString(gRow), gPX + InpPanelWidth - 12, RowY(), value, vc, InpPanelFont, ANCHOR_RIGHT_UPPER, "Segoe UI Semibold");
    gRow++;
   }
 
-void UpdatePanel()
+void UpdatePanel(const bool force = false)
   {
    if(!InpShowPanel) return;
    uint now = GetTickCount();
-   if(gLastPanelMs != 0 && now - gLastPanelMs < 500) return;   // redraw at most twice a second
+   if(!force && gLastPanelMs != 0 && now - gLastPanelMs < 500) return;   // redraw at most twice a second
    gLastPanelMs = now;
 
    Basket b = GetBasket();
@@ -1483,16 +1487,28 @@ void UpdatePanel()
    color  c;
    gRow = 0;
 
+   // background is created BEFORE any text, otherwise it is drawn on top and hides it
+   string bg = PPRE + "BG";
+   if(ObjectFind(0, bg) < 0)
+     {
+      ObjectsDeleteAll(0, PPRE);
+      gMaxRow = 0;
+      ObjectCreate(0, bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+     }
+
    // header
    string st; color sc;
    if(InpMode == MODE_SIGNALS)      { st = "SIGNALS ONLY"; sc = C_INFO; }
    else if(blk != "")               { st = "NOT TRADING";  sc = C_DN; }
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
-   PText(PPRE + "T1", InpPanelX + 10, InpPanelY + 6, "LUKES MTF EA", C_TXT, InpPanelFont + 4, ANCHOR_LEFT_UPPER, "Arial Black");
-   PText(PPRE + "T2", InpPanelX + InpPanelWidth - 10, InpPanelY + 6, "v1.07", C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, "Segoe UI");
-   PText(PPRE + "T3", InpPanelX + 10, InpPanelY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, "Segoe UI");
-   PText(PPRE + "T4", InpPanelX + InpPanelWidth - 10, InpPanelY + 25, ShortToString(0x25CF) + " " + st, sc, InpPanelFont + 1, ANCHOR_RIGHT_UPPER, "Arial Black");
+   PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES MTF EA", C_TXT, InpPanelFont + 4, ANCHOR_LEFT_UPPER, "Arial Black");
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.08  " + ShortToString(gCollapsed ? 0x25B6 : 0x25BC), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, "Segoe UI");
+   PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, "Segoe UI");
+   PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 25, ShortToString(0x25CF) + " " + st, sc, InpPanelFont + 1, ANCHOR_RIGHT_UPPER, "Arial Black");
+
+   if(!gCollapsed)
+   {
 
    PSection("MARKET");
    string v;
@@ -1559,6 +1575,8 @@ void UpdatePanel()
       PRow(blk, " ", C_DN);
      }
 
+   }
+
    // remove rows left over from a longer previous draw
    for(int i = gRow; i < gMaxRow; i++)
      {
@@ -1568,22 +1586,106 @@ void UpdatePanel()
    gMaxRow = gRow;
 
    // background
-   string bg = PPRE + "BG";
-   if(ObjectFind(0, bg) < 0)
-      ObjectCreate(0, bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
    ObjectSetInteger(0, bg, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-   ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, InpPanelX);
-   ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, InpPanelY);
+   ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, gPX);
+   ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, gPY);
    ObjectSetInteger(0, bg, OBJPROP_XSIZE, InpPanelWidth);
-   ObjectSetInteger(0, bg, OBJPROP_YSIZE, 46 + gRow * InpPanelRowH + 10);
-   ObjectSetInteger(0, bg, OBJPROP_BGCOLOR, C'14,18,28');
+   gPanelH = (gCollapsed ? 46 : 46 + gRow * InpPanelRowH + 10);
+   ObjectSetInteger(0, bg, OBJPROP_YSIZE, gPanelH);
+   ObjectSetInteger(0, bg, OBJPROP_BGCOLOR, C'24,30,46');
    ObjectSetInteger(0, bg, OBJPROP_BORDER_TYPE, BORDER_FLAT);
-   ObjectSetInteger(0, bg, OBJPROP_COLOR, C'45,60,90');
+   ObjectSetInteger(0, bg, OBJPROP_COLOR, C'80,110,160');
    ObjectSetInteger(0, bg, OBJPROP_BACK, false);
    ObjectSetInteger(0, bg, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, bg, OBJPROP_HIDDEN, true);
+   if(gAutoBottom)
+     {
+      gAutoBottom = false;
+      int ch = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+      gPY = MathMax(20, ch - gPanelH - 10);
+      UpdatePanel(true);
+     }
    ObjectSetInteger(0, bg, OBJPROP_ZORDER, 0);
    ChartRedraw(0);
+  }
+
+
+//+------------------------------------------------------------------+
+//| Panel position, drag and collapse                                |
+//| Drag the panel by its title area. Click the title (without       |
+//| moving) to collapse / expand. Position is remembered per chart.  |
+//+------------------------------------------------------------------+
+
+string PosKey(const string k) { return "LukesEA_panel_" + k + "_" + IntegerToString(ChartID()); }
+
+void PanelInit()
+  {
+   gPX = InpPanelX;
+   gPY = InpPanelY;
+   gAutoBottom = (InpPanelY < 0);
+   if(GlobalVariableCheck(PosKey("x")) && GlobalVariableCheck(PosKey("y")))
+     {
+      gPX = (int)GlobalVariableGet(PosKey("x"));
+      gPY = (int)GlobalVariableGet(PosKey("y"));
+      gAutoBottom = false;
+     }
+   if(gPY < 0) gPY = 20;
+   gCollapsed = (GlobalVariableCheck(PosKey("c")) && GlobalVariableGet(PosKey("c")) > 0);
+   ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, true);
+  }
+
+void PanelSave()
+  {
+   GlobalVariableSet(PosKey("x"), gPX);
+   GlobalVariableSet(PosKey("y"), gPY);
+   GlobalVariableSet(PosKey("c"), gCollapsed ? 1 : 0);
+  }
+
+void PanelMouse(const long lparam, const double dparam, const string sparam)
+  {
+   int  x = (int)lparam, y = (int)dparam;
+   bool down = ((StringToInteger(sparam) & 1) == 1);
+
+   if(down && !gPrevDown)
+     {
+      // press on the title area starts a drag
+      if(InpShowPanel && x >= gPX && x <= gPX + InpPanelWidth && y >= gPY && y <= gPY + 44)
+        {
+         gDrag = true;
+         gDragDX = x - gPX; gDragDY = y - gPY;
+         gDownX = x; gDownY = y;
+         gScrollWas = (bool)ChartGetInteger(0, CHART_MOUSE_SCROLL);
+         ChartSetInteger(0, CHART_MOUSE_SCROLL, false);
+        }
+     }
+   else if(down && gDrag)
+     {
+      int cw = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+      int ch = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+      int nx = MathMax(0, MathMin(cw - 60, x - gDragDX));
+      int ny = MathMax(0, MathMin(ch - 30, y - gDragDY));
+      if(nx != gPX || ny != gPY)
+        {
+         gPX = nx; gPY = ny;
+         UpdatePanel(true);
+        }
+     }
+   else if(!down && gDrag)
+     {
+      gDrag = false;
+      ChartSetInteger(0, CHART_MOUSE_SCROLL, gScrollWas);
+      if(MathAbs(x - gDownX) < 4 && MathAbs(y - gDownY) < 4)
+         gCollapsed = !gCollapsed;          // a click, not a drag
+      PanelSave();
+      UpdatePanel(true);
+     }
+   gPrevDown = down;
+  }
+
+void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
+  {
+   if(id == CHARTEVENT_MOUSE_MOVE) PanelMouse(lparam, dparam, sparam);
+   else if(id == CHARTEVENT_CHART_CHANGE) UpdatePanel(true);
   }
 
 //+------------------------------------------------------------------+
@@ -1609,6 +1711,7 @@ int OnInit()
    gEmaFast = iMA(_Symbol, InpTrendTF, InpTrendFast, 0, MODE_EMA, PRICE_CLOSE);
    gEmaSlow = iMA(_Symbol, InpTrendTF, InpTrendSlow, 0, MODE_EMA, PRICE_CLOSE);
    ArrayResize(gSigTimes, 0);
+   PanelInit();
    Comment("");
    EventSetTimer(1);   // warm up + refresh the panel even when no tick arrives
    return(INIT_SUCCEEDED);
@@ -1617,6 +1720,7 @@ int OnInit()
 void OnDeinit(const int reason)
   {
    EventKillTimer();
+   if(gDrag) ChartSetInteger(0, CHART_MOUSE_SCROLL, gScrollWas);
    ObjectsDeleteAll(0, EAPRE);
    if(gEmaFast != INVALID_HANDLE) IndicatorRelease(gEmaFast);
    if(gEmaSlow != INVALID_HANDLE) IndicatorRelease(gEmaSlow);
