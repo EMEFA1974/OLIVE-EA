@@ -604,7 +604,7 @@ bool QualityBearTrigger(const Candle &k, const double prevLow)
 double RecentSwingHigh(const int rates_total, const int i, const double &high[])
   {
    int from = i + 1;
-   int to   = MathMin(rates_total - 1, i + InpSwingLook);
+   int to   = (int)MathMin(rates_total - 1, i + InpSwingLook);
    if(from > rates_total - 1) return high[i];
    double mx = high[from];
    for(int k = from; k <= to; k++) if(high[k] > mx) mx = high[k];
@@ -614,7 +614,7 @@ double RecentSwingHigh(const int rates_total, const int i, const double &high[])
 double RecentSwingLow(const int rates_total, const int i, const double &low[])
   {
    int from = i + 1;
-   int to   = MathMin(rates_total - 1, i + InpSwingLook);
+   int to   = (int)MathMin(rates_total - 1, i + InpSwingLook);
    if(from > rates_total - 1) return low[i];
    double mn = low[from];
    for(int k = from; k <= to; k++) if(low[k] < mn) mn = low[k];
@@ -916,9 +916,9 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES MTF IND", C_TXT, InpPanelFont + 4, ANCHOR_LEFT_UPPER, "Arial Black");
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.81  " + ShortToString(gCollapsed ? 0x25B6 : 0x25BC), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, "Segoe UI");
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.81  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, "Segoe UI");
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, "Segoe UI");
-   PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 25, ShortToString(0x25CF) + " " + st, sc, InpPanelFont + 1, ANCHOR_RIGHT_UPPER, "Arial Black");
+   PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 25, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont + 1, ANCHOR_RIGHT_UPPER, "Arial Black");
 
    if(!gCollapsed)
    {
@@ -988,7 +988,7 @@ void DrawPanel(const bool force = false)
      {
       gAutoBottom = false;
       int ch = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
-      gPY = MathMax(20, ch - gPanelH - 10);
+      gPY = (int)MathMax(20, ch - gPanelH - 10);
       DrawPanel(true);
      }
   }
@@ -1028,7 +1028,7 @@ void PanelSave()
 void PanelMouse(const long lparam, const double dparam, const string sparam)
   {
    int  x = (int)lparam, y = (int)dparam;
-   bool down = ((StringToInteger(sparam) & 1) == 1);
+   bool down = ((StringToInteger(sparam) & 1) != 0);
 
    if(down && !gPrevDown)
      {
@@ -1046,8 +1046,8 @@ void PanelMouse(const long lparam, const double dparam, const string sparam)
      {
       int cw = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
       int ch = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
-      int nx = MathMax(0, MathMin(cw - 60, x - gDragDX));
-      int ny = MathMax(0, MathMin(ch - 30, y - gDragDY));
+      int nx = (int)MathMax(0, MathMin(cw - 60, x - gDragDX));
+      int ny = (int)MathMax(0, MathMin(ch - 30, y - gDragDY));
       if(nx != gPX || ny != gPY)
         {
          gPX = nx; gPY = ny;
@@ -1105,10 +1105,10 @@ int OnCalculate(const int rates_total,
       ResetCounts();
       ClearZones();
       gLastBar = 0;
-      start = MathMin(rates_total - 5, 800);
+      start = (int)MathMin(rates_total - 5, 800);
      }
    else
-      start = MathMax(2, rates_total - prev_calculated + 1);
+      start = (int)MathMax(2, rates_total - prev_calculated + 1);
 
    if(start < 1) start = 1;
 

@@ -512,7 +512,7 @@ double RecentSwingHigh(const int i)
   {
    int total = Bars(_Symbol, _Period);
    int from = i + 1;
-   int to   = MathMin(total - 1, i + InpSwingLook);
+   int to   = (int)MathMin(total - 1, i + InpSwingLook);
    if(from > total - 1) return iHigh(_Symbol, _Period, i);
    double mx = iHigh(_Symbol, _Period, from);
    for(int k = from; k <= to; k++) { double h = iHigh(_Symbol, _Period, k); if(h > mx) mx = h; }
@@ -523,7 +523,7 @@ double RecentSwingLow(const int i)
   {
    int total = Bars(_Symbol, _Period);
    int from = i + 1;
-   int to   = MathMin(total - 1, i + InpSwingLook);
+   int to   = (int)MathMin(total - 1, i + InpSwingLook);
    if(from > total - 1) return iLow(_Symbol, _Period, i);
    double mn = iLow(_Symbol, _Period, from);
    for(int k = from; k <= to; k++) { double l = iLow(_Symbol, _Period, k); if(l < mn) mn = l; }
@@ -1255,7 +1255,7 @@ bool WarmUp()
    ResetIdea();
    ResetCounts();
    lastBuyTime = lastSellTime = 0;
-   int start = MathMin(total - 5, 800);
+   int start = (int)MathMin(total - 5, 800);
    if(start < 1) start = 1;
    for(int i = start; i >= 1; i--)
      {
@@ -1503,9 +1503,9 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES MTF EA", C_TXT, InpPanelFont + 4, ANCHOR_LEFT_UPPER, "Arial Black");
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.08  " + ShortToString(gCollapsed ? 0x25B6 : 0x25BC), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, "Segoe UI");
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.08  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, "Segoe UI");
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, "Segoe UI");
-   PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 25, ShortToString(0x25CF) + " " + st, sc, InpPanelFont + 1, ANCHOR_RIGHT_UPPER, "Arial Black");
+   PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 25, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont + 1, ANCHOR_RIGHT_UPPER, "Arial Black");
 
    if(!gCollapsed)
    {
@@ -1561,7 +1561,7 @@ void UpdatePanel(const bool force = false)
       PRow("Floating P/L", StringFormat("%+.2f", b.profit), (b.profit >= 0 ? C_UP : C_DN));
       if(InpMode == MODE_GRID)
         {
-         PRow("Grid", StringFormat("%d / %d  next gap %d pts", b.count, InpGridMaxTrades, GridGapPts(MathMax(1, b.count))), C_TXT);
+         PRow("Grid", StringFormat("%d / %d  next gap %d pts", b.count, InpGridMaxTrades, GridGapPts((int)MathMax(1, b.count))), C_TXT);
          double bs = LoadBStop();
          if(InpBasketBEOn || InpBasketTrailOn) PRow("Basket stop", (bs > 0 ? Px(bs) : "not active"), (bs > 0 ? C_UP : C_MUTE));
         }
@@ -1602,7 +1602,7 @@ void UpdatePanel(const bool force = false)
      {
       gAutoBottom = false;
       int ch = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
-      gPY = MathMax(20, ch - gPanelH - 10);
+      gPY = (int)MathMax(20, ch - gPanelH - 10);
       UpdatePanel(true);
      }
    ObjectSetInteger(0, bg, OBJPROP_ZORDER, 0);
@@ -1644,7 +1644,7 @@ void PanelSave()
 void PanelMouse(const long lparam, const double dparam, const string sparam)
   {
    int  x = (int)lparam, y = (int)dparam;
-   bool down = ((StringToInteger(sparam) & 1) == 1);
+   bool down = ((StringToInteger(sparam) & 1) != 0);
 
    if(down && !gPrevDown)
      {
@@ -1662,8 +1662,8 @@ void PanelMouse(const long lparam, const double dparam, const string sparam)
      {
       int cw = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
       int ch = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
-      int nx = MathMax(0, MathMin(cw - 60, x - gDragDX));
-      int ny = MathMax(0, MathMin(ch - 30, y - gDragDY));
+      int nx = (int)MathMax(0, MathMin(cw - 60, x - gDragDX));
+      int ny = (int)MathMax(0, MathMin(ch - 30, y - gDragDY));
       if(nx != gPX || ny != gPY)
         {
          gPX = nx; gPY = ny;
