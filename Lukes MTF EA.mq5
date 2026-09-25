@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Lukes MTF EA"
 #property link      ""
-#property version   "1.01"
+#property version   "1.02"
 
 #include <Trade/Trade.mqh>
 
@@ -94,6 +94,16 @@ input bool           InpBasketTPOn     = true;          // off = close all grid 
 input ENUM_BASKET_TP InpBasketTPType   = BASKET_MONEY;
 input double         InpBasketTPMoney  = 5.00;          // basket TP in account money
 input int            InpBasketTPPts    = 200;           // basket TP: points beyond basket average
+
+input group "=== Grid Basket Break-even / Trailing ==="
+input bool   InpBasketBEOn          = false;  // move basket stop to break-even
+input int    InpBasketBEStartPts    = 150;    // activate when price is this many points past the basket average
+input int    InpBasketBELockPts     = 20;     // basket stop = average + this many points (locks small profit)
+input bool   InpBasketTrailOn       = false;  // trail the basket stop
+input int    InpBasketTrailStartPts = 200;    // start trailing when price is this many points past the average
+input int    InpBasketTrailDistPts  = 150;    // trail this many points behind price
+input int    InpBasketTrailStepPts  = 20;     // move the basket stop in steps of (points)
+input color  InpBasketStopColor     = clrOrange;
 
 input group "=== Equity Protector ==="
 input bool   InpEquityProtOn  = true;
@@ -768,6 +778,32 @@ string TP1Key() { return "LukesEA_" + _Symbol + "_" + IntegerToString(InpMagic) 
 void   SaveTP1(const double p) { GlobalVariableSet(TP1Key(), p); }
 double LoadTP1() { return (GlobalVariableCheck(TP1Key()) ? GlobalVariableGet(TP1Key()) : 0.0); }
 
+// basket break-even / trailing stop: virtual (no SL on the grid orders, rule R8),
+// kept in a terminal global variable so it survives restarts
+string BStopKey() { return "LukesEA_" + _Symbol + "_" + IntegerToString(InpMagic) + "_BSTOP"; }
+double LoadBStop() { return (GlobalVariableCheck(BStopKey()) ? GlobalVariableGet(BStopKey()) : 0.0); }
+
+void DrawBStop(const double p)
+  {
+   string name = EAPRE + "BSTOP";
+   if(p <= 0) { ObjectDelete(0, name); return; }
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_HLINE, 0, 0, p);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, p);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, InpBasketStopColor);
+   ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DASH);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+   ObjectSetString(0, name, OBJPROP_TOOLTIP, "Basket stop " + DoubleToString(p, _Digits));
+  }
+
+void SaveBStop(const double p)
+  {
+   if(p <= 0) GlobalVariableDel(BStopKey());
+   else       GlobalVariableSet(BStopKey(), p);
+   DrawBStop(p);
+  }
+
 //+------------------------------------------------------------------+
 //| Entries                                                          |
 //+------------------------------------------------------------------+
@@ -841,7 +877,7 @@ bool OpenEntry(const int dir, const double lotIn, const bool withStops, const st
       return false;
      }
 
-   if(InpMode == MODE_GRID) SaveTP1(tp1);
+   if(InpMode == MODE_GRID) { SaveTP1(tp1); SaveBStop(0); }
    string what = StringFormat("%s %s lot %.2f @ %s  SL %s  TP %s", tag,
                               (pending ? EnumToString(otype) : (dir > 0 ? "BUY market" : "SELL market")),
                               lot, Px(pending ? entry : trade.ResultPrice()),
@@ -953,9 +989,59 @@ void Trail()
      }
   }
 
+// Moves the virtual basket stop (break-even, then trailing). Returns true when it is hit.
+bool BasketStopHit(const Basket &b, const double bid, const double ask, string &why)
+  {
+   double stop = LoadBStop();
+   if(!InpBasketBEOn && !InpBasketTrailOn && stop <= 0) return false;
+
+   int    d     = b.dir;
+   double px    = (d > 0 ? bid : ask);            // price the basket would close at
+   double fav   = (d > 0 ? px - b.avg : b.avg - px);
+   double ptu   = Pt();
+   double nstop = stop;
+
+   // break-even: lock average + N points
+   if(InpBasketBEOn && fav >= InpBasketBEStartPts * ptu)
+     {
+      double be = NormalizeDouble(b.avg + d * InpBasketBELockPts * ptu, _Digits);
+      if(nstop <= 0 || (d > 0 ? be > nstop : be < nstop)) nstop = be;
+     }
+
+   // trailing: N points behind price, only once that is past the average
+   if(InpBasketTrailOn && fav >= InpBasketTrailStartPts * ptu)
+     {
+      double tr = NormalizeDouble(px - d * InpBasketTrailDistPts * ptu, _Digits);
+      bool profitable = (d > 0 ? tr > b.avg : tr < b.avg);
+      double step = InpBasketTrailStepPts * ptu;
+      if(profitable && (nstop <= 0 || (d > 0 ? tr >= nstop + step : tr <= nstop - step))) nstop = tr;
+     }
+
+   if(nstop != stop && nstop > 0)
+     {
+      Log(stop <= 0 ? "BASKET_BE" : "BASKET_TRAIL",
+          StringFormat("basket stop %s -> %s (avg %s, price %s)", (stop > 0 ? Px(stop) : "none"), Px(nstop), Px(b.avg), Px(px)));
+      SaveBStop(nstop);
+      stop = nstop;
+     }
+   else if(stop > 0 && ObjectFind(0, EAPRE + "BSTOP") < 0)
+      DrawBStop(stop);   // redraw after a restart
+
+   if(stop > 0 && (d > 0 ? bid <= stop : ask >= stop))
+     {
+      why = "basket stop hit " + Px(stop);
+      return true;
+     }
+   return false;
+  }
+
 void ManageGrid(const Basket &b)
   {
-   if(b.count == 0) return;
+   if(b.count == 0)
+     {
+      if(LoadBStop() > 0) SaveBStop(0);
+      return;
+     }
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
@@ -981,8 +1067,11 @@ void ManageGrid(const Basket &b)
       close = (b.dir > 0 ? bid >= tp1 : ask <= tp1);
       why = "grid closed at single-trade TP1 " + Px(tp1);
      }
+   string bwhy = "";
+   if(!close && BasketStopHit(b, bid, ask, bwhy)) { close = true; why = bwhy; }
    if(close)
      {
+      SaveBStop(0);
       string msg = StringFormat("%s | %d trades, %.2f lots, P/L %.2f", why, b.count, b.lots, b.profit);
       Log("BASKET_CLOSE", msg);
       if(InpAlertTrades) Notify("BASKET CLOSE " + msg);
@@ -1122,6 +1211,10 @@ void UpdatePanel()
                         (InpBasketTPOn ? (InpBasketTPType == BASKET_MONEY ? StringFormat("basket $%.2f", InpBasketTPMoney)
                                                                           : StringFormat("avg +/- %d pts", InpBasketTPPts))
                                        : "TP1 " + Px(LoadTP1())));
+   if(InpMode == MODE_GRID && (InpBasketBEOn || InpBasketTrailOn))
+      s += "Basket stop: " + (LoadBStop() > 0 ? Px(LoadBStop()) : "not active") +
+           (InpBasketBEOn ? StringFormat("  BE +%d/%d pts", InpBasketBEStartPts, InpBasketBELockPts) : "") +
+           (InpBasketTrailOn ? StringFormat("  trail %d/%d pts", InpBasketTrailStartPts, InpBasketTrailDistPts) : "") + "\n";
    if(InpEquityProtOn)
       s += StringFormat("Equity Protector: -%.1f%% = %.2f\n", InpEquityProtPct, -AccountInfoDouble(ACCOUNT_BALANCE) * InpEquityProtPct / 100.0);
    s += "Last event: " + gLastEvent;

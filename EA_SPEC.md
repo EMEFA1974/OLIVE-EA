@@ -53,7 +53,10 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 | R7 | Basket TP toggle (`InpBasketTPOn`). When **off**, all grid trades close when price reaches the single-trade **TP1** of the signal that started the basket. | Done |
 | R8 | In grid mode individual TP and SL are **not** used (orders are sent without SL/TP). | Done |
 | R9 | **One direction at a time**: while a basket is running, new signals (either direction) are ignored. | Done |
-| R10 | Trailing stop does not apply in grid mode. | Done |
+| R10 | Single-trade trailing stop does not apply in grid mode (the grid has its own basket stop, R11–R12). | Done |
+| R11 | **Basket break-even** (toggle `InpBasketBEOn`, default off): when price is `InpBasketBEStartPts` points past the basket average, a basket stop is set at average + `InpBasketBELockPts` points. | Done (Phase 4) |
+| R12 | **Basket trailing** (toggle `InpBasketTrailOn`, default off): when price is `InpBasketTrailStartPts` points past the average, the basket stop trails `InpBasketTrailDistPts` points behind price in steps of `InpBasketTrailStepPts`, and only ever moves in profit. | Done (Phase 4) |
+| R13 | The basket stop is **virtual**: no SL is placed on the grid orders (keeps R8). The EA closes all grid trades when price hits it. It is shown as an orange dashed line and survives an EA/terminal restart. It only works while MT5 is running and connected. | Done (Phase 4) |
 
 ## 4. Protection
 
@@ -71,6 +74,14 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 
 ---
 
+## Phase status
+
+| Phase | Content | Status |
+|---|---|---|
+| 1–3 | Signals, single trades, grid | Built (v1.00–1.01), awaiting demo verification |
+| 4 | Grid risk controls: basket break-even / trailing (user chose this only) | Built (v1.02) |
+| 5 | Protections (hours filter, Friday close, spread filter, dashboard) | Not requested for now |
+
 ## Verification plan (no Strategy Tester)
 
 1. Demo account, XAUUSD M5, indicator + EA on the same chart, EA in **Signals only**. Check every EA dot sits on a candle with an indicator arrow (history is drawn immediately on load).
@@ -82,3 +93,4 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 
 - 2026-09-25 – Spec created. Single-trade and grid rules confirmed by user. Indicator v1.70: once-per-bar processing fix + auto-digits.
 - 2026-09-25 – G2 changed: all EA distances now in points instead of $ (user request).
+- 2026-09-25 – Phase 4: basket break-even + trailing stop added (R11–R13). Other Phase 4/5 options offered, not chosen.
