@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Lukes MTF EA"
 #property link      ""
-#property version   "1.06"
+#property version   "1.07"
 
 #include <Trade/Trade.mqh>
 
@@ -124,6 +124,14 @@ input string InpSoundFile    = "alert.wav";
 input group "=== Visuals / Log ==="
 input bool   InpDrawSignals  = true;       // dot on every EA signal candle (compare with indicator arrows)
 input bool   InpShowPanel    = true;
+input int    InpPanelX       = 10;
+input int    InpPanelY       = 205;      // below the indicator's own panel
+input int    InpPanelWidth   = 260;
+input int    InpPanelFont    = 9;
+input int    InpPanelRowH    = 17;
+input ENUM_TIMEFRAMES InpTrendTF = PERIOD_H1;   // timeframe for the EMA trend line on the panel
+input int    InpTrendFast    = 50;
+input int    InpTrendSlow    = 200;
 input bool   InpLogToFile    = true;       // MQL5/Files/LukesEA_log.csv
 input color  InpBuyColor     = clrAqua;
 input color  InpSellColor    = clrMagenta;
@@ -1252,7 +1260,7 @@ bool WarmUp()
    for(int i = start; i >= 1; i--)
      {
       int s = ProcessBar(i);
-      if(s != 0) { DrawSignal(i, s); gLastSignal = SigName(s) + " " + TimeToString(iTime(_Symbol, _Period, i), TIME_DATE|TIME_MINUTES); }
+      if(s != 0) { DrawSignal(i, s); AddSignalTime(iTime(_Symbol, _Period, i)); gLastSignal = SigName(s) + " " + TimeToString(iTime(_Symbol, _Period, i), TIME_DATE|TIME_MINUTES); }
      }
    gLastProcessed = iTime(_Symbol, _Period, 1);
    return true;
@@ -1268,7 +1276,7 @@ void OnNewBars()
    for(int i = from; i >= 1; i--)
      {
       sig = ProcessBar(i);
-      if(sig != 0) DrawSignal(i, sig);
+      if(sig != 0) { DrawSignal(i, sig); AddSignalTime(iTime(_Symbol, _Period, i)); }
      }
    gLastProcessed = iTime(_Symbol, _Period, 1);
 
@@ -1328,36 +1336,254 @@ void CheckBlocker()
    else        Log("NOT_TRADING", b);
   }
 
+//+------------------------------------------------------------------+
+//| Dashboard panel                                                  |
+//+------------------------------------------------------------------+
+#define PPRE    "LEA_P_"
+#define C_HEAD  C'70,160,255'
+#define C_LBL   C'170,176,188'
+#define C_TXT   C'235,238,245'
+#define C_UP    C'60,220,100'
+#define C_DN    C'255,85,70'
+#define C_WARN  C'255,200,40'
+#define C_INFO  C'80,200,255'
+#define C_MUTE  C'110,116,128'
+
+int    gRow = 0, gMaxRow = 0;
+int    gEmaFast = INVALID_HANDLE, gEmaSlow = INVALID_HANDLE;
+datetime gSigTimes[];
+uint   gLastPanelMs = 0;
+
+void AddSignalTime(const datetime t)
+  {
+   int n = ArraySize(gSigTimes);
+   if(n > 0 && gSigTimes[n - 1] == t) return;
+   if(n >= 500) { ArrayRemove(gSigTimes, 0, 100); n = ArraySize(gSigTimes); }
+   ArrayResize(gSigTimes, n + 1);
+   gSigTimes[n] = t;
+  }
+
+datetime DayStart() { datetime t = TimeCurrent(); return t - (t % 86400); }
+
+int SignalsToday()
+  {
+   datetime d = DayStart();
+   int c = 0;
+   for(int i = ArraySize(gSigTimes) - 1; i >= 0; i--) if(gSigTimes[i] >= d) c++;
+   return c;
+  }
+
+// Closed EA trades today. Deals that close within 5 s of each other in the
+// same direction are one trade (a grid basket closing together counts once).
+void TodayStats(int &trades, int &wins, int &losses, double &pl)
+  {
+   trades = wins = losses = 0; pl = 0;
+   if(!HistorySelect(DayStart(), TimeCurrent() + 60)) return;
+   int n = HistoryDealsTotal();
+   datetime gT = 0; long gType = -1; double gPL = 0; bool open = false;
+   for(int i = 0; i < n; i++)
+     {
+      ulong tk = HistoryDealGetTicket(i);
+      if(tk == 0) continue;
+      if(HistoryDealGetString(tk, DEAL_SYMBOL) != _Symbol) continue;
+      if(HistoryDealGetInteger(tk, DEAL_MAGIC) != InpMagic) continue;
+      long entry = HistoryDealGetInteger(tk, DEAL_ENTRY);
+      if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY) continue;
+      datetime t   = (datetime)HistoryDealGetInteger(tk, DEAL_TIME);
+      long     typ = HistoryDealGetInteger(tk, DEAL_TYPE);
+      double   p   = HistoryDealGetDouble(tk, DEAL_PROFIT) + HistoryDealGetDouble(tk, DEAL_SWAP)
+                     + HistoryDealGetDouble(tk, DEAL_COMMISSION);
+      pl += p;
+      if(open && typ == gType && t - gT <= 5) { gPL += p; gT = t; continue; }
+      if(open) { trades++; if(gPL >= 0) wins++; else losses++; }
+      open = true; gT = t; gType = typ; gPL = p;
+     }
+   if(open) { trades++; if(gPL >= 0) wins++; else losses++; }
+  }
+
+string SessionName(color &c)
+  {
+   MqlDateTime g; TimeToStruct(TimeGMT(), g);
+   if(g.day_of_week == 6 || (g.day_of_week == 0 && g.hour < 21) || (g.day_of_week == 5 && g.hour >= 21))
+     { c = C_MUTE; return "CLOSED"; }
+   int h = g.hour;
+   if(h >= 12 && h < 16) { c = C_UP;   return "LONDON + NY"; }
+   if(h >= 7  && h < 12) { c = C_INFO; return "LONDON"; }
+   if(h >= 16 && h < 21) { c = C_WARN; return "NEW YORK"; }
+   c = C'190,120,255';
+   return (h >= 21 ? "SYDNEY" : "ASIA");
+  }
+
+string TrendText(color &c)
+  {
+   double f[1], s[1];
+   if(gEmaFast == INVALID_HANDLE || gEmaSlow == INVALID_HANDLE ||
+      CopyBuffer(gEmaFast, 0, 1, 1, f) != 1 || CopyBuffer(gEmaSlow, 0, 1, 1, s) != 1)
+     { c = C_MUTE; return "-"; }
+   double px = iClose(_Symbol, InpTrendTF, 1);
+   if(f[0] > s[0] && px > f[0]) { c = C_UP; return "EMA UP"; }
+   if(f[0] < s[0] && px < f[0]) { c = C_DN; return "EMA DOWN"; }
+   c = C_WARN;
+   return (f[0] > s[0] ? "UP / PULLBACK" : "DOWN / PULLBACK");
+  }
+
+string BiasText(const ENUM_TIMEFRAMES tf, color &c)
+  {
+   Bias b = TFBiasNow(tf);
+   if(b.dir > 0) { c = C_UP; return (b.strong ? "BULL Q" : "BULL"); }
+   if(b.dir < 0) { c = C_DN; return (b.strong ? "BEAR Q" : "BEAR"); }
+   c = C_MUTE;
+   return "MIXED";
+  }
+
+void PText(const string name, const int x, const int y, const string text, const color clr,
+           const int size, const ENUM_ANCHOR_POINT anchor, const string font)
+  {
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, anchor);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetString(0, name, OBJPROP_FONT, font);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, size);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+  }
+
+int RowY() { return InpPanelY + 46 + gRow * InpPanelRowH; }
+
+void PSection(const string title)
+  {
+   if(gRow > 0) gRow++;   // small gap before a section
+   PText(PPRE + "L" + IntegerToString(gRow), InpPanelX + 10, RowY(), title, C_HEAD, InpPanelFont + 1, ANCHOR_LEFT_UPPER, "Arial Black");
+   ObjectDelete(0, PPRE + "V" + IntegerToString(gRow));
+   gRow++;
+  }
+
+void PRow(const string label, const string value, const color vc)
+  {
+   PText(PPRE + "L" + IntegerToString(gRow), InpPanelX + 12, RowY(), label, C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, "Segoe UI");
+   PText(PPRE + "V" + IntegerToString(gRow), InpPanelX + InpPanelWidth - 12, RowY(), value, vc, InpPanelFont, ANCHOR_RIGHT_UPPER, "Segoe UI Semibold");
+   gRow++;
+  }
+
 void UpdatePanel()
   {
    if(!InpShowPanel) return;
+   uint now = GetTickCount();
+   if(gLastPanelMs != 0 && now - gLastPanelMs < 500) return;   // redraw at most twice a second
+   gLastPanelMs = now;
+
    Basket b = GetBasket();
-   string s = "Lukes MTF EA  |  " + ModeName() + "  |  Entry: " + (InpEntryType == ENTRY_MARKET ? "Market" : "Pending") + "\n";
    string blk = TradeBlocker();
-   s += (blk == "" ? "Trading: ENABLED - waits for the next NEW signal (history dots are never traded)\n" : "!!! NOT TRADING: " + blk + "\n");
-   s += "Signal engine: " + StateText();
-   if(idea.state != IDEA_IDLE)
-      s += StringFormat("   Entry %s  SL %s  TP1 %s  TP2 %s", Px(idea.entry), Px(idea.sl), Px(idea.tp1), Px(idea.tp2));
-   s += "\nLast signal: " + gLastSignal + "\n";
-   if(b.count > 0)
-      s += StringFormat("Trades: %d %s  lots %.2f  avg %s  P/L %.2f\n", b.count, (b.dir > 0 ? "BUY" : "SELL"), b.lots, Px(b.avg), b.profit);
-   else
-      s += "Trades: none\n";
-   if(InpMode == MODE_GRID)
-      s += StringFormat("Grid: max %d  next gap %d pts%s  x%.2f  exit: %s\n", InpGridMaxTrades,
-                        GridGapPts(MathMax(1, b.count)), (InpGridWidenOn ? StringFormat(" (widen x%.2f)", InpGridGapMult) : ""),
-                        InpGridMultiplier,
-                        (InpBasketTPOn ? (InpBasketTPType == BASKET_MONEY ? StringFormat("basket $%.2f", InpBasketTPMoney)
-                                                                          : StringFormat("avg +/- %d pts", InpBasketTPPts))
-                                       : "TP1 " + Px(LoadTP1())));
-   if(InpMode == MODE_GRID && (InpBasketBEOn || InpBasketTrailOn))
-      s += "Basket stop: " + (LoadBStop() > 0 ? Px(LoadBStop()) : "not active") +
-           (InpBasketBEOn ? StringFormat("  BE +%d/%d pts", InpBasketBEStartPts, InpBasketBELockPts) : "") +
-           (InpBasketTrailOn ? StringFormat("  trail %d/%d pts", InpBasketTrailStartPts, InpBasketTrailDistPts) : "") + "\n";
+   color  c;
+   gRow = 0;
+
+   // header
+   string st; color sc;
+   if(InpMode == MODE_SIGNALS)      { st = "SIGNALS ONLY"; sc = C_INFO; }
+   else if(blk != "")               { st = "NOT TRADING";  sc = C_DN; }
+   else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
+   else                             { st = "WAITING";      sc = C_WARN; }
+   PText(PPRE + "T1", InpPanelX + 10, InpPanelY + 6, "LUKES MTF EA", C_TXT, InpPanelFont + 4, ANCHOR_LEFT_UPPER, "Arial Black");
+   PText(PPRE + "T2", InpPanelX + InpPanelWidth - 10, InpPanelY + 6, "v1.07", C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, "Segoe UI");
+   PText(PPRE + "T3", InpPanelX + 10, InpPanelY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, "Segoe UI");
+   PText(PPRE + "T4", InpPanelX + InpPanelWidth - 10, InpPanelY + 25, ShortToString(0x25CF) + " " + st, sc, InpPanelFont + 1, ANCHOR_RIGHT_UPPER, "Arial Black");
+
+   PSection("MARKET");
+   string v;
+   v = SessionName(c);      PRow("Session", v, c);
+   v = TrendText(c);        PRow("Trend (" + StringSubstr(EnumToString(InpTrendTF), 7) + ")", v, c);
+   v = BiasText(InpTF_D, c);  PRow("D1", v, c);
+   v = BiasText(InpTF_H4, c); PRow("H4", v, c);
+   v = BiasText(InpTF_H1, c); PRow("H1", v, c);
+   v = BiasText(InpTF_M5, c); PRow("M5", v, c);
+   Bias bd = TFBiasNow(InpTF_D), b4 = TFBiasNow(InpTF_H4), b1 = TFBiasNow(InpTF_H1), b5 = TFBiasNow(InpTF_M5);
+   int sb = (bd.dir==1) + (b4.dir==1) + (b1.dir==1) + (b5.dir==1);
+   int ss = (bd.dir==-1) + (b4.dir==-1) + (b1.dir==-1) + (b5.dir==-1);
+   PRow("Align B / S", StringFormat("%d / %d", sb, ss), (sb >= InpMinAlign ? C_UP : (ss >= InpMinAlign ? C_DN : C_MUTE)));
+   double spr = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID)) / Pt();
+   PRow("Spread", StringFormat("%.0f pts", spr), (spr > 50 ? C_WARN : C_TXT));
+
+   int tr, w, l; double pl;
+   TodayStats(tr, w, l, pl);
+   PSection("TODAY");
+   PRow("Signals", IntegerToString(SignalsToday()), C_INFO);
+   PRow("Trades closed", IntegerToString(tr), C_TXT);
+   PRow("TP (wins)", IntegerToString(w), C_UP);
+   PRow("SL (losses)", IntegerToString(l), C_DN);
+   PRow("Win rate", (tr > 0 ? StringFormat("%.0f%%", 100.0 * w / tr) : "-"),
+        (tr == 0 ? C_MUTE : (w * 2 >= tr ? C_UP : C_DN)));
+   PRow("Profit / loss", StringFormat("%+.2f %s", pl, AccountInfoString(ACCOUNT_CURRENCY)), (pl > 0 ? C_UP : (pl < 0 ? C_DN : C_TXT)));
+
+   PSection("EA");
+   PRow("Mode", ModeName(), (InpMode == MODE_SIGNALS ? C_INFO : C_TXT));
+   PRow("Entry", (InpEntryType == ENTRY_MARKET ? "Market" : "Pending"), C_TXT);
+   PRow("Trading", (blk == "" ? "ENABLED" : "OFF"), (blk == "" ? C_UP : C_DN));
    if(InpEquityProtOn)
-      s += StringFormat("Equity Protector: -%.1f%% = %.2f\n", InpEquityProtPct, -AccountInfoDouble(ACCOUNT_BALANCE) * InpEquityProtPct / 100.0);
-   s += "Last event: " + gLastEvent;
-   Comment(s);
+      PRow("Equity protector", StringFormat("-%.1f%% (%.2f)", InpEquityProtPct, -AccountInfoDouble(ACCOUNT_BALANCE) * InpEquityProtPct / 100.0), C_WARN);
+   else
+      PRow("Equity protector", "OFF", C_MUTE);
+
+   PSection("CURRENT");
+   string sigState = StateText();
+   PRow("Signal", sigState, (idea.state == IDEA_IDLE ? C_MUTE : (idea.dir > 0 ? InpBuyColor : InpSellColor)));
+   if(idea.state != IDEA_IDLE)
+     {
+      PRow("Entry / SL", Px(idea.entry) + " / " + Px(idea.sl), C_TXT);
+      PRow("TP1 / TP2", Px(idea.tp1) + " / " + Px(idea.tp2), C_TXT);
+     }
+   PRow("Last signal", gLastSignal, C_LBL);
+   if(b.count > 0)
+     {
+      PRow("Position", StringFormat("%s x%d  %.2f lots", (b.dir > 0 ? "BUY" : "SELL"), b.count, b.lots), (b.dir > 0 ? InpBuyColor : InpSellColor));
+      PRow("Avg price", Px(b.avg), C_TXT);
+      PRow("Floating P/L", StringFormat("%+.2f", b.profit), (b.profit >= 0 ? C_UP : C_DN));
+      if(InpMode == MODE_GRID)
+        {
+         PRow("Grid", StringFormat("%d / %d  next gap %d pts", b.count, InpGridMaxTrades, GridGapPts(MathMax(1, b.count))), C_TXT);
+         double bs = LoadBStop();
+         if(InpBasketBEOn || InpBasketTrailOn) PRow("Basket stop", (bs > 0 ? Px(bs) : "not active"), (bs > 0 ? C_UP : C_MUTE));
+        }
+     }
+   else
+      PRow("Position", "none", C_MUTE);
+
+   if(blk != "" && InpMode != MODE_SIGNALS)
+     {
+      PSection("WARNING");
+      PRow(blk, " ", C_DN);
+     }
+
+   // remove rows left over from a longer previous draw
+   for(int i = gRow; i < gMaxRow; i++)
+     {
+      ObjectDelete(0, PPRE + "L" + IntegerToString(i));
+      ObjectDelete(0, PPRE + "V" + IntegerToString(i));
+     }
+   gMaxRow = gRow;
+
+   // background
+   string bg = PPRE + "BG";
+   if(ObjectFind(0, bg) < 0)
+      ObjectCreate(0, bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, bg, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, InpPanelX);
+   ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, InpPanelY);
+   ObjectSetInteger(0, bg, OBJPROP_XSIZE, InpPanelWidth);
+   ObjectSetInteger(0, bg, OBJPROP_YSIZE, 46 + gRow * InpPanelRowH + 10);
+   ObjectSetInteger(0, bg, OBJPROP_BGCOLOR, C'14,18,28');
+   ObjectSetInteger(0, bg, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, bg, OBJPROP_COLOR, C'45,60,90');
+   ObjectSetInteger(0, bg, OBJPROP_BACK, false);
+   ObjectSetInteger(0, bg, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, bg, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, bg, OBJPROP_ZORDER, 0);
+   ChartRedraw(0);
   }
 
 //+------------------------------------------------------------------+
@@ -1380,7 +1606,11 @@ int OnInit()
    ResetCounts();
    Log("START", StringFormat("mode %s, entry %s, digits %d", ModeName(),
                              (InpEntryType == ENTRY_MARKET ? "market" : "pending"), _Digits));
-   EventSetTimer(1);   // warm up even if no tick arrives (market closed)
+   gEmaFast = iMA(_Symbol, InpTrendTF, InpTrendFast, 0, MODE_EMA, PRICE_CLOSE);
+   gEmaSlow = iMA(_Symbol, InpTrendTF, InpTrendSlow, 0, MODE_EMA, PRICE_CLOSE);
+   ArrayResize(gSigTimes, 0);
+   Comment("");
+   EventSetTimer(1);   // warm up + refresh the panel even when no tick arrives
    return(INIT_SUCCEEDED);
   }
 
@@ -1388,6 +1618,8 @@ void OnDeinit(const int reason)
   {
    EventKillTimer();
    ObjectsDeleteAll(0, EAPRE);
+   if(gEmaFast != INVALID_HANDLE) IndicatorRelease(gEmaFast);
+   if(gEmaSlow != INVALID_HANDLE) IndicatorRelease(gEmaSlow);
    Comment("");
   }
 
@@ -1404,8 +1636,8 @@ bool EnsureWarm()
 
 void OnTimer()
   {
-   if(!gWarm && EnsureWarm()) UpdatePanel();
-   if(gWarm) EventKillTimer();
+   if(!gWarm) EnsureWarm();
+   if(gWarm) UpdatePanel();
   }
 
 void OnTick()

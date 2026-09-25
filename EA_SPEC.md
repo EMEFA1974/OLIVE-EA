@@ -84,6 +84,15 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 | 4b | Widening grid gaps (R3b) | Built (v1.03) |
 | 5 | Protections (hours filter, Friday close, spread filter, dashboard) | Not requested for now |
 
+## 6. Dashboard panel
+
+| # | Rule | Status |
+|---|------|--------|
+| D1 | Styled panel (dark background, blue section headers, coloured values), replaces the plain text panel. Header shows status: SIGNALS ONLY / WAITING / IN TRADE / NOT TRADING. | Done (v1.07) |
+| D2 | MARKET: session (GMT: Asia, London, London + NY, New York, Sydney, Closed), EMA trend (`InpTrendTF`, EMA `InpTrendFast`/`InpTrendSlow`), D1/H4/H1/M5 bias, align B/S, spread. | Done (v1.07) |
+| D3 | TODAY: signals, trades closed, TP (wins), SL (losses), win rate, P/L. A grid basket closing together counts as one trade. Win = closed at profit >= 0. | Done (v1.07) |
+| D4 | EA: mode, entry type, trading enabled, equity protector. CURRENT: signal state + levels, last signal, position/basket, floating P/L, grid level, basket stop. | Done (v1.07) |
+
 ## Verification plan (no Strategy Tester)
 
 1. Demo account, XAUUSD M5, indicator + EA on the same chart, EA in **Signals only**. Check every EA dot sits on a candle with an indicator arrow (history is drawn immediately on load).
@@ -99,3 +108,4 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 - 2026-09-25 – Widening grid gaps added (R3b).
 - 2026-09-25 – G5 changed: default entry is now Pending (user wants the EA to take exactly the indicator's signal; market entries shortened the TP distance).
 - 2026-09-25 – R8 changed: grid trades now carry a shared basket TP/SL (visible on PC + mobile). Single trades already had real SL/TP.
+- 2026-09-25 – New dashboard panel (D1–D4).
