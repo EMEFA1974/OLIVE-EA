@@ -93,6 +93,8 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 | D3 | TODAY: signals, trades closed, TP (wins), SL (losses), win rate, P/L. A grid basket closing together counts as one trade. Win = closed at profit >= 0. | Done (v1.07) |
 | D4 | EA: mode, entry type, trading enabled, equity protector. CURRENT: signal state + levels, last signal, position/basket, floating P/L, grid level, basket stop. | Done (v1.07) |
 
+| D5 | **Indicator** (v1.80) uses the same panel style: MARKET (session, trend, bias, align, spread), TODAY (signals, TP1/TP2/SL hits, running, win rate = TP1 / (TP1 + SL before TP1)), RUNNING TOTAL over chart history, CURRENT SIGNAL. Indicator panel at X 10, EA panel next to it at X 280. | Done |
+
 ## Verification plan (no Strategy Tester)
 
 1. Demo account, XAUUSD M5, indicator + EA on the same chart, EA in **Signals only**. Check every EA dot sits on a candle with an indicator arrow (history is drawn immediately on load).
@@ -109,3 +111,4 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 - 2026-09-25 – G5 changed: default entry is now Pending (user wants the EA to take exactly the indicator's signal; market entries shortened the TP distance).
 - 2026-09-25 – R8 changed: grid trades now carry a shared basket TP/SL (visible on PC + mobile). Single trades already had real SL/TP.
 - 2026-09-25 – New dashboard panel (D1–D4).
+- 2026-09-25 – Indicator v1.80: same styled panel (D5). EA panel moved beside it (X 280, Y 20).

@@ -1,6 +1,6 @@
 #property copyright "Lukes MTF Ind"
 #property link      ""
-#property version   "1.70"
+#property version   "1.80"
 #property indicator_chart_window
 #property indicator_buffers 4
 #property indicator_plots   4
@@ -84,8 +84,14 @@ input color  InpSellColor    = clrMagenta;
 input color  InpReBuyColor   = clrGold;
 input color  InpReSellColor  = clrYellow;
 input int    InpArrowShift   = 12;
-input int    InpPanelX       = 12;
-input int    InpPanelY       = 24;
+input int    InpPanelX       = 10;
+input int    InpPanelY       = 20;
+input int    InpPanelWidth   = 260;
+input int    InpPanelFont    = 9;
+input int    InpPanelRowH    = 17;
+input ENUM_TIMEFRAMES InpTrendTF = PERIOD_H1;   // timeframe for the EMA trend line on the panel
+input int    InpTrendFast    = 50;
+input int    InpTrendSlow    = 200;
 
 input group "=== Zones ==="
 input bool   InpShowZones     = true;
@@ -118,7 +124,26 @@ datetime lastFillAlert = 0;
 bool     allowAlerts   = false;
 datetime gLastBar      = 0;      // last closed bar fed to the signal engine
 
-int gCntBuy = 0, gCntSell = 0, gCntTP1 = 0, gCntTP2 = 0, gCntSL = 0;
+int gCntBuy = 0, gCntSell = 0, gCntTP1 = 0, gCntTP2 = 0, gCntSL = 0, gCntLoss = 0;
+
+// signal outcome events, kept so the panel can count "today"
+#define EV_SIG  0
+#define EV_TP1  1
+#define EV_TP2  2
+#define EV_SL   3
+#define EV_LOSS 4   // SL hit before TP1
+datetime gEvT[];
+int      gEvK[];
+
+void AddEv(const int kind, const datetime t)
+  {
+   int n = ArraySize(gEvT);
+   if(n >= 3000) { ArrayRemove(gEvT, 0, 1000); ArrayRemove(gEvK, 0, 1000); n = ArraySize(gEvT); }
+   ArrayResize(gEvT, n + 1);
+   ArrayResize(gEvK, n + 1);
+   gEvT[n] = t;
+   gEvK[n] = kind;
+  }
 
 #define PREFIX "CSMTF_"
 #define ARPRE  "CSAR_"
@@ -205,6 +230,8 @@ int OnInit()
    PlotIndexSetDouble(3, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
    IndicatorSetString(INDICATOR_SHORTNAME, "Lukes MTF Ind");
+   gEmaFast = iMA(_Symbol, InpTrendTF, InpTrendFast, 0, MODE_EMA, PRICE_CLOSE);
+   gEmaSlow = iMA(_Symbol, InpTrendTF, InpTrendSlow, 0, MODE_EMA, PRICE_CLOSE);
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
    lastAlertBar = 0;
    lastFillAlert = 0;
@@ -222,6 +249,8 @@ int OnInit()
 
 void OnDeinit(const int reason)
   {
+   if(gEmaFast != INVALID_HANDLE) IndicatorRelease(gEmaFast);
+   if(gEmaSlow != INVALID_HANDLE) IndicatorRelease(gEmaSlow);
    ObjectsDeleteAll(0, PREFIX);
    ObjectsDeleteAll(0, ARPRE);
    ObjectsDeleteAll(0, ZPRE);
@@ -234,7 +263,9 @@ void ClearZones()
 
 void ResetCounts()
   {
-   gCntBuy = gCntSell = gCntTP1 = gCntTP2 = gCntSL = 0;
+   gCntBuy = gCntSell = gCntTP1 = gCntTP2 = gCntSL = gCntLoss = 0;
+   ArrayResize(gEvT, 0);
+   ArrayResize(gEvK, 0);
   }
 
 void ResetIdea()
@@ -410,7 +441,8 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
       bool closeFav = (idea.dir > 0 ? (bar.c > idea.entry) : (bar.c < idea.entry));
       if(!closeFav)
         {
-         gCntSL++;
+         gCntSL++; AddEv(EV_SL, bar.t);
+         if(!idea.tp1Done) { gCntLoss++; AddEv(EV_LOSS, bar.t); }
          idea.state = IDEA_SL_WAIT;
          idea.slTime = bar.t;
          idea.slBarAge = 0;
@@ -420,21 +452,22 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
 
    if(idea.state == IDEA_LIVE && hitTP2)
      {
-      if(!idea.tp1Done) { gCntTP1++; idea.tp1Done = true; }
-      gCntTP2++;
+      if(!idea.tp1Done) { gCntTP1++; AddEv(EV_TP1, bar.t); idea.tp1Done = true; }
+      gCntTP2++; AddEv(EV_TP2, bar.t);
       EndIdea(" [TP2 HIT]", bar.t);
       return;
      }
 
    if(idea.state == IDEA_LIVE && hitTP1 && !idea.tp1Done)
      {
-      gCntTP1++;
+      gCntTP1++; AddEv(EV_TP1, bar.t);
       idea.tp1Done = true;
      }
 
    if(idea.state == IDEA_LIVE && hitSL)
      {
-      gCntSL++;
+      gCntSL++; AddEv(EV_SL, bar.t);
+      if(!idea.tp1Done) { gCntLoss++; AddEv(EV_LOSS, bar.t); }
       idea.state = IDEA_SL_WAIT;
       idea.slTime = bar.t;
       idea.slBarAge = 0;
@@ -742,73 +775,197 @@ string StateText()
    return "IDLE";
   }
 
-void DrawPanel()
+//+------------------------------------------------------------------+
+//| Dashboard panel (same style as Lukes MTF EA)                     |
+//+------------------------------------------------------------------+
+#define PPRE    "CSMTF_P_"
+#define C_HEAD  C'70,160,255'
+#define C_LBL   C'170,176,188'
+#define C_TXT   C'235,238,245'
+#define C_UP    C'60,220,100'
+#define C_DN    C'255,85,70'
+#define C_WARN  C'255,200,40'
+#define C_INFO  C'80,200,255'
+#define C_MUTE  C'110,116,128'
+
+int    gRow = 0, gMaxRow = 0;
+int    gEmaFast = INVALID_HANDLE, gEmaSlow = INVALID_HANDLE;
+uint   gLastPanelMs = 0;
+
+string Px(const double p) { return DoubleToString(p, _Digits); }
+
+datetime DayStart() { datetime t = TimeCurrent(); return t - (t % 86400); }
+
+int CountEv(const int kind, const datetime from)
   {
-   if(!InpShowPanel) return;
-   const int rows = 9, w = 210, h = 18, x = InpPanelX, y = InpPanelY;
-   CreateRect(PREFIX+"BG", x, y, w, rows*h + 8, C'18,22,28', C'50,58,68');
-   DrawRow(PREFIX+"T", x, y + 2,       "STRUCTURE  D H4 H1 M5", clrSilver);
-   DrawRow(PREFIX+"D", x, y + 2 + h,   RowText("D1", gD),  DirColor(gD.dir));
-   DrawRow(PREFIX+"4", x, y + 2 + h*2, RowText("H4", gH4), DirColor(gH4.dir));
-   DrawRow(PREFIX+"1", x, y + 2 + h*3, RowText("H1", gH1), DirColor(gH1.dir));
-   DrawRow(PREFIX+"5", x, y + 2 + h*4, RowText("M5", gM5), DirColor(gM5.dir));
-   string st = StringFormat("ALIGN  B:%d  S:%d", gScoreB, gScoreS);
-   color  sc = (gScoreB >= InpMinAlign ? InpBuyColor : (gScoreS >= InpMinAlign ? InpSellColor : clrSilver));
-   DrawRow(PREFIX+"A", x, y + 2 + h*5, st, sc);
-   color ic = clrSilver;
-   if(idea.state == IDEA_PENDING) ic = clrGold;
-   if(idea.state == IDEA_LIVE)    ic = (idea.dir > 0 ? InpBuyColor : InpSellColor);
-   if(idea.state == IDEA_SL_WAIT) ic = clrGold;
-   DrawRow(PREFIX+"I", x, y + 2 + h*6, StateText(), ic);
-   string cnt = StringFormat("BUY %d   SELL %d", gCntBuy, gCntSell);
-   DrawRow(PREFIX+"C1", x, y + 2 + h*7, cnt, clrSilver);
-   string out = StringFormat("TP1 %d  TP2 %d  SL %d", gCntTP1, gCntTP2, gCntSL);
-   DrawRow(PREFIX+"C2", x, y + 2 + h*8, out, clrSilver);
+   int c = 0;
+   for(int i = ArraySize(gEvT) - 1; i >= 0; i--)
+      if(gEvK[i] == kind && gEvT[i] >= from) c++;
+   return c;
   }
 
-string RowText(const string name, const Bias &b)
+string SessionName(color &c)
   {
-   string dir = (b.dir > 0 ? "BULL" : (b.dir < 0 ? "BEAR" : "MIX"));
-   return name + "   " + dir + (b.strong ? "  Q" : "   ");
+   MqlDateTime g; TimeToStruct(TimeGMT(), g);
+   if(g.day_of_week == 6 || (g.day_of_week == 0 && g.hour < 21) || (g.day_of_week == 5 && g.hour >= 21))
+     { c = C_MUTE; return "CLOSED"; }
+   int h = g.hour;
+   if(h >= 12 && h < 16) { c = C_UP;   return "LONDON + NY"; }
+   if(h >= 7  && h < 12) { c = C_INFO; return "LONDON"; }
+   if(h >= 16 && h < 21) { c = C_WARN; return "NEW YORK"; }
+   c = C'190,120,255';
+   return (h >= 21 ? "SYDNEY" : "ASIA");
   }
 
-color DirColor(const int dir)
+string TrendText(color &c)
   {
-   if(dir > 0) return InpBuyColor;
-   if(dir < 0) return InpSellColor;
-   return clrGray;
+   double f[1], s[1];
+   if(gEmaFast == INVALID_HANDLE || gEmaSlow == INVALID_HANDLE ||
+      CopyBuffer(gEmaFast, 0, 1, 1, f) != 1 || CopyBuffer(gEmaSlow, 0, 1, 1, s) != 1)
+     { c = C_MUTE; return "-"; }
+   double px = iClose(_Symbol, InpTrendTF, 1);
+   if(f[0] > s[0] && px > f[0]) { c = C_UP; return "EMA UP"; }
+   if(f[0] < s[0] && px < f[0]) { c = C_DN; return "EMA DOWN"; }
+   c = C_WARN;
+   return (f[0] > s[0] ? "UP / PULLBACK" : "DOWN / PULLBACK");
   }
 
-void CreateRect(const string name, int x, int y, int w, int hgt, color bg, color bd)
+string BiasText(const ENUM_TIMEFRAMES tf, color &c)
   {
-   if(ObjectFind(0, name) < 0)
-      ObjectCreate(0, name, OBJ_RECTANGLE_LABEL, 0, 0, 0);
-   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
-   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
-   ObjectSetInteger(0, name, OBJPROP_XSIZE, w);
-   ObjectSetInteger(0, name, OBJPROP_YSIZE, hgt);
-   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg);
-   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, bd);
-   ObjectSetInteger(0, name, OBJPROP_BORDER_TYPE, BORDER_FLAT);
-   ObjectSetInteger(0, name, OBJPROP_BACK, false);
-   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+   Bias b = TFBiasNow(tf);
+   if(b.dir > 0) { c = C_UP; return (b.strong ? "BULL Q" : "BULL"); }
+   if(b.dir < 0) { c = C_DN; return (b.strong ? "BEAR Q" : "BEAR"); }
+   c = C_MUTE;
+   return "MIXED";
   }
 
-void DrawRow(const string name, int x, int y, const string text, color clr)
+void PText(const string name, const int x, const int y, const string text, const color clr,
+           const int size, const ENUM_ANCHOR_POINT anchor, const string font)
   {
    if(ObjectFind(0, name) < 0)
       ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
    ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x + 10);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
    ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
-   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 9);
-   ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, anchor);
    ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetString(0, name, OBJPROP_FONT, font);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, size);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+  }
+
+int RowY() { return InpPanelY + 46 + gRow * InpPanelRowH; }
+
+void PSection(const string title)
+  {
+   if(gRow > 0) gRow++;   // small gap before a section
+   PText(PPRE + "L" + IntegerToString(gRow), InpPanelX + 10, RowY(), title, C_HEAD, InpPanelFont + 1, ANCHOR_LEFT_UPPER, "Arial Black");
+   ObjectDelete(0, PPRE + "V" + IntegerToString(gRow));
+   gRow++;
+  }
+
+void PRow(const string label, const string value, const color vc)
+  {
+   PText(PPRE + "L" + IntegerToString(gRow), InpPanelX + 12, RowY(), label, C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, "Segoe UI");
+   PText(PPRE + "V" + IntegerToString(gRow), InpPanelX + InpPanelWidth - 12, RowY(), value, vc, InpPanelFont, ANCHOR_RIGHT_UPPER, "Segoe UI Semibold");
+   gRow++;
+  }
+
+string WinRate(const int wins, const int losses, color &c)
+  {
+   int n = wins + losses;
+   if(n == 0) { c = C_MUTE; return "-"; }
+   double wr = 100.0 * wins / n;
+   c = (wr >= 50 ? C_UP : C_DN);
+   return StringFormat("%.0f%%  (%d/%d)", wr, wins, n);
+  }
+
+void DrawPanel()
+  {
+   if(!InpShowPanel) return;
+   uint now = GetTickCount();
+   if(gLastPanelMs != 0 && now - gLastPanelMs < 500) return;   // redraw at most twice a second
+   gLastPanelMs = now;
+
+   color c;
+   string v;
+   gRow = 0;
+
+   // header
+   string st; color sc;
+   if(idea.state == IDEA_PENDING)      { st = (idea.dir > 0 ? "PENDING BUY" : "PENDING SELL"); sc = C_WARN; }
+   else if(idea.state == IDEA_LIVE)    { st = (idea.dir > 0 ? "LIVE BUY" : "LIVE SELL"); sc = (idea.dir > 0 ? InpBuyColor : InpSellColor); }
+   else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
+   else                                { st = "WAIT"; sc = C_WARN; }
+   PText(PPRE + "T1", InpPanelX + 10, InpPanelY + 6, "LUKES MTF IND", C_TXT, InpPanelFont + 4, ANCHOR_LEFT_UPPER, "Arial Black");
+   PText(PPRE + "T2", InpPanelX + InpPanelWidth - 10, InpPanelY + 6, "v1.80", C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, "Segoe UI");
+   PText(PPRE + "T3", InpPanelX + 10, InpPanelY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, "Segoe UI");
+   PText(PPRE + "T4", InpPanelX + InpPanelWidth - 10, InpPanelY + 25, ShortToString(0x25CF) + " " + st, sc, InpPanelFont + 1, ANCHOR_RIGHT_UPPER, "Arial Black");
+
+   PSection("MARKET");
+   v = SessionName(c);         PRow("Session", v, c);
+   v = TrendText(c);           PRow("Trend (" + StringSubstr(EnumToString(InpTrendTF), 7) + ")", v, c);
+   v = BiasText(InpTF_D, c);   PRow("D1", v, c);
+   v = BiasText(InpTF_H4, c);  PRow("H4", v, c);
+   v = BiasText(InpTF_H1, c);  PRow("H1", v, c);
+   v = BiasText(InpTF_M5, c);  PRow("M5", v, c);
+   PRow("Align B / S", StringFormat("%d / %d", gScoreB, gScoreS),
+        (gScoreB >= InpMinAlign ? C_UP : (gScoreS >= InpMinAlign ? C_DN : C_MUTE)));
+   double spr = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID)) / Pt();
+   PRow("Spread", StringFormat("%.0f pts", spr), (spr > 50 ? C_WARN : C_TXT));
+
+   datetime d = DayStart();
+   int tS = CountEv(EV_SIG, d), t1 = CountEv(EV_TP1, d), t2 = CountEv(EV_TP2, d), tSL = CountEv(EV_SL, d), tL = CountEv(EV_LOSS, d);
+   PSection("TODAY");
+   PRow("Signals", IntegerToString(tS), C_INFO);
+   PRow("TP1 hits", IntegerToString(t1), C_UP);
+   PRow("TP2 hits", IntegerToString(t2), C_UP);
+   PRow("SL hits", IntegerToString(tSL), C_DN);
+   PRow("Running", IntegerToString(idea.state == IDEA_LIVE ? 1 : 0), C_WARN);
+   v = WinRate(t1, tL, c);     PRow("Win rate", v, c);
+
+   PSection("RUNNING TOTAL (chart history)");
+   PRow("Signals  (buy / sell)", StringFormat("%d  (%d / %d)", gCntBuy + gCntSell, gCntBuy, gCntSell), C_INFO);
+   PRow("TP1 / TP2 / SL", StringFormat("%d / %d / %d", gCntTP1, gCntTP2, gCntSL), C_TXT);
+   v = WinRate(gCntTP1, gCntLoss, c); PRow("Win rate", v, c);
+
+   PSection("CURRENT SIGNAL");
+   if(idea.state == IDEA_IDLE)
+      PRow("Status", "no active signal", C_MUTE);
+   else
+     {
+      string side = (idea.dir > 0 ? (idea.re ? "RE-BUY" : "BUY") : (idea.re ? "RE-SELL" : "SELL"));
+      PRow("Status", side + "  " + StateText(), SignalColor(idea.dir, idea.re));
+      PRow("Entry", Px(idea.entry), C_TXT);
+      PRow("SL", Px(idea.sl), InpLineSL);
+      PRow("TP1 / TP2", Px(idea.tp1) + " / " + Px(idea.tp2), InpLineTP1);
+     }
+   PRow("Re-entry", (InpReentryOn ? StringFormat("ON  %d / %d", idea.reCount, InpMaxReentry) : "OFF"), (InpReentryOn ? C_UP : C_MUTE));
+
+   for(int i = gRow; i < gMaxRow; i++)
+     {
+      ObjectDelete(0, PPRE + "L" + IntegerToString(i));
+      ObjectDelete(0, PPRE + "V" + IntegerToString(i));
+     }
+   gMaxRow = gRow;
+
+   string bg = PPRE + "BG";
+   if(ObjectFind(0, bg) < 0)
+      ObjectCreate(0, bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, bg, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, InpPanelX);
+   ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, InpPanelY);
+   ObjectSetInteger(0, bg, OBJPROP_XSIZE, InpPanelWidth);
+   ObjectSetInteger(0, bg, OBJPROP_YSIZE, 46 + gRow * InpPanelRowH + 10);
+   ObjectSetInteger(0, bg, OBJPROP_BGCOLOR, C'14,18,28');
+   ObjectSetInteger(0, bg, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, bg, OBJPROP_COLOR, C'45,60,90');
+   ObjectSetInteger(0, bg, OBJPROP_BACK, false);
+   ObjectSetInteger(0, bg, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, bg, OBJPROP_HIDDEN, true);
   }
 
 int OnCalculate(const int rates_total,
@@ -905,7 +1062,7 @@ int OnCalculate(const int rates_total,
             ArmIdea(1, bar, true);
             idea.reCount = rc;
             lastBuyTime = bar.t;
-            gCntBuy++;
+            gCntBuy++; AddEv(EV_SIG, bar.t);
             HollowArrow(time[i], low[i], 1, InpReBuyColor, true);
             didRe = true;
            }
@@ -916,7 +1073,7 @@ int OnCalculate(const int rates_total,
             ArmIdea(-1, bar, true);
             idea.reCount = rc;
             lastSellTime = bar.t;
-            gCntSell++;
+            gCntSell++; AddEv(EV_SIG, bar.t);
             HollowArrow(time[i], high[i], -1, InpReSellColor, true);
             didRe = true;
            }
@@ -933,7 +1090,7 @@ int OnCalculate(const int rates_total,
             BuyBuf[i] = low[i];
             lastBuyTime = bar.t;
             ArmIdea(1, bar, false);
-            gCntBuy++;
+            gCntBuy++; AddEv(EV_SIG, bar.t);
             HollowArrow(time[i], low[i], 1, InpBuyColor, false);
            }
          else if(free && trigS && allowS && coolS)
@@ -941,7 +1098,7 @@ int OnCalculate(const int rates_total,
             SellBuf[i] = high[i];
             lastSellTime = bar.t;
             ArmIdea(-1, bar, false);
-            gCntSell++;
+            gCntSell++; AddEv(EV_SIG, bar.t);
             HollowArrow(time[i], high[i], -1, InpSellColor, false);
            }
         }

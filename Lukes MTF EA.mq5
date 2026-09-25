@@ -124,8 +124,8 @@ input string InpSoundFile    = "alert.wav";
 input group "=== Visuals / Log ==="
 input bool   InpDrawSignals  = true;       // dot on every EA signal candle (compare with indicator arrows)
 input bool   InpShowPanel    = true;
-input int    InpPanelX       = 10;
-input int    InpPanelY       = 205;      // below the indicator's own panel
+input int    InpPanelX       = 280;      // right of the indicator's panel (indicator: X 10, width 260)
+input int    InpPanelY       = 20;
 input int    InpPanelWidth   = 260;
 input int    InpPanelFont    = 9;
 input int    InpPanelRowH    = 17;
