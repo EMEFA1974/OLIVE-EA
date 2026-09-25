@@ -115,3 +115,4 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 - 2026-09-25 – New dashboard panel (D1–D4).
 - 2026-09-25 – Indicator v1.80: same styled panel (D5). EA panel moved beside it (X 280, Y 20).
 - 2026-09-25 – Panel fix: text was hidden behind the background. Panels moved to the left edge, draggable and collapsible (D6).
+- 2026-09-25 – Panels: thin fonts (Segoe UI Light / Semilight, inputs `InpPanelFontName`, `InpPanelFontHead`), width 270, shorter values to stop overlapping text.

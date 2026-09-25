@@ -86,7 +86,9 @@ input color  InpReSellColor  = clrYellow;
 input int    InpArrowShift   = 12;
 input int    InpPanelX       = 4;        // left edge
 input int    InpPanelY       = 20;       // top-left (EA panel goes bottom-left). Drag to move.
-input int    InpPanelWidth   = 250;
+input int    InpPanelWidth   = 270;
+input string InpPanelFontName = "Segoe UI Light";    // thin font for labels and values
+input string InpPanelFontHead = "Segoe UI Semilight"; // headings / title (e.g. "Segoe UI", "Calibri Light", "Arial")
 input int    InpPanelFont    = 8;
 input int    InpPanelRowH    = 15;
 input ENUM_TIMEFRAMES InpTrendTF = PERIOD_H1;   // timeframe for the EMA trend line on the panel
@@ -868,15 +870,15 @@ int RowY() { return gPY + 46 + gRow * InpPanelRowH; }
 void PSection(const string title)
   {
    if(gRow > 0) gRow++;   // small gap before a section
-   PText(PPRE + "L" + IntegerToString(gRow), gPX + 10, RowY(), title, C_HEAD, InpPanelFont + 1, ANCHOR_LEFT_UPPER, "Arial Black");
+   PText(PPRE + "L" + IntegerToString(gRow), gPX + 10, RowY(), title, C_HEAD, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
    ObjectDelete(0, PPRE + "V" + IntegerToString(gRow));
    gRow++;
   }
 
 void PRow(const string label, const string value, const color vc)
   {
-   PText(PPRE + "L" + IntegerToString(gRow), gPX + 12, RowY(), label, C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, "Segoe UI");
-   PText(PPRE + "V" + IntegerToString(gRow), gPX + InpPanelWidth - 12, RowY(), value, vc, InpPanelFont, ANCHOR_RIGHT_UPPER, "Segoe UI Semibold");
+   PText(PPRE + "L" + IntegerToString(gRow), gPX + 12, RowY(), label, C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
+   PText(PPRE + "V" + IntegerToString(gRow), gPX + InpPanelWidth - 12, RowY(), value, vc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    gRow++;
   }
 
@@ -915,10 +917,10 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_LIVE)    { st = (idea.dir > 0 ? "LIVE BUY" : "LIVE SELL"); sc = (idea.dir > 0 ? InpBuyColor : InpSellColor); }
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
-   PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES MTF IND", C_TXT, InpPanelFont + 4, ANCHOR_LEFT_UPPER, "Arial Black");
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.81  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, "Segoe UI");
-   PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, "Segoe UI");
-   PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 25, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont + 1, ANCHOR_RIGHT_UPPER, "Arial Black");
+   PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES MTF IND", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.81  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
+   PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
    if(!gCollapsed)
    {
@@ -946,7 +948,7 @@ void DrawPanel(const bool force = false)
    v = WinRate(t1, tL, c);     PRow("Win rate", v, c);
 
    PSection("TOTAL (CHART HISTORY)");
-   PRow("Signals  (buy / sell)", StringFormat("%d  (%d / %d)", gCntBuy + gCntSell, gCntBuy, gCntSell), C_INFO);
+   PRow("Signals (B/S)", StringFormat("%d  (%d/%d)", gCntBuy + gCntSell, gCntBuy, gCntSell), C_INFO);
    PRow("TP1 / TP2 / SL", StringFormat("%d / %d / %d", gCntTP1, gCntTP2, gCntSL), C_TXT);
    v = WinRate(gCntTP1, gCntLoss, c); PRow("Win rate", v, c);
 

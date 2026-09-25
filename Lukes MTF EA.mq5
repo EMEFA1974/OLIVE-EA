@@ -126,7 +126,9 @@ input bool   InpDrawSignals  = true;       // dot on every EA signal candle (com
 input bool   InpShowPanel    = true;
 input int    InpPanelX       = 4;        // left edge
 input int    InpPanelY       = -1;       // -1 = bottom-left (indicator panel is top-left). Drag to move.
-input int    InpPanelWidth   = 250;
+input int    InpPanelWidth   = 270;
+input string InpPanelFontName = "Segoe UI Light";    // thin font for labels and values
+input string InpPanelFontHead = "Segoe UI Semilight"; // headings / title (e.g. "Segoe UI", "Calibri Light", "Arial")
 input int    InpPanelFont    = 8;
 input int    InpPanelRowH    = 15;
 input ENUM_TIMEFRAMES InpTrendTF = PERIOD_H1;   // timeframe for the EMA trend line on the panel
@@ -1463,15 +1465,15 @@ int RowY() { return gPY + 46 + gRow * InpPanelRowH; }
 void PSection(const string title)
   {
    if(gRow > 0) gRow++;   // small gap before a section
-   PText(PPRE + "L" + IntegerToString(gRow), gPX + 10, RowY(), title, C_HEAD, InpPanelFont + 1, ANCHOR_LEFT_UPPER, "Arial Black");
+   PText(PPRE + "L" + IntegerToString(gRow), gPX + 10, RowY(), title, C_HEAD, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
    ObjectDelete(0, PPRE + "V" + IntegerToString(gRow));
    gRow++;
   }
 
 void PRow(const string label, const string value, const color vc)
   {
-   PText(PPRE + "L" + IntegerToString(gRow), gPX + 12, RowY(), label, C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, "Segoe UI");
-   PText(PPRE + "V" + IntegerToString(gRow), gPX + InpPanelWidth - 12, RowY(), value, vc, InpPanelFont, ANCHOR_RIGHT_UPPER, "Segoe UI Semibold");
+   PText(PPRE + "L" + IntegerToString(gRow), gPX + 12, RowY(), label, C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
+   PText(PPRE + "V" + IntegerToString(gRow), gPX + InpPanelWidth - 12, RowY(), value, vc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    gRow++;
   }
 
@@ -1502,10 +1504,10 @@ void UpdatePanel(const bool force = false)
    else if(blk != "")               { st = "NOT TRADING";  sc = C_DN; }
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
-   PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES MTF EA", C_TXT, InpPanelFont + 4, ANCHOR_LEFT_UPPER, "Arial Black");
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.08  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, "Segoe UI");
-   PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, "Segoe UI");
-   PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 25, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont + 1, ANCHOR_RIGHT_UPPER, "Arial Black");
+   PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.08  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
+   PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
    if(!gCollapsed)
    {
@@ -1541,7 +1543,7 @@ void UpdatePanel(const bool force = false)
    PRow("Entry", (InpEntryType == ENTRY_MARKET ? "Market" : "Pending"), C_TXT);
    PRow("Trading", (blk == "" ? "ENABLED" : "OFF"), (blk == "" ? C_UP : C_DN));
    if(InpEquityProtOn)
-      PRow("Equity protector", StringFormat("-%.1f%% (%.2f)", InpEquityProtPct, -AccountInfoDouble(ACCOUNT_BALANCE) * InpEquityProtPct / 100.0), C_WARN);
+      PRow("Equity protector", StringFormat("-%.1f%%  (%.0f)", InpEquityProtPct, -AccountInfoDouble(ACCOUNT_BALANCE) * InpEquityProtPct / 100.0), C_WARN);
    else
       PRow("Equity protector", "OFF", C_MUTE);
 
@@ -1561,7 +1563,7 @@ void UpdatePanel(const bool force = false)
       PRow("Floating P/L", StringFormat("%+.2f", b.profit), (b.profit >= 0 ? C_UP : C_DN));
       if(InpMode == MODE_GRID)
         {
-         PRow("Grid", StringFormat("%d / %d  next gap %d pts", b.count, InpGridMaxTrades, GridGapPts((int)MathMax(1, b.count))), C_TXT);
+         PRow("Grid", StringFormat("%d/%d  gap %d", b.count, InpGridMaxTrades, GridGapPts((int)MathMax(1, b.count))), C_TXT);
          double bs = LoadBStop();
          if(InpBasketBEOn || InpBasketTrailOn) PRow("Basket stop", (bs > 0 ? Px(bs) : "not active"), (bs > 0 ? C_UP : C_MUTE));
         }
