@@ -52,7 +52,7 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 | R5 | `InpGridMaxTrades`: when this many trades are running, stop adding grid trades. | Done |
 | R6 | **Basket TP** closes all grid trades. Adjustable: money profit (`InpBasketTPMoney`, $) or points beyond the basket average (`InpBasketTPPts`), selected by `InpBasketTPType`. | Done |
 | R7 | Basket TP toggle (`InpBasketTPOn`). When **off**, all grid trades close when price reaches the single-trade **TP1** of the signal that started the basket. | Done |
-| R8 | In grid mode individual TP and SL are **not** used (orders are sent without SL/TP). | Done |
+| R8 | In grid mode the indicator's individual TP and SL are **not** used. Instead (toggle `InpGridBrokerLevels`, default on) every grid trade carries the **same basket TP and basket SL price**, so the whole basket closes together. These real levels show on PC and mobile and work even if MT5 is off. Basket TP price = TP1 (basket TP off) / average ± `InpBasketTPPts` / price where basket profit = `InpBasketTPMoney`. Basket SL price = tighter of the basket break-even/trailing stop and the price where the loss = Equity Protector %. Updated after every grid add and stop move. | Changed (v1.06) |
 | R9 | **One direction at a time**: while a basket is running, new signals (either direction) are ignored. | Done |
 | R10 | Single-trade trailing stop does not apply in grid mode (the grid has its own basket stop, R11–R12). | Done |
 | R11 | **Basket break-even** (toggle `InpBasketBEOn`, default off): when price is `InpBasketBEStartPts` points past the basket average, a basket stop is set at average + `InpBasketBELockPts` points. | Done (Phase 4) |
@@ -98,3 +98,4 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 - 2026-09-25 – Phase 4: basket break-even + trailing stop added (R11–R13). Other Phase 4/5 options offered, not chosen.
 - 2026-09-25 – Widening grid gaps added (R3b).
 - 2026-09-25 – G5 changed: default entry is now Pending (user wants the EA to take exactly the indicator's signal; market entries shortened the TP distance).
+- 2026-09-25 – R8 changed: grid trades now carry a shared basket TP/SL (visible on PC + mobile). Single trades already had real SL/TP.

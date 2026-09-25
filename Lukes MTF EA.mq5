@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Lukes MTF EA"
 #property link      ""
-#property version   "1.05"
+#property version   "1.06"
 
 #include <Trade/Trade.mqh>
 
@@ -107,6 +107,7 @@ input int    InpBasketTrailStartPts = 200;    // start trailing when price is th
 input int    InpBasketTrailDistPts  = 150;    // trail this many points behind price
 input int    InpBasketTrailStepPts  = 20;     // move the basket stop in steps of (points)
 input color  InpBasketStopColor     = clrOrange;
+input bool   InpGridBrokerLevels    = true;   // put the basket TP/SL on every grid trade (visible on PC + mobile, works if MT5 is off)
 
 input group "=== Equity Protector ==="
 input bool   InpEquityProtOn  = true;
@@ -1047,13 +1048,96 @@ bool BasketStopHit(const Basket &b, const double bid, const double ask, string &
    return false;
   }
 
+//+------------------------------------------------------------------+
+//| Basket TP/SL as real levels on every grid trade                  |
+//| All trades share ONE TP and ONE SL price, so they still close    |
+//| together as a basket (rule R8: no individual TP/SL per trade).   |
+//+------------------------------------------------------------------+
+int gPrevGridCount = 0;
+
+// account money per 1.0 price move for the whole basket
+double MoneyPerPrice(const double lots)
+  {
+   double tv = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   double ts = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(tv <= 0 || ts <= 0 || lots <= 0) return 0;
+   return lots * tv / ts;
+  }
+
+// price at which the basket P/L equals `money`
+double PriceForProfit(const Basket &b, const double money, const double px)
+  {
+   double mpp = MoneyPerPrice(b.lots);
+   if(mpp <= 0) return 0;
+   return px + b.dir * (money - b.profit) / mpp;
+  }
+
+double GridTPPrice(const Basket &b, const double px)
+  {
+   double tp1 = LoadTP1();
+   if(!InpBasketTPOn && tp1 > 0) return tp1;
+   if(InpBasketTPType == BASKET_DISTANCE) return b.avg + b.dir * BasketDist();
+   return PriceForProfit(b, InpBasketTPMoney, px);
+  }
+
+// tightest of: basket break-even/trailing stop, Equity Protector price
+double GridSLPrice(const Basket &b, const double px)
+  {
+   double sl = LoadBStop();
+   if(InpEquityProtOn)
+     {
+      double limit = -AccountInfoDouble(ACCOUNT_BALANCE) * InpEquityProtPct / 100.0;
+      double eq = PriceForProfit(b, limit, px);
+      if(eq > 0 && (sl <= 0 || (b.dir > 0 ? eq > sl : eq < sl))) sl = eq;
+     }
+   return sl;
+  }
+
+void SyncGridLevels(const Basket &b)
+  {
+   if(!InpGridBrokerLevels || b.count == 0) return;
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double px  = (b.dir > 0 ? bid : ask);
+   double ms  = MinStop() + _Point;
+   double tol = 5 * Pt();   // ignore changes smaller than 5 points (avoid modify spam)
+
+   double tp = NormalizeDouble(GridTPPrice(b, px), _Digits);
+   double sl = NormalizeDouble(GridSLPrice(b, px), _Digits);
+   // a level too close to price is left off; the EA's own check still closes the basket
+   if(tp > 0 && (b.dir > 0 ? tp < bid + ms : tp > ask - ms)) tp = 0;
+   if(sl > 0 && (b.dir > 0 ? sl > bid - ms : sl < ask + ms)) sl = 0;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0 || !Ours()) continue;
+      double csl = PositionGetDouble(POSITION_SL);
+      double ctp = PositionGetDouble(POSITION_TP);
+      double nsl = (sl > 0 ? sl : csl);
+      double ntp = (tp > 0 ? tp : ctp);
+      bool chg = (MathAbs(nsl - csl) >= tol || MathAbs(ntp - ctp) >= tol
+                  || (csl == 0 && nsl > 0) || (ctp == 0 && ntp > 0));
+      if(!chg) continue;
+      if(trade.PositionModify(tk, nsl, ntp))
+         Log("GRID_LEVELS", StringFormat("ticket %I64u  SL %s  TP %s", tk, (nsl > 0 ? Px(nsl) : "none"), (ntp > 0 ? Px(ntp) : "none")));
+     }
+  }
+
 void ManageGrid(const Basket &b)
   {
    if(b.count == 0)
      {
+      if(gPrevGridCount > 0)
+        {
+         Log("BASKET_CLOSED", "grid basket closed by its TP/SL on the broker side");
+         if(InpAlertTrades) Notify("BASKET CLOSED by TP/SL");
+        }
+      gPrevGridCount = 0;
       if(LoadBStop() > 0) SaveBStop(0);
       return;
      }
+   gPrevGridCount = b.count;
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
@@ -1092,6 +1176,8 @@ void ManageGrid(const Basket &b)
       return;
      }
 
+   SyncGridLevels(b);
+
    // 2) add a grid trade
    if(b.count >= InpGridMaxTrades) return;
    if(TimeCurrent() < gNextGridTry) return;
@@ -1119,7 +1205,7 @@ void ManageTrades()
    if(gClosing)
      {
       CloseAll("closing all");
-      if(GetBasket().count == 0) { gClosing = false; Log("FLAT", "all EA trades closed"); }
+      if(GetBasket().count == 0) { gClosing = false; gPrevGridCount = 0; Log("FLAT", "all EA trades closed"); }
       return;
      }
 
