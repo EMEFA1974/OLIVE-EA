@@ -120,3 +120,4 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 - 2026-09-25 – Brighter panel colours and zone label colours (SL 255,75,75 / TP1 0,255,170 / TP2 70,170,255); fonts Segoe UI Semilight (was Light, too dim).
 - 2026-09-25 – Panels are solid: chart-on-foreground turned off, and the panel is rebuilt on top when other objects appear. Colours brightened again (headings/info light blue, TP2 line).
 - 2026-09-25 – EA v1.09: panel explains signals vs trades and counts grid trades (D3b).
+- 2026-09-25 – Indicator v1.82: zone and labels are removed once the signal is mitigated (TP1 hit – or TP2 with `InpHideAtTP1`=false –, SL hit, cancelled or expired). `InpKeepLastZone` now defaults to false.

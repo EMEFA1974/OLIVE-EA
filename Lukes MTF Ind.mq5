@@ -1,6 +1,6 @@
 #property copyright "Lukes MTF Ind"
 #property link      ""
-#property version   "1.81"
+#property version   "1.82"
 #property indicator_chart_window
 #property indicator_buffers 4
 #property indicator_plots   4
@@ -97,7 +97,8 @@ input int    InpTrendSlow    = 200;
 
 input group "=== Zones ==="
 input bool   InpShowZones     = true;
-input bool   InpKeepLastZone  = true;    // keep last zone (TP/SL result) until next signal
+input bool   InpKeepLastZone  = false;   // true = keep a finished zone on the chart until the next signal
+input bool   InpHideAtTP1     = true;    // zone is mitigated (removed) when TP1 is hit; false = keep until TP2
 input int    InpZoneRightBars = 18;       // box extends this many bars past the current bar
 input int    InpLabelBars     = 16;       // extra line length to the right of the box for the labels
 input int    InpZoneFontSize  = 7;
@@ -729,8 +730,12 @@ void DrawLiveZone()
       if(idea.state == IDEA_SL_WAIT) gz.status = " [SL HIT]";
      }
 
+   // mitigated = SL hit, TP1 hit (or TP2 when InpHideAtTP1 is off), cancelled or expired
+   bool mitigated = (idea.state == IDEA_SL_WAIT)
+                    || (idea.state == IDEA_LIVE && idea.tp1Done && InpHideAtTP1)
+                    || (idea.state == IDEA_IDLE);
    bool show = InpShowZones && gz.valid && gz.t1 != 0
-               && (gz.tEnd == 0 || InpKeepLastZone);
+               && (!mitigated || InpKeepLastZone);
    if(!show)
      {
       ClearZones();
@@ -939,7 +944,7 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES MTF IND", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.81  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.82  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
