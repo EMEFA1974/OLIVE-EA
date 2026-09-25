@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Lukes MTF EA"
 #property link      ""
-#property version   "1.03"
+#property version   "1.04"
 
 #include <Trade/Trade.mqh>
 
@@ -1194,6 +1194,13 @@ void OnNewBars()
                             Px(idea.entry), Px(idea.sl), Px(idea.tp1), Px(idea.tp2));
    Log("SIGNAL", lv);
    if(InpAlertSignals) Notify("SIGNAL " + lv);
+   string blk = TradeBlocker();
+   if(blk != "" && InpMode != MODE_SIGNALS)
+     {
+      Log("SKIP", SigName(sig) + ": " + blk);
+      if(InpAlertTrades) Notify("Signal NOT traded: " + blk);
+      return;
+     }
    if(InpMode != MODE_SIGNALS && !gClosing) ActOnSignal(sig);
   }
 
@@ -1205,11 +1212,43 @@ string StateText()
    return "IDLE";
   }
 
+// why the EA cannot trade right now ("" = it can)
+string TradeBlocker()
+  {
+   if(InpMode == MODE_SIGNALS)
+      return "MODE = SIGNALS ONLY: no trades. Set InpMode to Single trades or Full grid.";
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
+      return "ALGO TRADING IS OFF: press the 'Algo Trading' button in the MT5 toolbar.";
+   if(!MQLInfoInteger(MQL_TRADE_ALLOWED))
+      return "EA NOT ALLOWED TO TRADE: EA settings > Common > tick 'Allow Algo Trading'.";
+   if(!AccountInfoInteger(ACCOUNT_TRADE_ALLOWED))
+      return "ACCOUNT CANNOT TRADE: logged in with investor (read-only) password?";
+   if(!AccountInfoInteger(ACCOUNT_TRADE_EXPERT))
+      return "BROKER DISABLED EA TRADING on this account.";
+   long tm = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE);
+   if(tm == SYMBOL_TRADE_MODE_DISABLED || tm == SYMBOL_TRADE_MODE_CLOSEONLY)
+      return "TRADING DISABLED/CLOSE-ONLY for " + _Symbol + " (market closed?).";
+   return "";
+  }
+
+string gLastBlocker = "-";
+
+void CheckBlocker()
+  {
+   string b = TradeBlocker();
+   if(b == gLastBlocker) return;
+   gLastBlocker = b;
+   if(b == "") Log("TRADING_OK", "EA is allowed to trade");
+   else        Log("NOT_TRADING", b);
+  }
+
 void UpdatePanel()
   {
    if(!InpShowPanel) return;
    Basket b = GetBasket();
    string s = "Lukes MTF EA  |  " + ModeName() + "  |  Entry: " + (InpEntryType == ENTRY_MARKET ? "Market" : "Pending") + "\n";
+   string blk = TradeBlocker();
+   s += (blk == "" ? "Trading: ENABLED - waits for the next NEW signal (history dots are never traded)\n" : "!!! NOT TRADING: " + blk + "\n");
    s += "Signal engine: " + StateText();
    if(idea.state != IDEA_IDLE)
       s += StringFormat("   Entry %s  SL %s  TP1 %s  TP2 %s", Px(idea.entry), Px(idea.sl), Px(idea.tp1), Px(idea.tp2));
@@ -1286,6 +1325,7 @@ void OnTimer()
 void OnTick()
   {
    if(!EnsureWarm()) return;
+   CheckBlocker();
 
    if(iTime(_Symbol, _Period, 1) > gLastProcessed)
       OnNewBars();
