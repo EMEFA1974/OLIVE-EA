@@ -1,4 +1,4 @@
-#property copyright "Candle Structure MTF"
+#property copyright "Lukes MTF Ind"
 #property link      ""
 #property version   "1.60"
 #property indicator_chart_window
@@ -196,7 +196,7 @@ int OnInit()
    PlotIndexSetDouble(2, PLOT_EMPTY_VALUE, EMPTY_VALUE);
    PlotIndexSetDouble(3, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "Candle Structure MTF");
+   IndicatorSetString(INDICATOR_SHORTNAME, "Lukes MTF Ind");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
    lastAlertBar = 0;
    lastFillAlert = 0;
@@ -627,7 +627,7 @@ void PutLabel(const string name, datetime t, double price, const string text, co
    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
    ObjectSetInteger(0, name, OBJPROP_FONTSIZE, InpZoneFontSize);
    ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
-   ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_LEFT);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_RIGHT_LOWER);   // text sits on top of the line, ending at its right edge
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
    ObjectSetInteger(0, name, OBJPROP_BACK, false);
@@ -686,10 +686,10 @@ void DrawLiveZone()
    PutLine(ZPRE+"LT10", t1, t2, gz.tp1,   InpLineTP1);
    PutLine(ZPRE+"LT20", t1, t2, gz.tp2,   InpLineTP2);
 
-   PutLabel(ZPRE+"NEN0", t2, gz.entry, "  Entry  " + DoubleToString(gz.entry, _Digits) + "  " + side + gz.status, sig);
-   PutLabel(ZPRE+"NSL0", t2, gz.sl,    "  SL  "    + DoubleToString(gz.sl,    _Digits), InpLineSL);
-   PutLabel(ZPRE+"NT10", t2, gz.tp1,   "  TP1  "   + DoubleToString(gz.tp1,   _Digits), InpLineTP1);
-   PutLabel(ZPRE+"NT20", t2, gz.tp2,   "  TP2  "   + DoubleToString(gz.tp2,   _Digits), InpLineTP2);
+   PutLabel(ZPRE+"NEN0", t2, gz.entry, "Entry  " + DoubleToString(gz.entry, _Digits) + "  " + side + gz.status + " ", sig);
+   PutLabel(ZPRE+"NSL0", t2, gz.sl,    "SL  "    + DoubleToString(gz.sl,    _Digits) + " ", InpLineSL);
+   PutLabel(ZPRE+"NT10", t2, gz.tp1,   "TP1  "   + DoubleToString(gz.tp1,   _Digits) + " ", InpLineTP1);
+   PutLabel(ZPRE+"NT20", t2, gz.tp2,   "TP2  "   + DoubleToString(gz.tp2,   _Digits) + " ", InpLineTP2);
    ChartRedraw(0);
   }
 
@@ -926,14 +926,14 @@ void FireAlert(const string side, const datetime barTime, const double barClose)
                            DoubleToString(idea.tp1, _Digits),
                            DoubleToString(idea.tp2, _Digits));
 
-   string msg = StringFormat("CSMTF %s %s | %s | close %s | %s%s",
+   string msg = StringFormat("Lukes MTF %s %s | %s | close %s | %s%s",
                              side, _Symbol, tf, DoubleToString(barClose, _Digits),
                              TimeToString(barTime, TIME_DATE|TIME_MINUTES), extra);
 
    if(InpAlertPopup) Alert(msg);
    if(InpAlertSound) PlaySound(InpSoundFile);
    if(InpAlertPush)  SendNotification(msg);
-   if(InpAlertEmail) SendMail("CSMTF " + side + " " + _Symbol, msg);
+   if(InpAlertEmail) SendMail("Lukes MTF " + side + " " + _Symbol, msg);
   }
 
 void CheckAlerts(const datetime barTime, const double barClose)
