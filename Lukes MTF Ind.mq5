@@ -1,6 +1,6 @@
 #property copyright "Lukes MTF Ind"
 #property link      ""
-#property version   "1.60"
+#property version   "1.70"
 #property indicator_chart_window
 #property indicator_buffers 4
 #property indicator_plots   4
@@ -46,6 +46,7 @@ input int    InpCooldown     = 8;
 input bool   InpRequireD     = false;
 input bool   InpRequireH4    = true;
 input bool   InpUseM5Trigger = false;
+input bool   InpAutoDigits   = true;   // 3/5-digit brokers: point inputs are scaled x10 (same $ distances on 2- and 3-digit XAUUSD)
 
 input group "=== Pending Entry ==="
 input bool           InpPendingOn       = true;
@@ -115,6 +116,7 @@ datetime lastSellTime  = 0;
 datetime lastAlertBar  = 0;
 datetime lastFillAlert = 0;
 bool     allowAlerts   = false;
+datetime gLastBar      = 0;      // last closed bar fed to the signal engine
 
 int gCntBuy = 0, gCntSell = 0, gCntTP1 = 0, gCntTP2 = 0, gCntSL = 0;
 
@@ -265,16 +267,23 @@ void EndIdea(const string status, const datetime t)
    ResetIdea();
   }
 
-double PointBuf() { return (double)InpSLBufferPts * _Point; }
+// point unit for the point-based inputs; on 3/5-digit brokers one unit = 10 points
+double Pt()
+  {
+   if(InpAutoDigits && (_Digits == 3 || _Digits == 5)) return _Point * 10.0;
+   return _Point;
+  }
+
+double PointBuf() { return (double)InpSLBufferPts * Pt(); }
 
 double PendingDist(const Candle &bar)
   {
-   double byPts = (double)InpPendingPts * _Point;
+   double byPts = (double)InpPendingPts * Pt();
    double byRng = 0.0;
    if(InpPendingUseRange && bar.h > bar.l)
       byRng = (bar.h - bar.l) * InpPendingRetrace;
    double d = MathMax(byPts, byRng);
-   if(d <= 0.0) d = 10.0 * _Point;
+   if(d <= 0.0) d = 10.0 * Pt();
    return d;
   }
 
@@ -284,7 +293,7 @@ void ApplyLevels(const int dir, const double entry, const double sl)
    idea.entry = entry;
    idea.sl    = sl;
    double risk = (dir > 0 ? (entry - sl) : (sl - entry));
-   if(risk <= 0.0) risk = _Point * 10;
+   if(risk <= 0.0) risk = Pt() * 10;
    if(dir > 0)
      {
       idea.tp1 = entry + risk * InpRR1;
@@ -299,8 +308,8 @@ void ApplyLevels(const int dir, const double entry, const double sl)
 
 bool BuildPendingPrices(const int dir, const Candle &bar, double &entry, double &sl)
   {
-   double gap = (double)InpMinSLGapPts * _Point;
-   if(gap <= 0.0) gap = 5.0 * _Point;
+   double gap = (double)InpMinSLGapPts * Pt();
+   if(gap <= 0.0) gap = 5.0 * Pt();
    double dist = PendingDist(bar);
 
    if(dir > 0)
@@ -834,10 +843,11 @@ int OnCalculate(const int rates_total,
       ResetZone();
       ResetCounts();
       ClearZones();
+      gLastBar = 0;
       start = MathMin(rates_total - 5, 800);
      }
    else
-      start = 2;
+      start = MathMax(2, rates_total - prev_calculated + 1);
 
    if(start < 1) start = 1;
 
@@ -850,6 +860,10 @@ int OnCalculate(const int rates_total,
 
    for(int i = start; i >= 1; i--)
      {
+      // each closed bar goes through the engine exactly once, so counters
+      // (pending expiry, bars since SL) count bars, not ticks
+      if(time[i] <= gLastBar) continue;
+      gLastBar = time[i];
       BuyBuf[i] = SellBuf[i] = ReBuyBuf[i] = ReSellBuf[i] = EMPTY_VALUE;
 
       Candle bar;
