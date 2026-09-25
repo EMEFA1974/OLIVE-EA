@@ -15,7 +15,7 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 | G2 | **All distances are in points** (grid distance, trailing, basket distance, plus the signal inputs). 1 point = 0.01 on XAUUSD. On 3-digit brokers the EA scales them x10 automatically (`InpAutoDigits`), so 500 points = $5.00 move on both broker types. | Changed |
 | G3 | Signal point inputs (pending pts, SL buffer, min SL gap) are auto-scaled x10 on 3/5-digit brokers (`InpAutoDigits`, default on). Same setting must be used in EA and indicator. | Done |
 | G4 | Mode toggle: **Signals only** (default) / **Single trades only** / **Full grid**. | Done |
-| G5 | Entry toggle: **Market price** at signal (default) / **Pending order** at the indicator's Entry level. | Done |
+| G5 | Entry toggle: **Pending order** at the indicator's Entry level (default since v1.05 — trades exactly the indicator's Entry/SL/TP1) / **Market price** at signal. | Changed |
 | G6 | Trades identified by magic number + symbol. State is rebuilt from open positions/orders after a restart. | Done |
 | G7 | Every signal, order, close and protection event is written to the Experts log and to `MQL5/Files/LukesEA_log.csv`. | Done |
 | G8 | Signals-only mode draws a small dot on each EA signal candle (history + live) so it can be compared with the indicator's arrows on the same chart. | Done |
@@ -97,3 +97,4 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 - 2026-09-25 – G2 changed: all EA distances now in points instead of $ (user request).
 - 2026-09-25 – Phase 4: basket break-even + trailing stop added (R11–R13). Other Phase 4/5 options offered, not chosen.
 - 2026-09-25 – Widening grid gaps added (R3b).
+- 2026-09-25 – G5 changed: default entry is now Pending (user wants the EA to take exactly the indicator's signal; market entries shortened the TP distance).

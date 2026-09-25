@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Lukes MTF EA"
 #property link      ""
-#property version   "1.04"
+#property version   "1.05"
 
 #include <Trade/Trade.mqh>
 
@@ -30,7 +30,7 @@ enum ENUM_BASKET_TP
 
 input group "=== EA Mode ==="
 input ENUM_EA_MODE    InpMode        = MODE_SIGNALS;
-input ENUM_ENTRY_TYPE InpEntryType   = ENTRY_MARKET;
+input ENUM_ENTRY_TYPE InpEntryType   = ENTRY_PENDING;   // Pending = exactly the indicator's Entry/SL/TP1
 input long            InpMagic       = 26092501;
 input string          InpComment     = "LukesEA";
 input int             InpSlippagePts = 30;       // max slippage (points)
