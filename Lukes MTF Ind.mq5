@@ -87,8 +87,8 @@ input int    InpArrowShift   = 12;
 input int    InpPanelX       = 4;        // left edge
 input int    InpPanelY       = 20;       // top-left (EA panel goes bottom-left). Drag to move.
 input int    InpPanelWidth   = 270;
-input string InpPanelFontName = "Segoe UI Light";    // thin font for labels and values
-input string InpPanelFontHead = "Segoe UI Semilight"; // headings / title (e.g. "Segoe UI", "Calibri Light", "Arial")
+input string InpPanelFontName = "Segoe UI Semilight"; // thin font for labels and values (thinner: "Segoe UI Light")
+input string InpPanelFontHead = "Segoe UI";           // headings / title (e.g. "Segoe UI", "Calibri Light", "Arial")
 input int    InpPanelFont    = 8;
 input int    InpPanelRowH    = 15;
 input ENUM_TIMEFRAMES InpTrendTF = PERIOD_H1;   // timeframe for the EMA trend line on the panel
@@ -101,7 +101,7 @@ input bool   InpKeepLastZone  = true;    // keep last zone (TP/SL result) until 
 input int    InpZoneRightBars = 18;       // box extends this many bars past the current bar
 input int    InpLabelBars     = 16;       // extra line length to the right of the box for the labels
 input int    InpZoneFontSize  = 7;
-input string InpZoneFont      = "Segoe UI Light";   // thin font for zone labels (e.g. "Segoe UI Light", "Calibri Light", "Arial")
+input string InpZoneFont      = "Segoe UI Semilight"; // thin font for zone labels (e.g. "Segoe UI Light", "Calibri Light", "Arial")
 input bool   InpAutoChartShift = true;    // turn on chart shift so the box and labels have room
 input int    InpChartShiftPct = 30;       // chart shift size in % of chart width (10-50)
 input color  InpZoneSL        = C'220,50,50';
@@ -109,10 +109,10 @@ input color  InpZoneTP1       = C'30,170,100';
 input color  InpZoneTP2       = C'40,100,230';
 input int    InpZoneOpacity   = 35;       // box opacity % (0-100): lower = fainter / more see-through
 input int    InpLineOpacity   = 80;       // level line opacity % (0-100); labels stay full colour
-input color  InpLineEntry     = C'200,200,200';
-input color  InpLineSL        = C'235,90,80';
-input color  InpLineTP1       = C'70,200,170';
-input color  InpLineTP2       = C'70,140,235';
+input color  InpLineEntry     = C'235,235,235';
+input color  InpLineSL        = C'255,75,75';
+input color  InpLineTP1       = C'0,255,170';
+input color  InpLineTP2       = C'70,170,255';
 
 double BuyBuf[];
 double SellBuf[];
@@ -787,14 +787,14 @@ int  gPX = 0, gPY = 0, gPanelH = 0;
 bool gCollapsed = false, gAutoBottom = false;
 bool gDrag = false, gPrevDown = false, gScrollWas = true;
 int  gDragDX = 0, gDragDY = 0, gDownX = 0, gDownY = 0;
-#define C_HEAD  C'70,160,255'
-#define C_LBL   C'170,176,188'
-#define C_TXT   C'235,238,245'
-#define C_UP    C'60,220,100'
-#define C_DN    C'255,85,70'
-#define C_WARN  C'255,200,40'
-#define C_INFO  C'80,200,255'
-#define C_MUTE  C'110,116,128'
+#define C_HEAD  C'90,190,255'
+#define C_LBL   C'220,225,235'
+#define C_TXT   C'255,255,255'
+#define C_UP    C'0,255,120'
+#define C_DN    C'255,70,70'
+#define C_WARN  C'255,215,0'
+#define C_INFO  C'0,225,255'
+#define C_MUTE  C'165,172,185'
 
 int    gRow = 0, gMaxRow = 0;
 int    gEmaFast = INVALID_HANDLE, gEmaSlow = INVALID_HANDLE;

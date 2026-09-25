@@ -127,8 +127,8 @@ input bool   InpShowPanel    = true;
 input int    InpPanelX       = 4;        // left edge
 input int    InpPanelY       = -1;       // -1 = bottom-left (indicator panel is top-left). Drag to move.
 input int    InpPanelWidth   = 270;
-input string InpPanelFontName = "Segoe UI Light";    // thin font for labels and values
-input string InpPanelFontHead = "Segoe UI Semilight"; // headings / title (e.g. "Segoe UI", "Calibri Light", "Arial")
+input string InpPanelFontName = "Segoe UI Semilight"; // thin font for labels and values (thinner: "Segoe UI Light")
+input string InpPanelFontHead = "Segoe UI";           // headings / title (e.g. "Segoe UI", "Calibri Light", "Arial")
 input int    InpPanelFont    = 8;
 input int    InpPanelRowH    = 15;
 input ENUM_TIMEFRAMES InpTrendTF = PERIOD_H1;   // timeframe for the EMA trend line on the panel
@@ -1346,14 +1346,14 @@ int  gPX = 0, gPY = 0, gPanelH = 0;
 bool gCollapsed = false, gAutoBottom = false;
 bool gDrag = false, gPrevDown = false, gScrollWas = true;
 int  gDragDX = 0, gDragDY = 0, gDownX = 0, gDownY = 0;
-#define C_HEAD  C'70,160,255'
-#define C_LBL   C'170,176,188'
-#define C_TXT   C'235,238,245'
-#define C_UP    C'60,220,100'
-#define C_DN    C'255,85,70'
-#define C_WARN  C'255,200,40'
-#define C_INFO  C'80,200,255'
-#define C_MUTE  C'110,116,128'
+#define C_HEAD  C'90,190,255'
+#define C_LBL   C'220,225,235'
+#define C_TXT   C'255,255,255'
+#define C_UP    C'0,255,120'
+#define C_DN    C'255,70,70'
+#define C_WARN  C'255,215,0'
+#define C_INFO  C'0,225,255'
+#define C_MUTE  C'165,172,185'
 
 int    gRow = 0, gMaxRow = 0;
 int    gEmaFast = INVALID_HANDLE, gEmaSlow = INVALID_HANDLE;
