@@ -92,6 +92,7 @@ input bool   InpKeepLastZone  = true;    // keep last zone (TP/SL result) until 
 input int    InpZoneRightBars = 18;       // box extends this many bars past the current bar
 input int    InpLabelBars     = 16;       // extra line length to the right of the box for the labels
 input int    InpZoneFontSize  = 10;
+input string InpZoneFont      = "Segoe UI Light";   // thin font for zone labels (e.g. "Segoe UI Light", "Calibri Light", "Arial")
 input bool   InpAutoChartShift = true;    // turn on chart shift so the box and labels have room
 input int    InpChartShiftPct = 30;       // chart shift size in % of chart width (10-50)
 input color  InpZoneSL        = C'110,24,24';
@@ -634,7 +635,7 @@ void PutLabel(const string name, datetime t, double price, const string text, co
    ObjectSetString(0, name, OBJPROP_TEXT, text);
    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
    ObjectSetInteger(0, name, OBJPROP_FONTSIZE, InpZoneFontSize);
-   ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
+   ObjectSetString(0, name, OBJPROP_FONT, InpZoneFont);
    ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_LEFT_LOWER);   // text sits on top of the line
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
