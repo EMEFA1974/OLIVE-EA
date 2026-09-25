@@ -89,15 +89,18 @@ input int    InpPanelY       = 24;
 input group "=== Zones ==="
 input bool   InpShowZones     = true;
 input bool   InpKeepLastZone  = true;    // keep last zone (TP/SL result) until next signal
-input int    InpZoneRightBars = 18;
-input int    InpZoneFontSize  = 8;
-input color  InpZoneSL        = C'64,28,32';
-input color  InpZoneTP1       = C'16,48,42';
-input color  InpZoneTP2       = C'16,36,56';
-input color  InpLineEntry     = C'168,168,168';
-input color  InpLineSL        = C'168,78,84';
-input color  InpLineTP1       = C'64,150,132';
-input color  InpLineTP2       = C'64,120,168';
+input int    InpZoneRightBars = 18;       // box extends this many bars past the current bar
+input int    InpLabelBars     = 16;       // extra line length to the right of the box for the labels
+input int    InpZoneFontSize  = 10;
+input bool   InpAutoChartShift = true;    // turn on chart shift so the box and labels have room
+input int    InpChartShiftPct = 30;       // chart shift size in % of chart width (10-50)
+input color  InpZoneSL        = C'110,24,24';
+input color  InpZoneTP1       = C'14,70,40';
+input color  InpZoneTP2       = C'16,34,110';
+input color  InpLineEntry     = C'200,200,200';
+input color  InpLineSL        = C'235,90,80';
+input color  InpLineTP1       = C'70,200,170';
+input color  InpLineTP2       = C'70,140,235';
 
 double BuyBuf[];
 double SellBuf[];
@@ -204,6 +207,11 @@ int OnInit()
    ResetIdea();
    ResetZone();
    ResetCounts();
+   if(InpAutoChartShift)
+     {
+      ChartSetInteger(0, CHART_SHIFT, true);
+      ChartSetDouble(0, CHART_SHIFT_SIZE, MathMax(10, MathMin(50, InpChartShiftPct)));
+     }
    return(INIT_SUCCEEDED);
   }
 
@@ -627,7 +635,7 @@ void PutLabel(const string name, datetime t, double price, const string text, co
    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
    ObjectSetInteger(0, name, OBJPROP_FONTSIZE, InpZoneFontSize);
    ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
-   ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_RIGHT_LOWER);   // text sits on top of the line, ending at its right edge
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_LEFT_LOWER);   // text sits on top of the line
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
    ObjectSetInteger(0, name, OBJPROP_BACK, false);
@@ -668,11 +676,17 @@ void DrawLiveZone()
       return;
      }
 
-   int ext = MathMax(4, InpZoneRightBars / 3);
+   // box: signal bar -> a few bars past the current bar
+   // lines: continue past the box so the labels can sit on top of them
+   int ps = PeriodSeconds(_Period);
+   datetime now = iTime(_Symbol, _Period, 0);
+   if(now == 0) now = TimeCurrent();
    datetime t1 = gz.t1;
-   datetime t2 = (gz.tEnd == 0 ? TimeCurrent() : gz.tEnd) + (datetime)ext * PeriodSeconds(_Period);
+   datetime t2 = now + (datetime)MathMax(2, InpZoneRightBars) * ps;
    if(t2 <= t1)
-      t2 = t1 + PeriodSeconds(_Period) * 8;
+      t2 = t1 + ps * 8;
+   datetime tl = t2 + ps;                                          // label start
+   datetime t3 = t2 + (datetime)MathMax(4, InpLabelBars) * ps;    // line end
 
    color sig = SignalColor(gz.dir, gz.re);
    string side = (gz.dir > 0 ? (gz.re ? "RE-BUY" : "BUY") : (gz.re ? "RE-SELL" : "SELL"));
@@ -681,15 +695,15 @@ void DrawLiveZone()
    PutRect(ZPRE+"ZT10",  t1, gz.entry, t2, gz.tp1, InpZoneTP1);
    PutRect(ZPRE+"ZT20",  t1, gz.tp1,   t2, gz.tp2, InpZoneTP2);
 
-   PutLine(ZPRE+"LEN0", t1, t2, gz.entry, sig);
-   PutLine(ZPRE+"LSL0", t1, t2, gz.sl,    InpLineSL);
-   PutLine(ZPRE+"LT10", t1, t2, gz.tp1,   InpLineTP1);
-   PutLine(ZPRE+"LT20", t1, t2, gz.tp2,   InpLineTP2);
+   PutLine(ZPRE+"LEN0", t1, t3, gz.entry, sig);
+   PutLine(ZPRE+"LSL0", t1, t3, gz.sl,    InpLineSL);
+   PutLine(ZPRE+"LT10", t1, t3, gz.tp1,   InpLineTP1);
+   PutLine(ZPRE+"LT20", t1, t3, gz.tp2,   InpLineTP2);
 
-   PutLabel(ZPRE+"NEN0", t2, gz.entry, "Entry  " + DoubleToString(gz.entry, _Digits) + "  " + side + gz.status + " ", sig);
-   PutLabel(ZPRE+"NSL0", t2, gz.sl,    "SL  "    + DoubleToString(gz.sl,    _Digits) + " ", InpLineSL);
-   PutLabel(ZPRE+"NT10", t2, gz.tp1,   "TP1  "   + DoubleToString(gz.tp1,   _Digits) + " ", InpLineTP1);
-   PutLabel(ZPRE+"NT20", t2, gz.tp2,   "TP2  "   + DoubleToString(gz.tp2,   _Digits) + " ", InpLineTP2);
+   PutLabel(ZPRE+"NEN0", tl, gz.entry, "Entry  " + DoubleToString(gz.entry, _Digits) + "  " + side + gz.status, sig);
+   PutLabel(ZPRE+"NSL0", tl, gz.sl,    "SL  "    + DoubleToString(gz.sl,    _Digits), InpLineSL);
+   PutLabel(ZPRE+"NT10", tl, gz.tp1,   "TP1  "   + DoubleToString(gz.tp1,   _Digits), InpLineTP1);
+   PutLabel(ZPRE+"NT20", tl, gz.tp2,   "TP2  "   + DoubleToString(gz.tp2,   _Digits), InpLineTP2);
    ChartRedraw(0);
   }
 
