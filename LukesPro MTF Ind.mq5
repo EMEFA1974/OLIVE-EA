@@ -1,6 +1,6 @@
 #property copyright "LukesPro MTF Ind"
 #property link      ""
-#property version   "1.90"
+#property version   "1.91"
 #property indicator_chart_window
 #property indicator_buffers 4
 #property indicator_plots   4
@@ -106,7 +106,7 @@ input double InpPinWickPct  = 0.55;                // and >= this share of the c
 input int    InpPinSweep    = 3;                   // and the wick takes out the low/high of the previous N bars
 
 input group "=== Signal Grade ==="
-input ENUM_GRADE InpMinGrade = GRADE_A;            // lowest grade that becomes a signal (zone / alert / EA trade)
+input ENUM_GRADE InpMinGrade = GRADE_C;            // lowest grade that becomes a signal (zone / alert / EA trade); C = A, B and C all accepted
 input bool       InpReNeedA  = true;               // re-entries only on a fresh A-grade trigger
 input bool       InpShowFiltered = true;          // grey grade letter on signals below the minimum grade (no zone, no alert)
 input color      InpFiltColor    = clrSilver;
@@ -1261,7 +1261,7 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKESPRO MTF IND", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.90  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.91  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
