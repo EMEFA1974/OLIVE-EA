@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Lukes MTF EA"
 #property link      ""
-#property version   "1.09"
+#property version   "1.10"
 
 #include <Trade/Trade.mqh>
 
@@ -34,6 +34,12 @@ input ENUM_ENTRY_TYPE InpEntryType   = ENTRY_PENDING;   // Pending = exactly the
 input long            InpMagic       = 26092501;
 input string          InpComment     = "LukesEA";
 input int             InpSlippagePts = 30;       // max slippage (points)
+
+enum ENUM_SLBUF_MODE
+  {
+   SLBUF_FIXED = 0,   // Fixed points
+   SLBUF_ATR   = 1    // ATR based (never below the fixed points)
+  };
 
 enum ENUM_PEND_TYPE
   {
@@ -69,7 +75,11 @@ input int            InpMinSLGapPts     = 15;    // keep pending entry this far 
 
 input group "=== Re-entry after SL ==="
 input bool   InpReentryOn      = true;
-input int    InpSLBufferPts    = 20;
+input int    InpSLBufferPts    = 20;    // minimum SL buffer (points)
+input ENUM_SLBUF_MODE InpSLBufMode = SLBUF_ATR;
+input double InpSLBufATRMult   = 0.15;  // ATR mode: buffer = max(min points, ATR x this)
+input int    InpSLBufATRPeriod = 14;    // ATR period (signal timeframe)
+input bool   InpSLBufAddSpread = true;  // add the signal bar's spread to the buffer
 input double InpRR1            = 1.0;   // TP1 R-multiple
 input double InpRR2            = 2.0;   // TP2 R-multiple
 input int    InpMaxReentry     = 2;
@@ -215,7 +225,33 @@ double Pt()
    return _Point;
   }
 
-double PointBuf() { return (double)InpSLBufferPts * Pt(); }
+// average true range of the N bars ending at bar time t (signal timeframe)
+double ATRAt(const datetime t)
+  {
+   MqlRates r[];
+   ArraySetAsSeries(r, false);
+   int n = CopyRates(_Symbol, _Period, t, InpSLBufATRPeriod + 1, r);
+   if(n < 2) return 0.0;
+   double sum = 0;
+   for(int i = 1; i < n; i++)
+      sum += MathMax(r[i].high, r[i - 1].close) - MathMin(r[i].low, r[i - 1].close);
+   return sum / (n - 1);
+  }
+
+// SL buffer for a signal on bar time t: fixed points, or ATR-scaled, plus spread
+double PointBuf(const datetime t)
+  {
+   double buf = (double)InpSLBufferPts * Pt();
+   if(InpSLBufMode == SLBUF_ATR)
+      buf = MathMax(buf, ATRAt(t) * InpSLBufATRMult);
+   if(InpSLBufAddSpread)
+     {
+      int sp[];
+      if(CopySpread(_Symbol, _Period, t, 1, sp) == 1 && sp[0] > 0)
+         buf += sp[0] * _Point;
+     }
+   return buf;
+  }
 
 double PendingDist(const Candle &bar)
   {
@@ -255,7 +291,7 @@ bool BuildPendingPrices(const int dir, const Candle &bar, double &entry, double 
 
    if(dir > 0)
      {
-      sl = bar.l - PointBuf();
+      sl = bar.l - PointBuf(bar.t);
       if(InpPendingOn)
         {
          if(InpPendingType == PEND_LIMIT)
@@ -271,7 +307,7 @@ bool BuildPendingPrices(const int dir, const Candle &bar, double &entry, double 
      }
    else
      {
-      sl = bar.h + PointBuf();
+      sl = bar.h + PointBuf(bar.t);
       if(InpPendingOn)
         {
          if(InpPendingType == PEND_LIMIT)
@@ -318,6 +354,7 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
   {
    if(idea.state == IDEA_IDLE) return;
 
+   bool fillBar = false;
    if(idea.state == IDEA_PENDING)
      {
       idea.pendAge++;
@@ -325,13 +362,11 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
       if(idea.dir > 0 && (d.dir < 0 || h4.dir < 0)) { EndIdea(" [CANCELLED]", bar.t); return; }
       if(idea.dir < 0 && (d.dir > 0 || h4.dir > 0)) { EndIdea(" [CANCELLED]", bar.t); return; }
 
-      if(TouchedLevel(bar, idea.entry))
-        {
-         idea.state = IDEA_LIVE;
-         idea.fillTime = bar.t;
-         idea.slBarAge = 0;
-        }
-      return;
+      if(!TouchedLevel(bar, idea.entry)) return;
+      idea.state = IDEA_LIVE;
+      idea.fillTime = bar.t;
+      idea.slBarAge = 0;
+      fillBar = true;      // fall through: SL / TP are checked on the fill bar too
      }
 
    if(!InpReentryOn && idea.state == IDEA_SL_WAIT)
@@ -345,6 +380,15 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
    bool hitTP2 = (idea.dir > 0 ? (bar.h >= idea.tp2) : (bar.l <= idea.tp2));
    bool hitTP1 = (idea.dir > 0 ? (bar.h >= idea.tp1) : (bar.l <= idea.tp1));
    bool hitSL  = (idea.dir > 0 ? (bar.l <= idea.sl)  : (bar.h >= idea.sl));
+
+   // On the fill bar the order of events is unknown (price may have reached a
+   // target before the entry filled). Conservative: a target only counts if the
+   // bar CLOSED beyond it; the SL always counts.
+   if(fillBar)
+     {
+      if(hitTP1 && !(idea.dir > 0 ? bar.c >= idea.tp1 : bar.c <= idea.tp1)) hitTP1 = false;
+      if(hitTP2 && !(idea.dir > 0 ? bar.c >= idea.tp2 : bar.c <= idea.tp2)) hitTP2 = false;
+     }
 
    if(idea.state == IDEA_LIVE && hitSL && hitTP1)
      {
@@ -1536,7 +1580,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.09  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.10  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 

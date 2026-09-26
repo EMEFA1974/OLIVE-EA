@@ -27,6 +27,8 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 | S1 | EA contains the same signal engine as the indicator (same inputs, same defaults): candle quality, D1/H4/H1/M5 bias, cooldown, pending levels, SL/TP1/TP2, re-entry after SL. | Done |
 | S2 | Each closed bar is processed exactly once. (Indicator bug fixed in v1.70: it used to re-process the last 2 bars on every tick.) | Done |
 | S3 | On start the EA replays the last 800 bars (same as the indicator) to rebuild the engine state. No trades are taken from replayed signals. | Done |
+| S5 | The bar that fills a pending entry is also checked for SL/TP (before: only from the next bar, so a same-bar stop-out was missed and the engine stayed LIVE, blocking new signals). On that bar a target only counts if the bar closed beyond it; the SL always counts. | Done (Ind v1.83 / EA v1.10) |
+| S6 | SL buffer: `InpSLBufMode` = ATR (default): buffer = max(`InpSLBufferPts`, ATR(`InpSLBufATRPeriod`) x `InpSLBufATRMult`) + the signal bar's spread (`InpSLBufAddSpread`). Fixed mode = old behaviour (20 pts). Must be set the same in EA and indicator. | Done (Ind v1.83 / EA v1.10) |
 | S4 | Trades are only taken on a signal from the bar that just closed. | Done |
 
 ## 2. Single trades (mode = Single trades only)
@@ -121,3 +123,4 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 - 2026-09-25 – Panels are solid: chart-on-foreground turned off, and the panel is rebuilt on top when other objects appear. Colours brightened again (headings/info light blue, TP2 line).
 - 2026-09-25 – EA v1.09: panel explains signals vs trades and counts grid trades (D3b).
 - 2026-09-25 – Indicator v1.82: zone and labels are removed once the signal is mitigated (TP1 hit – or TP2 with `InpHideAtTP1`=false –, SL hit, cancelled or expired). `InpKeepLastZone` now defaults to false.
+- 2026-09-26 – Bug fixes: SL/TP checked on the pending fill bar (S5); SL buffer scales with ATR + spread (S6). Signal levels change slightly vs. before.
