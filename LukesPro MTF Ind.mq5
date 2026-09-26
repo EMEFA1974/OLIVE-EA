@@ -1,6 +1,6 @@
-#property copyright "Lukes MTF Ind"
+#property copyright "LukesPro MTF Ind"
 #property link      ""
-#property version   "1.82"
+#property version   "1.90"
 #property indicator_chart_window
 #property indicator_buffers 4
 #property indicator_plots   4
@@ -30,6 +30,14 @@ enum ENUM_PEND_TYPE
    PEND_LIMIT = 0,   // pullback (buy below / sell above)
    PEND_STOP  = 1    // confirmation break (buy above / sell below)
   };
+
+enum ENUM_GRADE
+  {
+   GRADE_A = 0,   // A only: passes every enabled quality filter
+   GRADE_B = 1,   // A + B: fails at most one filter
+   GRADE_C = 2    // A + B + C: every base signal (v1.82 behaviour)
+  };
+#define GRADE_NONE 3
 
 input group "=== Timeframes ==="
 input ENUM_TIMEFRAMES InpTF_D  = PERIOD_D1;
@@ -62,9 +70,50 @@ input bool   InpReentryOn      = true;
 input int    InpSLBufferPts    = 20;
 input double InpRR1            = 1.0;   // TP1 R-multiple
 input double InpRR2            = 2.0;   // TP2 R-multiple
-input int    InpMaxReentry     = 2;
+input int    InpMaxReentry     = 1;     // one re-entry at most (see InpReNeedA)
 input int    InpReentryWindow  = 24;
 input int    InpReentryCool    = 3;
+
+input group "=== Trend Filter (EMA, replaces the one-candle bias vote) ==="
+input bool            InpFiltOn     = true;        // on = EMA trend on TF1 AND TF2 must agree with the trade (legacy candle vote is skipped)
+input ENUM_TIMEFRAMES InpFiltTF1    = PERIOD_H1;
+input ENUM_TIMEFRAMES InpFiltTF2    = PERIOD_H4;
+input int             InpFiltFast   = 50;          // TF trend up = EMA fast > EMA slow and close > EMA slow
+input int             InpFiltSlow   = 200;
+input bool            InpD1FilterOn = true;        // D1 must not be against the trade
+input int             InpD1EmaP     = 50;          // D1 against a buy = last D1 close below this D1 EMA
+
+input group "=== ATR / Location Filter ==="
+input int    InpATRPeriod   = 14;                  // ATR on the chart timeframe
+input bool   InpATROn       = true;                // signal candle range must be between min and max x ATR
+input double InpMinRangeATR = 0.6;                 // smaller = noise
+input double InpMaxRangeATR = 2.5;                 // larger = exhaustion
+input bool   InpLocationOn  = true;                // skip signals that chase price far from value
+input int    InpLocEmaP     = 21;                  // chart-TF EMA used as value
+input double InpMaxExtATR   = 1.5;                 // max distance close <-> EMA in ATR
+input bool   InpATRStopOn   = true;                // SL buffer = max(InpSLBufferPts, ATR x k, spread x m)
+input double InpSLBufATR    = 0.3;
+input double InpSLBufSpread = 2.0;
+
+input group "=== Strict Trigger ==="
+input bool   InpStrictOn    = true;                // strong displacement through a real swing, or a real pin bar
+input double InpStrictBody  = 0.50;                // min body / range
+input double InpStrictClose = 0.70;                // close in the top (buy) / bottom (sell) 30% of the candle
+input int    InpSwingBars   = 15;                  // swing to break is searched within this many bars
+input int    InpFractalSide = 2;                   // bars on each side that make a swing point
+input double InpPinWickMult = 2.0;                 // pin bar: rejection wick >= this x body
+input double InpPinWickPct  = 0.55;                // and >= this share of the candle range
+input int    InpPinSweep    = 3;                   // and the wick takes out the low/high of the previous N bars
+
+input group "=== Signal Grade ==="
+input ENUM_GRADE InpMinGrade = GRADE_A;            // lowest grade that becomes a signal (zone / alert / EA trade)
+input bool       InpReNeedA  = true;               // re-entries only on a fresh A-grade trigger
+input bool       InpShowFiltered = true;          // grey grade letter on signals below the minimum grade (no zone, no alert)
+input color      InpFiltColor    = clrSilver;
+
+input group "=== Trade Management (set the same as the EA) ==="
+input bool   InpManageOn     = true;    // EA closes part at TP1 and lets the rest run to TP2
+input bool   InpMoveBE       = true;    // EA moves the SL to entry after TP1 (zone and stats follow it)
 
 input group "=== Alerts ==="
 input bool   InpAlertPopup   = true;
@@ -126,6 +175,8 @@ datetime lastAlertBar  = 0;
 datetime lastFillAlert = 0;
 bool     allowAlerts   = false;
 datetime gLastBar      = 0;      // last closed bar fed to the signal engine
+datetime lastFiltB     = 0;      // last grey (below min grade) markers, for their own cooldown
+datetime lastFiltS     = 0;
 
 int gCntBuy = 0, gCntSell = 0, gCntTP1 = 0, gCntTP2 = 0, gCntSL = 0, gCntLoss = 0;
 
@@ -163,6 +214,8 @@ struct Idea
    int       reCount, slBarAge, pendAge;
    bool      tp1Done;
    bool      re;
+   int       grade;      // GRADE_A / B / C
+   int       armTrend;   // EMA trend when the idea was armed
   };
 Idea idea;
 
@@ -172,6 +225,7 @@ struct ZoneSnap
    bool     valid;
    int      dir;
    bool     re;
+   int      grade;
    double   entry, sl, tp1, tp2;
    datetime t1, tEnd;   // tEnd = 0 while the idea is still running
    string   status;
@@ -183,6 +237,7 @@ void ResetZone()
    gz.valid = false;
    gz.dir = 0;
    gz.re = false;
+   gz.grade = GRADE_NONE;
    gz.entry = gz.sl = gz.tp1 = gz.tp2 = 0;
    gz.t1 = gz.tEnd = 0;
    gz.status = "";
@@ -232,9 +287,14 @@ int OnInit()
    PlotIndexSetDouble(2, PLOT_EMPTY_VALUE, EMPTY_VALUE);
    PlotIndexSetDouble(3, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "Lukes MTF Ind");
+   IndicatorSetString(INDICATOR_SHORTNAME, "LukesPro MTF Ind");
    gEmaFast = iMA(_Symbol, InpTrendTF, InpTrendFast, 0, MODE_EMA, PRICE_CLOSE);
    gEmaSlow = iMA(_Symbol, InpTrendTF, InpTrendSlow, 0, MODE_EMA, PRICE_CLOSE);
+   if(!FiltersInit())
+     {
+      Print("LukesPro MTF Ind: could not create the filter indicators (EMA / ATR)");
+      return(INIT_FAILED);
+     }
    PanelInit();
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
    lastAlertBar = 0;
@@ -256,6 +316,7 @@ void OnDeinit(const int reason)
    if(gDrag) ChartSetInteger(0, CHART_MOUSE_SCROLL, gScrollWas);
    if(gEmaFast != INVALID_HANDLE) IndicatorRelease(gEmaFast);
    if(gEmaSlow != INVALID_HANDLE) IndicatorRelease(gEmaSlow);
+   FiltersRelease();
    ObjectsDeleteAll(0, PREFIX);
    ObjectsDeleteAll(0, ARPRE);
    ObjectsDeleteAll(0, ZPRE);
@@ -282,6 +343,8 @@ void ResetIdea()
    idea.reCount = idea.slBarAge = idea.pendAge = 0;
    idea.tp1Done = false;
    idea.re = false;
+   idea.grade = GRADE_NONE;
+   idea.armTrend = 0;
   }
 
 // finish the running idea but keep its levels as the current zone
@@ -292,6 +355,7 @@ void EndIdea(const string status, const datetime t)
       gz.valid  = true;
       gz.dir    = idea.dir;
       gz.re     = idea.re;
+      gz.grade  = idea.grade;
       gz.entry  = idea.entry;
       gz.sl     = idea.sl;
       gz.tp1    = idea.tp1;
@@ -342,7 +406,7 @@ void ApplyLevels(const int dir, const double entry, const double sl)
      }
   }
 
-bool BuildPendingPrices(const int dir, const Candle &bar, double &entry, double &sl)
+bool BuildPendingPrices(const int dir, const Candle &bar, const double buf, double &entry, double &sl)
   {
    double gap = (double)InpMinSLGapPts * Pt();
    if(gap <= 0.0) gap = 5.0 * Pt();
@@ -350,7 +414,7 @@ bool BuildPendingPrices(const int dir, const Candle &bar, double &entry, double 
 
    if(dir > 0)
      {
-      sl = bar.l - PointBuf();
+      sl = bar.l - buf;
       if(InpPendingOn)
         {
          if(InpPendingType == PEND_LIMIT)
@@ -366,7 +430,7 @@ bool BuildPendingPrices(const int dir, const Candle &bar, double &entry, double 
      }
    else
      {
-      sl = bar.h + PointBuf();
+      sl = bar.h + buf;
       if(InpPendingOn)
         {
          if(InpPendingType == PEND_LIMIT)
@@ -383,10 +447,11 @@ bool BuildPendingPrices(const int dir, const Candle &bar, double &entry, double 
    return true;
   }
 
-void ArmIdea(const int dir, const Candle &bar, const bool re)
+void ArmIdea(const int dir, const Candle &bar, const bool re, const double buf,
+             const int grade, const int trendDir)
   {
    double entry = 0, sl = 0;
-   if(!BuildPendingPrices(dir, bar, entry, sl))
+   if(!BuildPendingPrices(dir, bar, buf, entry, sl))
      {
       EndIdea(idea.state == IDEA_SL_WAIT ? " [SL HIT]" : " [CANCELLED]", bar.t);
       return;
@@ -398,6 +463,8 @@ void ArmIdea(const int dir, const Candle &bar, const bool re)
    idea.pendAge = 0;
    idea.tp1Done = false;
    idea.re = re;
+   idea.grade = grade;
+   idea.armTrend = trendDir;
    ApplyLevels(dir, entry, sl);
    idea.state = (InpPendingOn ? IDEA_PENDING : IDEA_LIVE);
    if(idea.state == IDEA_LIVE)
@@ -409,24 +476,41 @@ bool TouchedLevel(const Candle &bar, const double price)
    return (bar.valid && bar.l <= price && bar.h >= price);
   }
 
-void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
+// break-even after TP1 is simulated only when the EA manages trades that way
+bool EngineBE() { return (InpManageOn && InpMoveBE); }
+
+// idea must be dropped because the higher timeframe turned against it
+bool TrendAgainst(const int dir, const Bias &d, const Bias &h4, const int trendDir)
+  {
+   if(InpFiltOn) return (trendDir == -dir && idea.armTrend != -dir);
+   return (dir > 0 ? (d.dir < 0 || h4.dir < 0) : (d.dir > 0 || h4.dir > 0));
+  }
+
+void StopOut(const Candle &bar)
+  {
+   if(idea.tp1Done && EngineBE()) { EndIdea(" [BE]", bar.t); return; }   // runner stopped at entry
+   gCntSL++; AddEv(EV_SL, bar.t);
+   if(!idea.tp1Done) { gCntLoss++; AddEv(EV_LOSS, bar.t); }
+   idea.state = IDEA_SL_WAIT;
+   idea.slTime = bar.t;
+   idea.slBarAge = 0;
+  }
+
+void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int trendDir)
   {
    if(idea.state == IDEA_IDLE) return;
+   bool fillBar = false;
 
    if(idea.state == IDEA_PENDING)
      {
       idea.pendAge++;
       if(idea.pendAge > InpPendingExpire) { EndIdea(" [EXPIRED]", bar.t); return; }
-      if(idea.dir > 0 && (d.dir < 0 || h4.dir < 0)) { EndIdea(" [CANCELLED]", bar.t); return; }
-      if(idea.dir < 0 && (d.dir > 0 || h4.dir > 0)) { EndIdea(" [CANCELLED]", bar.t); return; }
-
-      if(TouchedLevel(bar, idea.entry))
-        {
-         idea.state = IDEA_LIVE;
-         idea.fillTime = bar.t;
-         idea.slBarAge = 0;
-        }
-      return;
+      if(TrendAgainst(idea.dir, d, h4, trendDir)) { EndIdea(" [CANCELLED]", bar.t); return; }
+      if(!TouchedLevel(bar, idea.entry)) return;
+      idea.state = IDEA_LIVE;
+      idea.fillTime = bar.t;
+      idea.slBarAge = 0;
+      fillBar = true;   // SL / TP are checked on the fill bar too
      }
 
    if(!InpReentryOn && idea.state == IDEA_SL_WAIT)
@@ -441,16 +525,27 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
    bool hitTP1 = (idea.dir > 0 ? (bar.h >= idea.tp1) : (bar.l <= idea.tp1));
    bool hitSL  = (idea.dir > 0 ? (bar.l <= idea.sl)  : (bar.h >= idea.sl));
 
+   if(fillBar)
+     {
+      // the order of prices inside the fill bar is unknown. A limit is filled coming from
+      // the TP side, so only a close beyond a TP proves it came after the fill; a stop is
+      // filled coming from the SL side, so only a close beyond the SL proves that.
+      if(!InpPendingOn || InpPendingType == PEND_LIMIT)
+        {
+         hitTP1 = (idea.dir > 0 ? bar.c >= idea.tp1 : bar.c <= idea.tp1);
+         hitTP2 = (idea.dir > 0 ? bar.c >= idea.tp2 : bar.c <= idea.tp2);
+        }
+      else
+         hitSL = (idea.dir > 0 ? bar.c <= idea.sl : bar.c >= idea.sl);
+      if(hitSL) hitTP1 = hitTP2 = false;   // both possible: assume the loss
+     }
+
    if(idea.state == IDEA_LIVE && hitSL && hitTP1)
      {
       bool closeFav = (idea.dir > 0 ? (bar.c > idea.entry) : (bar.c < idea.entry));
       if(!closeFav)
         {
-         gCntSL++; AddEv(EV_SL, bar.t);
-         if(!idea.tp1Done) { gCntLoss++; AddEv(EV_LOSS, bar.t); }
-         idea.state = IDEA_SL_WAIT;
-         idea.slTime = bar.t;
-         idea.slBarAge = 0;
+         StopOut(bar);
          return;
         }
      }
@@ -463,27 +558,25 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
       return;
      }
 
+   bool tp1Now = false;
    if(idea.state == IDEA_LIVE && hitTP1 && !idea.tp1Done)
      {
       gCntTP1++; AddEv(EV_TP1, bar.t);
       idea.tp1Done = true;
+      tp1Now = true;
      }
 
    if(idea.state == IDEA_LIVE && hitSL)
      {
-      gCntSL++; AddEv(EV_SL, bar.t);
-      if(!idea.tp1Done) { gCntLoss++; AddEv(EV_LOSS, bar.t); }
-      idea.state = IDEA_SL_WAIT;
-      idea.slTime = bar.t;
-      idea.slBarAge = 0;
+      StopOut(bar);
       return;
      }
 
+   if(tp1Now && EngineBE()) idea.sl = idea.entry;   // from the next bar the runner is at break-even
+
    if(idea.state == IDEA_SL_WAIT)
      {
-      if(idea.slBarAge > InpReentryWindow
-         || (idea.dir > 0 && (d.dir < 0 || h4.dir < 0))
-         || (idea.dir < 0 && (d.dir > 0 || h4.dir > 0)))
+      if(idea.slBarAge > InpReentryWindow || TrendAgainst(idea.dir, d, h4, trendDir))
          EndIdea(" [SL HIT]", idea.slTime);
      }
   }
@@ -604,6 +697,198 @@ bool QualityBearTrigger(const Candle &k, const double prevLow)
    return (displace || reject);
   }
 
+//+------------------------------------------------------------------+
+//| Quality filters: EMA trend, D1, ATR range, location, strict      |
+//| trigger and the A/B/C grade. Keep in sync between Ind and EA.     |
+//+------------------------------------------------------------------+
+int gHTf1F = INVALID_HANDLE, gHTf1S = INVALID_HANDLE;
+int gHTf2F = INVALID_HANDLE, gHTf2S = INVALID_HANDLE;
+int gHD1   = INVALID_HANDLE, gHLoc  = INVALID_HANDLE, gHATR = INVALID_HANDLE;
+
+bool FiltersInit()
+  {
+   gHTf1F = iMA(_Symbol, InpFiltTF1, InpFiltFast, 0, MODE_EMA, PRICE_CLOSE);
+   gHTf1S = iMA(_Symbol, InpFiltTF1, InpFiltSlow, 0, MODE_EMA, PRICE_CLOSE);
+   gHTf2F = iMA(_Symbol, InpFiltTF2, InpFiltFast, 0, MODE_EMA, PRICE_CLOSE);
+   gHTf2S = iMA(_Symbol, InpFiltTF2, InpFiltSlow, 0, MODE_EMA, PRICE_CLOSE);
+   gHD1   = iMA(_Symbol, PERIOD_D1, InpD1EmaP, 0, MODE_EMA, PRICE_CLOSE);
+   gHLoc  = iMA(_Symbol, _Period, InpLocEmaP, 0, MODE_EMA, PRICE_CLOSE);
+   gHATR  = iATR(_Symbol, _Period, InpATRPeriod);
+   return (gHTf1F != INVALID_HANDLE && gHTf1S != INVALID_HANDLE && gHTf2F != INVALID_HANDLE
+           && gHTf2S != INVALID_HANDLE && gHD1 != INVALID_HANDLE && gHLoc != INVALID_HANDLE
+           && gHATR != INVALID_HANDLE);
+  }
+
+void ReleaseHandle(int &h)
+  {
+   if(h != INVALID_HANDLE) IndicatorRelease(h);
+   h = INVALID_HANDLE;
+  }
+
+void FiltersRelease()
+  {
+   ReleaseHandle(gHTf1F); ReleaseHandle(gHTf1S);
+   ReleaseHandle(gHTf2F); ReleaseHandle(gHTf2S);
+   ReleaseHandle(gHD1);   ReleaseHandle(gHLoc);  ReleaseHandle(gHATR);
+  }
+
+bool HReady(const int h) { return (h != INVALID_HANDLE && BarsCalculated(h) > 0); }
+
+// all filter data is calculated (history replay must wait for it)
+bool FiltersReady()
+  {
+   return (HReady(gHTf1F) && HReady(gHTf1S) && HReady(gHTf2F) && HReady(gHTf2S)
+           && HReady(gHD1) && HReady(gHLoc) && HReady(gHATR));
+  }
+
+double BufAt(const int h, const int sh)
+  {
+   if(h == INVALID_HANDLE || sh < 0) return 0.0;
+   double v[1];
+   if(CopyBuffer(h, 0, sh, 1, v) != 1) return 0.0;
+   if(v[0] == EMPTY_VALUE) return 0.0;
+   return v[0];
+  }
+
+// trend of one timeframe on its last bar closed at time t: 1 up, -1 down, 0 none
+int TFTrendAt(const ENUM_TIMEFRAMES tf, const int hF, const int hS, const datetime t)
+  {
+   int sh = ClosedShiftAt(tf, t);
+   if(sh < 0) return 0;
+   double f = BufAt(hF, sh), s = BufAt(hS, sh), c = iClose(_Symbol, tf, sh);
+   if(f <= 0 || s <= 0 || c <= 0) return 0;
+   if(f > s && c > s) return 1;
+   if(f < s && c < s) return -1;
+   return 0;
+  }
+
+// both filter timeframes must agree
+int TrendDirAt(const datetime t)
+  {
+   int a = TFTrendAt(InpFiltTF1, gHTf1F, gHTf1S, t);
+   int b = TFTrendAt(InpFiltTF2, gHTf2F, gHTf2S, t);
+   return ((a != 0 && a == b) ? a : 0);
+  }
+
+bool D1Against(const int dir, const datetime t)
+  {
+   int sh = ClosedShiftAt(PERIOD_D1, t);
+   if(sh < 0) return false;
+   double e = BufAt(gHD1, sh), c = iClose(_Symbol, PERIOD_D1, sh);
+   if(e <= 0 || c <= 0) return false;
+   return (dir > 0 ? c < e : c > e);
+  }
+
+double ATRAt(const int sh) { return BufAt(gHATR, sh); }
+
+double SpreadPriceAt(const int sh)
+  {
+   int s[];
+   if(CopySpread(_Symbol, _Period, sh, 1, s) == 1 && s[0] > 0) return s[0] * _Point;
+   return (double)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) * _Point;
+  }
+
+// SL distance beyond the signal candle
+double StopBuffer(const int sh)
+  {
+   double b = PointBuf();
+   if(!InpATRStopOn) return b;
+   double atr = ATRAt(sh);
+   if(atr > 0) b = MathMax(b, atr * InpSLBufATR);
+   b = MathMax(b, SpreadPriceAt(sh) * InpSLBufSpread);
+   return b;
+  }
+
+double BarHL(const int sh, const int dir) { return (dir > 0 ? iHigh(_Symbol, _Period, sh) : iLow(_Symbol, _Period, sh)); }
+
+// most recent confirmed swing high (dir > 0) / swing low (dir < 0) before bar sh;
+// falls back to the extreme of the look-back window when there is no swing point
+double SwingLevel(const int sh, const int dir)
+  {
+   int total = Bars(_Symbol, _Period);
+   int side  = (int)MathMax(1, InpFractalSide);
+   int last  = (int)MathMin(total - 1 - side, sh + InpSwingBars);
+   for(int j = sh + 1 + side; j <= last; j++)
+     {
+      double p = BarHL(j, dir);
+      bool ok = true;
+      for(int k = 1; k <= side && ok; k++)
+        {
+         double a = BarHL(j - k, dir), b = BarHL(j + k, dir);
+         if(dir > 0 ? (a >= p || b > p) : (a <= p || b < p)) ok = false;
+        }
+      if(ok) return p;
+     }
+   double ext = BarHL(sh + 1, dir);
+   for(int m = sh + 2; m <= sh + InpSwingBars && m < total; m++)
+     {
+      double p = BarHL(m, dir);
+      if(dir > 0 ? p > ext : p < ext) ext = p;
+     }
+   return ext;
+  }
+
+// strong displacement candle that is the first close through a real swing, or a real pin bar
+bool StrictTrigger(const int dir, const Candle &k, const int sh)
+  {
+   double rng = k.h - k.l;
+   if(!k.valid || rng <= 0) return false;
+   double body = MathAbs(k.c - k.o);
+   double cp   = ClosePos(k);
+   if(dir < 0) cp = 1.0 - cp;
+   bool strongClose = (cp >= InpStrictClose);
+
+   double lvl  = SwingLevel(sh, dir);
+   double prev = iClose(_Symbol, _Period, sh + 1);
+   bool breaks = (dir > 0 ? (k.c > lvl && prev <= lvl) : (k.c < lvl && prev >= lvl));
+   if(BodyRatio(k) >= InpStrictBody && strongClose && breaks) return true;
+
+   double wick = (dir > 0 ? MathMin(k.o, k.c) - k.l : k.h - MathMax(k.o, k.c));
+   if(wick < body * InpPinWickMult || wick < rng * InpPinWickPct || !strongClose) return false;
+   double ext = BarHL(sh + 1, -dir);
+   for(int j = sh + 2; j <= sh + InpPinSweep; j++)
+     {
+      double p = BarHL(j, -dir);
+      if(dir > 0 ? p < ext : p > ext) ext = p;
+     }
+   return (dir > 0 ? k.l < ext : k.h > ext);
+  }
+
+// A = passes every enabled filter, B = fails one, C = fails two or more
+int SignalGrade(const int dir, const Candle &k, const int sh, const int trendDir, string &why)
+  {
+   int fails = 0;
+   why = "";
+   if(InpFiltOn && trendDir != dir)          { fails++; why += " trend"; }
+   if(InpD1FilterOn && D1Against(dir, k.t))  { fails++; why += " D1"; }
+   double atr = ATRAt(sh);
+   if(InpATROn)
+     {
+      double rng = k.h - k.l;
+      if(atr <= 0 || rng < atr * InpMinRangeATR || rng > atr * InpMaxRangeATR) { fails++; why += " range"; }
+     }
+   if(InpLocationOn)
+     {
+      double e = BufAt(gHLoc, sh);
+      if(atr <= 0 || e <= 0 || MathAbs(k.c - e) > atr * InpMaxExtATR) { fails++; why += " extended"; }
+     }
+   if(InpStrictOn && !StrictTrigger(dir, k, sh)) { fails++; why += " candle"; }
+   if(fails >= 2) return GRADE_C;
+   return fails;
+  }
+
+string GradeName(const int g)
+  {
+   if(g == GRADE_A) return "A";
+   if(g == GRADE_B) return "B";
+   if(g == GRADE_C) return "C";
+   return "-";
+  }
+
+// lowest (best) grade letter that may arm a fresh signal / a re-entry
+int FreshLimit() { return (int)InpMinGrade; }
+int ReLimit()    { return (InpReNeedA ? GRADE_A : (int)InpMinGrade); }
+
 double RecentSwingHigh(const int rates_total, const int i, const double &high[])
   {
    int from = i + 1;
@@ -634,6 +919,26 @@ void HollowArrow(const datetime t, const double price, const int dir, const colo
    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
    ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
    ObjectSetInteger(0, name, OBJPROP_ANCHOR, dir > 0 ? ANCHOR_TOP : ANCHOR_BOTTOM);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+  }
+
+// signal below the minimum grade: grey grade letter, hover shows the failed filters
+void FilteredMark(const datetime t, const double price, const int dir, const int grade, const string why)
+  {
+   if(t == 0) return;
+   string name = ARPRE + "F" + TimeToString(t, TIME_DATE|TIME_MINUTES) + (dir > 0 ? "_U" : "_D");
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_TEXT, 0, t, price);
+   ObjectSetInteger(0, name, OBJPROP_TIME, t);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, price);
+   ObjectSetString(0, name, OBJPROP_TEXT, GradeName(grade));
+   ObjectSetInteger(0, name, OBJPROP_COLOR, InpFiltColor);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, InpZoneFontSize + 1);
+   ObjectSetString(0, name, OBJPROP_FONT, InpZoneFont);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, dir > 0 ? ANCHOR_UPPER : ANCHOR_LOWER);
+   ObjectSetString(0, name, OBJPROP_TOOLTIP, (dir > 0 ? "BUY " : "SELL ") + GradeName(grade) + " not taken, failed:" + why);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
    ObjectSetInteger(0, name, OBJPROP_BACK, false);
@@ -718,6 +1023,7 @@ void DrawLiveZone()
       gz.valid = true;
       gz.dir   = idea.dir;
       gz.re    = idea.re;
+      gz.grade = idea.grade;
       gz.entry = idea.entry;
       gz.sl    = idea.sl;
       gz.tp1   = idea.tp1;
@@ -755,7 +1061,7 @@ void DrawLiveZone()
    datetime t3 = t2 + (datetime)MathMax(4, InpLabelBars) * ps;    // line end
 
    color sig = SignalColor(gz.dir, gz.re);
-   string side = (gz.dir > 0 ? (gz.re ? "RE-BUY" : "BUY") : (gz.re ? "RE-SELL" : "SELL"));
+   string side = (gz.dir > 0 ? (gz.re ? "RE-BUY" : "BUY") : (gz.re ? "RE-SELL" : "SELL")) + " " + GradeName(gz.grade);
 
    PutRect(ZPRE+"ZSL0",  t1, gz.entry, t2, gz.sl,  Faint(InpZoneSL,  InpZoneOpacity));
    PutRect(ZPRE+"ZT10",  t1, gz.entry, t2, gz.tp1, Faint(InpZoneTP1, InpZoneOpacity));
@@ -857,6 +1163,17 @@ string TrendText(color &c)
    return (f[0] > s[0] ? "UP / PULLBACK" : "DOWN / PULLBACK");
   }
 
+string FilterTrendText(color &c)
+  {
+   if(!InpFiltOn) { c = C_MUTE; return "OFF"; }
+   string tfs = StringSubstr(EnumToString(InpFiltTF1), 7) + "+" + StringSubstr(EnumToString(InpFiltTF2), 7);
+   int t = TrendDirAt(iTime(_Symbol, _Period, 0));
+   if(t > 0) { c = C_UP; return "UP " + tfs; }
+   if(t < 0) { c = C_DN; return "DOWN " + tfs; }
+   c = C_WARN;
+   return "NONE (no A signals)";
+  }
+
 string BiasText(const ENUM_TIMEFRAMES tf, color &c)
   {
    Bias b = TFBiasNow(tf);
@@ -943,8 +1260,8 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_LIVE)    { st = (idea.dir > 0 ? "LIVE BUY" : "LIVE SELL"); sc = (idea.dir > 0 ? InpBuyColor : InpSellColor); }
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
-   PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES MTF IND", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.82  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKESPRO MTF IND", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.90  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -960,6 +1277,8 @@ void DrawPanel(const bool force = false)
    v = BiasText(InpTF_M5, c);  PRow("M5", v, c);
    PRow("Align B / S", StringFormat("%d / %d", gScoreB, gScoreS),
         (gScoreB >= InpMinAlign ? C_UP : (gScoreS >= InpMinAlign ? C_DN : C_MUTE)));
+   v = FilterTrendText(c);     PRow("Trend filter", v, c);
+   PRow("Min grade / re-entry", GradeName(FreshLimit()) + " / " + GradeName(ReLimit()), C_INFO);
    double spr = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID)) / Pt();
    PRow("Spread", StringFormat("%.0f pts", spr), (spr > 50 ? C_WARN : C_TXT));
 
@@ -984,7 +1303,7 @@ void DrawPanel(const bool force = false)
    else
      {
       string side = (idea.dir > 0 ? (idea.re ? "RE-BUY" : "BUY") : (idea.re ? "RE-SELL" : "SELL"));
-      PRow("Status", side + "  " + StateText(), SignalColor(idea.dir, idea.re));
+      PRow("Status", side + " " + GradeName(idea.grade) + "  " + StateText(), SignalColor(idea.dir, idea.re));
       PRow("Entry", Px(idea.entry), C_TXT);
       PRow("SL", Px(idea.sl), InpLineSL);
       PRow("TP1 / TP2", Px(idea.tp1) + " / " + Px(idea.tp2), InpLineTP1);
@@ -1123,12 +1442,14 @@ int OnCalculate(const int rates_total,
    int start;
    if(prev_calculated <= 0)
      {
+      if(!FiltersReady()) return(0);   // EMA / ATR history still calculating: try again next tick
       ArrayInitialize(BuyBuf, EMPTY_VALUE);
       ArrayInitialize(SellBuf, EMPTY_VALUE);
       ArrayInitialize(ReBuyBuf, EMPTY_VALUE);
       ArrayInitialize(ReSellBuf, EMPTY_VALUE);
       // arrows are kept (not deleted) so history stays on the chart
       lastBuyTime = lastSellTime = 0;
+      lastFiltB = lastFiltS = 0;
       ResetIdea();
       ResetZone();
       ResetCounts();
@@ -1167,7 +1488,9 @@ int OnCalculate(const int rates_total,
       int sb = (d.dir==1) + (h4.dir==1) + (h1.dir==1) + (m5.dir==1);
       int ss = (d.dir==-1) + (h4.dir==-1) + (h1.dir==-1) + (m5.dir==-1);
 
-      ManageIdea(bar, d, h4);
+      int trendDir = TrendDirAt(bar.t);
+
+      ManageIdea(bar, d, h4, trendDir);
 
       double prevH = RecentSwingHigh(rates_total, i, high);
       double prevL = RecentSwingLow(rates_total, i, low);
@@ -1181,29 +1504,35 @@ int OnCalculate(const int rates_total,
          if(trigS && !BearCandle(m5c)) trigS = false;
         }
 
-      bool allowB = StructureAllows(1, d, h4, h1, sb, ss);
-      bool allowS = StructureAllows(-1, d, h4, h1, sb, ss);
+      // with the EMA trend filter on, the one-candle bias vote is replaced by the grade
+      bool allowB = (InpFiltOn || StructureAllows(1, d, h4, h1, sb, ss));
+      bool allowS = (InpFiltOn || StructureAllows(-1, d, h4, h1, sb, ss));
+
+      string whyB = "", whyS = "";
+      int gradeB = ((trigB && allowB) ? SignalGrade(1, bar, i, trendDir, whyB) : GRADE_NONE);
+      int gradeS = ((trigS && allowS) ? SignalGrade(-1, bar, i, trendDir, whyS) : GRADE_NONE);
+      double buf = StopBuffer(i);
 
       bool didRe = false;
       if(InpReentryOn && idea.state == IDEA_SL_WAIT && idea.reCount < InpMaxReentry
          && idea.slBarAge >= InpReentryCool)
         {
-         if(idea.dir > 0 && trigB && allowB)
+         if(idea.dir > 0 && gradeB <= ReLimit())
            {
             ReBuyBuf[i] = low[i];
             int rc = idea.reCount + 1;
-            ArmIdea(1, bar, true);
+            ArmIdea(1, bar, true, buf, gradeB, trendDir);
             idea.reCount = rc;
             lastBuyTime = bar.t;
             gCntBuy++; AddEv(EV_SIG, bar.t);
             HollowArrow(time[i], low[i], 1, InpReBuyColor, true);
             didRe = true;
            }
-         else if(idea.dir < 0 && trigS && allowS)
+         else if(idea.dir < 0 && gradeS <= ReLimit())
            {
             ReSellBuf[i] = high[i];
             int rc = idea.reCount + 1;
-            ArmIdea(-1, bar, true);
+            ArmIdea(-1, bar, true, buf, gradeS, trendDir);
             idea.reCount = rc;
             lastSellTime = bar.t;
             gCntSell++; AddEv(EV_SIG, bar.t);
@@ -1212,27 +1541,45 @@ int OnCalculate(const int rates_total,
            }
         }
 
+      bool armed = didRe;
       if(!didRe)
         {
          bool coolB = Cooled(bar.t, lastBuyTime, InpCooldown) && Cooled(bar.t, lastSellTime, 3);
          bool coolS = Cooled(bar.t, lastSellTime, InpCooldown) && Cooled(bar.t, lastBuyTime, 3);
          bool free = (idea.state == IDEA_IDLE);
 
-         if(free && trigB && allowB && coolB)
+         if(free && gradeB <= FreshLimit() && coolB)
            {
             BuyBuf[i] = low[i];
             lastBuyTime = bar.t;
-            ArmIdea(1, bar, false);
+            ArmIdea(1, bar, false, buf, gradeB, trendDir);
             gCntBuy++; AddEv(EV_SIG, bar.t);
             HollowArrow(time[i], low[i], 1, InpBuyColor, false);
+            armed = true;
            }
-         else if(free && trigS && allowS && coolS)
+         else if(free && gradeS <= FreshLimit() && coolS)
            {
             SellBuf[i] = high[i];
             lastSellTime = bar.t;
-            ArmIdea(-1, bar, false);
+            ArmIdea(-1, bar, false, buf, gradeS, trendDir);
             gCntSell++; AddEv(EV_SIG, bar.t);
             HollowArrow(time[i], high[i], -1, InpSellColor, false);
+            armed = true;
+           }
+        }
+
+      // base signals below the minimum grade: grey letter only (no zone, no alert, no trade)
+      if(!armed && InpShowFiltered)
+        {
+         if(gradeB != GRADE_NONE && gradeB > FreshLimit() && Cooled(bar.t, lastFiltB, InpCooldown))
+           {
+            lastFiltB = bar.t;
+            FilteredMark(time[i], low[i], 1, gradeB, whyB);
+           }
+         else if(gradeS != GRADE_NONE && gradeS > FreshLimit() && Cooled(bar.t, lastFiltS, InpCooldown))
+           {
+            lastFiltS = bar.t;
+            FilteredMark(time[i], high[i], -1, gradeS, whyS);
            }
         }
      }
@@ -1259,14 +1606,14 @@ void FireAlert(const string side, const datetime barTime, const double barClose)
                            DoubleToString(idea.tp1, _Digits),
                            DoubleToString(idea.tp2, _Digits));
 
-   string msg = StringFormat("Lukes MTF %s %s | %s | close %s | %s%s",
+   string msg = StringFormat("LukesPro MTF %s %s | %s | close %s | %s%s",
                              side, _Symbol, tf, DoubleToString(barClose, _Digits),
                              TimeToString(barTime, TIME_DATE|TIME_MINUTES), extra);
 
    if(InpAlertPopup) Alert(msg);
    if(InpAlertSound) PlaySound(InpSoundFile);
    if(InpAlertPush)  SendNotification(msg);
-   if(InpAlertEmail) SendMail("Lukes MTF " + side + " " + _Symbol, msg);
+   if(InpAlertEmail) SendMail("LukesPro MTF " + side + " " + _Symbol, msg);
   }
 
 void CheckAlerts(const datetime barTime, const double barClose)
@@ -1289,6 +1636,7 @@ void CheckAlerts(const datetime barTime, const double barClose)
 
    string side = buy ? "BUY" : (sell ? "SELL" : (rebuy ? "RE-ENTRY BUY" : "RE-ENTRY SELL"));
    if((rebuy || resell) && !InpAlertReentry) return;
+   if(idea.state != IDEA_IDLE) side = side + " " + GradeName(idea.grade);
    if(InpPendingOn) side = side + " PEND";
    FireAlert(side, barTime, barClose);
   }
