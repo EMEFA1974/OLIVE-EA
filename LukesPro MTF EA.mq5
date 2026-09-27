@@ -37,7 +37,7 @@ enum ENUM_GRADE
 #define GRADE_NONE 3
 
 input group "=== EA Mode ==="
-input ENUM_EA_MODE    InpMode        = MODE_SIGNALS;
+input ENUM_EA_MODE    InpMode        = MODE_GRID;
 input ENUM_ENTRY_TYPE InpEntryType   = ENTRY_PENDING;   // Pending = exactly the indicator's Entry/SL/TP1
 input long            InpMagic       = 26092501;
 input string          InpComment     = "LukesEA";
@@ -145,7 +145,7 @@ input double         InpGridGapMult    = 1.20;          // gap multiplier per le
 input int            InpGridMaxGapPts  = 0;             // largest allowed gap in points (0 = no cap)
 input int            InpGridMaxTrades  = 5;             // max running trades (stop adding at this count)
 input bool           InpBasketTPOn     = true;          // off = close all grid trades at single-trade TP1
-input ENUM_BASKET_TP InpBasketTPType   = BASKET_MONEY;
+input ENUM_BASKET_TP InpBasketTPType   = BASKET_DISTANCE;
 input double         InpBasketTPMoney  = 5.00;          // basket TP in account money
 input int            InpBasketTPPts    = 200;           // basket TP: points beyond basket average
 
