@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Lukes MTF EA"
 #property link      ""
-#property version   "1.10"
+#property version   "1.11"
 
 #include <Trade/Trade.mqh>
 
@@ -133,6 +133,7 @@ input string InpSoundFile    = "alert.wav";
 
 input group "=== Visuals / Log ==="
 input bool   InpDrawSignals  = true;       // dot on every EA signal candle (compare with indicator arrows)
+input int    InpDotGapPts    = 100;        // dot distance from the candle: below the low (buy) / above the high (sell), points
 input bool   InpShowPanel    = true;
 input int    InpPanelX       = 4;        // left edge
 input int    InpPanelY       = -1;       // -1 = bottom-left (indicator panel is top-left). Drag to move.
@@ -714,12 +715,18 @@ void DrawSignal(const int i, const int sig)
    datetime t = iTime(_Symbol, _Period, i);
    if(t == 0) return;
    string name = EAPRE + "S" + IntegerToString((long)t);
+   // buy / re-buy: under the candle, sell / re-sell: above it
+   bool   buy   = (sig > 0);
+   double price = (buy ? iLow(_Symbol, _Period, i) - InpDotGapPts * Pt()
+                       : iHigh(_Symbol, _Period, i) + InpDotGapPts * Pt());
    if(ObjectFind(0, name) < 0)
-      ObjectCreate(0, name, OBJ_ARROW, 0, t, iClose(_Symbol, _Period, i));
-   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 159);   // small dot on the signal candle's close
+      ObjectCreate(0, name, OBJ_ARROW, 0, t, price);
+   ObjectSetInteger(0, name, OBJPROP_TIME, t);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, price);
+   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 159);   // small dot
    ObjectSetInteger(0, name, OBJPROP_COLOR, SigColor(sig));
    ObjectSetInteger(0, name, OBJPROP_WIDTH, 3);
-   ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_CENTER);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, buy ? ANCHOR_TOP : ANCHOR_BOTTOM);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
    ObjectSetString(0, name, OBJPROP_TOOLTIP, "EA " + SigName(sig));
@@ -1580,7 +1587,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.10  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.11  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
