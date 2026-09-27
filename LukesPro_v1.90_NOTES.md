@@ -39,3 +39,21 @@ grid set `InpManageOn=false` on both.
    max drawdown and number of trades. Keep a filter only if it improves expectancy.
 3. Compare `InpMinGrade` A vs B, then `InpManageOn` on vs off.
 4. Confirm the chosen settings on a later period that wasn't used for tuning.
+
+## EA v1.92 — HYBRID entry type
+
+* **`InpEntryType`**: MARKET / PENDING / HYBRID, default **HYBRID**. MARKET and PENDING work exactly as before.
+* **`InpHybridMktPct`** (default 50): the % of the lot opened at market.
+* On each HYBRID signal:
+  * the market part opens immediately with the signal's SL. Its TP1/TP2 are measured from
+    its own fill price with the same R multiples (`InpRR1` / `InpRR2`);
+  * the rest goes in as the normal pending order at the signal's Entry, with the signal's
+    SL/TP;
+  * if the lot is too small to split (either part below the minimum lot), the whole lot goes
+    in as the pending order.
+* Grid mode: the market part is grid trade #1, and the pending part joins the same
+  basket when it fills. When the basket closes, a pending part that hasn't filled is deleted
+  so it can't start a basket of its own.
+* Panel: the Entry row shows `Hybrid 50% mkt`. Both parts of one signal count as one entry,
+  and as one closed trade in the TODAY stats.
+* The signal engine and the indicator are unchanged.
