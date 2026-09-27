@@ -6,7 +6,7 @@
 //+------------------------------------------------------------------+
 #property copyright "LukesPro BTC MTF EA"
 #property link      ""
-#property version   "1.92"
+#property version   "1.93"
 
 #include <Trade/Trade.mqh>
 
@@ -42,6 +42,7 @@ input group "=== EA Mode ==="
 input ENUM_EA_MODE    InpMode        = MODE_GRID;
 input ENUM_ENTRY_TYPE InpEntryType   = ENTRY_HYBRID;    // Entry type (MARKET / PENDING / HYBRID)
 input double          InpHybridMktPct = 50.0;           // HYBRID: % of the lot opened at market (rest = pending)
+input double          InpHybridMinGapUsd = 50.0;        // HYBRID: split only if Entry is at least $ this far from price, else ONE market trade
 input long            InpMagic       = 26092601;
 input string          InpComment     = "LukesBTC";
 input double          InpSlippageUsd = 15.0;     // max slippage in USD (gold: 30 pts)
@@ -1243,6 +1244,17 @@ void OpenSignal(const int dir, const double lot, const bool withStops, const str
       OpenEntry(dir, lot, withStops, tag);
       return;
      }
+   // Entry level too close to the current price: two trades a few dollars apart add nothing,
+   // so the whole lot goes in as ONE market trade
+   double px = SymbolInfoDouble(_Symbol, dir > 0 ? SYMBOL_ASK : SYMBOL_BID);
+   double gap = (dir > 0 ? px - idea.entry : idea.entry - px);   // how far price is above a buy / below a sell entry
+   if(gap < InpHybridMinGapUsd * Usd())
+     {
+      Log("HYBRID_ONE", StringFormat("%s: Entry %s only $%.2f from price %s (< $%.2f), one market trade",
+                                     tag, Px(idea.entry), gap, Px(px), InpHybridMinGapUsd));
+      OpenEntry(dir, lot, withStops, tag + " mkt", true);
+      return;
+     }
    OpenEntry(dir, mLot, withStops, tag + " mkt", true);
    OpenEntry(dir, pLot, withStops, tag + " pend");   // last, so the grid keeps the indicator TP1
   }
@@ -1997,7 +2009,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKESPRO BTC MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.92  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.93  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 

@@ -58,3 +58,6 @@ immediately, the rest is the usual pending order at the indicator's Entry level.
 
 Related tuning (set the same in the indicator and the EA): a smaller `InpPendingRetrace`
 (e.g. 0.20 instead of 0.40) places the limit closer to the signal close, so it fills more often.
+- `InpHybridMinGapUsd` (default $50): the lot is only split when the indicator Entry is at least this far
+  from the current price. Closer than that, the whole lot goes in as ONE market trade (no near-duplicate trades).
+  Set it to 0 to always split.
