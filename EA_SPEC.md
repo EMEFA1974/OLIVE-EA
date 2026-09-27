@@ -124,3 +124,4 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 - 2026-09-25 – EA v1.09: panel explains signals vs trades and counts grid trades (D3b).
 - 2026-09-25 – Indicator v1.82: zone and labels are removed once the signal is mitigated (TP1 hit – or TP2 with `InpHideAtTP1`=false –, SL hit, cancelled or expired). `InpKeepLastZone` now defaults to false.
 - 2026-09-26 – Bug fixes: SL/TP checked on the pending fill bar (S5); SL buffer scales with ATR + spread (S6). Signal levels change slightly vs. before.
+- 2026-09-27 – EA v1.12 defaults changed: `InpMode` = Full grid (was Signals only), `InpBasketTPType` = price distance beyond basket average (`InpBasketTPPts`, was money).

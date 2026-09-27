@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Lukes MTF EA"
 #property link      ""
-#property version   "1.11"
+#property version   "1.12"
 
 #include <Trade/Trade.mqh>
 
@@ -25,11 +25,11 @@ enum ENUM_ENTRY_TYPE
 enum ENUM_BASKET_TP
   {
    BASKET_MONEY    = 0,  // Money profit of the basket ($)
-   BASKET_DISTANCE = 1   // Price distance beyond basket average ($)
+   BASKET_DISTANCE = 1   // Price distance beyond basket average (points)
   };
 
 input group "=== EA Mode ==="
-input ENUM_EA_MODE    InpMode        = MODE_SIGNALS;
+input ENUM_EA_MODE    InpMode        = MODE_GRID;
 input ENUM_ENTRY_TYPE InpEntryType   = ENTRY_PENDING;   // Pending = exactly the indicator's Entry/SL/TP1
 input long            InpMagic       = 26092501;
 input string          InpComment     = "LukesEA";
@@ -104,7 +104,7 @@ input double         InpGridGapMult    = 1.20;          // gap multiplier per le
 input int            InpGridMaxGapPts  = 0;             // largest allowed gap in points (0 = no cap)
 input int            InpGridMaxTrades  = 5;             // max running trades (stop adding at this count)
 input bool           InpBasketTPOn     = true;          // off = close all grid trades at single-trade TP1
-input ENUM_BASKET_TP InpBasketTPType   = BASKET_MONEY;
+input ENUM_BASKET_TP InpBasketTPType   = BASKET_DISTANCE;
 input double         InpBasketTPMoney  = 5.00;          // basket TP in account money
 input int            InpBasketTPPts    = 200;           // basket TP: points beyond basket average
 
@@ -1587,7 +1587,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.11  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.12  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
