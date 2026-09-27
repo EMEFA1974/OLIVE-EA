@@ -70,3 +70,13 @@ grid set `InpManageOn=false` on both.
 * Single trades mode is unchanged: HYBRID still splits into a market part and a pending part.
   They share the signal's SL, but their TPs are measured from their own entry prices, so they
   differ. MARKET and PENDING are unchanged in both modes.
+
+## EA v1.94 — lot sizes in Full grid mode
+
+* Bug: in Full grid mode the signal trade (grid #1) opened with the Grid Lot (`InpGridStartLot`)
+  instead of the Single Lot (`InpSingleLot`).
+* Fix: the signal trade always uses the **Single Lot**, in both modes (in HYBRID single mode, the
+  Single Lot is what gets split). The grid's extra trades start at the **Grid Lot**:
+  #2 = Grid Lot, #3 = Grid Lot x `InpGridMultiplier`, #4 = Grid Lot x multiplier², and so on.
+  Example with Single 1.0, Grid 2.0, multiplier 1.5: 1.0 → 2.0 → 3.0 → 4.5 → 6.75.
+* `InpGridMaxTrades` still counts the signal trade, so the default of 5 is the signal trade plus 4 extra trades.

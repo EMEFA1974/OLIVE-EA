@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "LukesPro MTF EA"
 #property link      ""
-#property version   "1.93"
+#property version   "1.94"
 
 #include <Trade/Trade.mqh>
 
@@ -122,7 +122,7 @@ input ENUM_GRADE InpMinGrade = GRADE_C;            // lowest grade that becomes 
 input bool       InpReNeedA  = true;               // re-entries only on a fresh A-grade trigger
 
 input group "=== Single Trades ==="
-input double InpSingleLot       = 0.01;
+input double InpSingleLot       = 0.01;    // Single Lot: lot of every signal trade (single trades, and grid trade #1)
 input bool   InpTPFromFill      = false;   // market entry: TP1 from fill price (same R) instead of indicator TP1
 input bool   InpCloseOnOpposite = true;    // opposite signal closes the trade and reverses
 input bool   InpTrailOn         = false;   // trailing stop
@@ -139,7 +139,7 @@ input bool   InpRunnerTrailOn  = false;   // after TP1 trail the runner by ATR
 input double InpRunnerTrailATR = 1.5;     // runner trail distance in ATR (chart timeframe)
 
 input group "=== Grid ==="
-input double         InpGridStartLot   = 0.01;
+input double         InpGridStartLot   = 0.01;          // Grid Lot: lot of the first extra grid trade (#2); each next one x multiplier
 input int            InpGridDistPts    = 500;           // add a trade every N points against the basket
 input double         InpGridMultiplier = 1.50;          // lot multiplier per grid level
 input bool           InpGridWidenOn    = false;         // widen the gap at each new grid level
@@ -1316,7 +1316,7 @@ void ActOnSignal(const int sig)
          return;
         }
       if(CountOrders() > 0) DeleteOrders("replaced by " + tag);
-      OpenEntry(dir, InpGridStartLot, false, tag + " grid#1");
+      OpenEntry(dir, InpSingleLot, false, tag + " grid#1");   // the signal trade uses the Single Lot
      }
   }
 
@@ -1671,7 +1671,8 @@ void ManageGrid(const Basket &b)
    bool add = (b.dir > 0 ? ask <= b.extreme - GridDist(b.count) : bid >= b.extreme + GridDist(b.count));
    if(!add) return;
 
-   double lot = NormLot(InpGridStartLot * MathPow(InpGridMultiplier, b.count));
+   // extra grid trades: #2 = Grid Lot, #3 = Grid Lot x multiplier, ... (trade #1 is the signal trade, Single Lot)
+   double lot = NormLot(InpGridStartLot * MathPow(InpGridMultiplier, b.count - 1));
    string cmt = InpComment + "|grid" + IntegerToString(b.count + 1);
    bool ok = (b.dir > 0 ? trade.Buy(lot, _Symbol, 0, 0, 0, cmt) : trade.Sell(lot, _Symbol, 0, 0, 0, cmt));
    uint rc = trade.ResultRetcode();
@@ -2098,7 +2099,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKESPRO MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.93  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.94  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
