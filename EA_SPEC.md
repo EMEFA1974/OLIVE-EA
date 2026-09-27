@@ -55,18 +55,18 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 | R5 | `InpGridMaxTrades`: when this many trades are running, stop adding grid trades. | Done |
 | R6 | **Basket TP** closes all grid trades. Adjustable: money profit (`InpBasketTPMoney`, $) or points beyond the basket average (`InpBasketTPPts`), selected by `InpBasketTPType`. | Done |
 | R7 | Basket TP toggle (`InpBasketTPOn`). When **off**, all grid trades close when price reaches the single-trade **TP1** of the signal that started the basket. | Done |
-| R8 | In grid mode the indicator's individual TP and SL are **not** used. Instead (toggle `InpGridBrokerLevels`, default on) every grid trade carries the **same basket TP and basket SL price**, so the whole basket closes together. These real levels show on PC and mobile and work even if MT5 is off. Basket TP price = TP1 (basket TP off) / average ± `InpBasketTPPts` / price where basket profit = `InpBasketTPMoney`. Basket SL price = tighter of the basket break-even/trailing stop and the price where the loss = Equity Protector %. Updated after every grid add and stop move. | Changed (v1.06) |
+| R8 | Full grid: **no grid trade ever has an SL** (sent without one; an existing SL is removed). The **signal trade on its own has only a TP = TP1** (market entry: TP1 measured from its fill price). **Once a grid trade is added, all trades share one basket TP** (money or distance) and close together. **Basket TP off:** every grid trade gets TP1. TP levels are placed on the trades when `InpGridBrokerLevels` = true (visible on PC + mobile); the EA also checks them itself. | Changed (v1.16) |
 | R9 | **One direction at a time**: while a basket is running, new signals (either direction) are ignored. | Done |
 | R10 | Single-trade trailing stop does not apply in grid mode (the grid has its own basket stop, R11–R12). | Done |
 | R11 | **Basket break-even** (toggle `InpBasketBEOn`, default off): when price is `InpBasketBEStartPts` points past the basket average, a basket stop is set at average + `InpBasketBELockPts` points. | Done (Phase 4) |
 | R12 | **Basket trailing** (toggle `InpBasketTrailOn`, default off): when price is `InpBasketTrailStartPts` points past the average, the basket stop trails `InpBasketTrailDistPts` points behind price in steps of `InpBasketTrailStepPts`, and only ever moves in profit. | Done (Phase 4) |
-| R13 | The basket stop is **virtual**: no SL is placed on the grid orders (keeps R8). The EA closes all grid trades when price hits it. It is shown as an orange dashed line and survives an EA/terminal restart. It only works while MT5 is running and connected. | Done (Phase 4) |
+| R13 | The basket break-even/trailing stop and the Equity Protector are **virtual**: the EA closes all grid trades when price reaches them (no SL on the trades, R8). The basket stop is shown as an orange dashed line and survives a restart. They only work while MT5 is running and connected. | Changed (v1.16) |
 
 ## 4. Protection
 
 | # | Rule | Status |
 |---|------|--------|
-| P1 | **Equity Protector** (toggle): when the EA's floating loss reaches `InpEquityProtPct` % of the **current balance**, close all EA trades and pending orders. | Done |
+| P1 | **Equity Protector** (toggle): when the EA's floating loss reaches `InpEquityProtPct` % (default **25%**) of the **current balance**, close all EA trades and pending orders. | Done |
 | P2 | After the Equity Protector fires, the EA waits for the **next signal** and continues normally. | Done |
 
 ## 5. Alerts
@@ -129,3 +129,4 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 - 2026-09-27 – EA v1.13: HYBRID entry type (G5b), now the default.
 - 2026-09-27 – EA v1.14: HYBRID no longer splits in Full grid mode (the pending half was counted as a grid trade).
 - 2026-09-27 – EA v1.15: in Full grid mode the signal trade uses the Single lot; grid extras start at the Grid start lot (R1, R4). Before, the signal trade used the Grid start lot and the first extra was already multiplied.
+- 2026-09-27 – EA v1.16: grid TP/SL rules (R8, R13): no SL on grid trades, signal trade alone -> TP1, grid added -> shared basket TP, basket TP off -> TP1. Equity Protector default 25%.

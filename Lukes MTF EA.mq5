@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Lukes MTF EA"
 #property link      ""
-#property version   "1.15"
+#property version   "1.16"
 
 #include <Trade/Trade.mqh>
 
@@ -126,11 +126,11 @@ input int    InpBasketTrailStartPts = 200;    // start trailing when price is th
 input int    InpBasketTrailDistPts  = 150;    // trail this many points behind price
 input int    InpBasketTrailStepPts  = 20;     // move the basket stop in steps of (points)
 input color  InpBasketStopColor     = clrOrange;
-input bool   InpGridBrokerLevels    = true;   // put the basket TP/SL on every grid trade (visible on PC + mobile, works if MT5 is off)
+input bool   InpGridBrokerLevels    = true;   // put the TP on every grid trade (visible on PC + mobile, works if MT5 is off). Grid trades never get an SL.
 
 input group "=== Equity Protector ==="
 input bool   InpEquityProtOn  = true;
-input double InpEquityProtPct = 10.0;      // close all when floating loss reaches % of current balance
+input double InpEquityProtPct = 25.0;      // close all when floating loss reaches % of current balance
 
 input group "=== Alerts ==="
 input bool   InpAlertTrades  = true;       // opens, closes, basket TP, equity stop
@@ -1053,6 +1053,12 @@ void EnterSignal(const int dir, const double lot, const bool withStops, const st
       OpenEntryAs(dir, lot, withStops, tag + " [hybrid: grid = market]", ENTRY_MARKET, true);
       return;
      }
+   if(InpEntryType == ENTRY_MARKET && InpMode == MODE_GRID)
+     {
+      // grid signal trade at market: TP1 measured from its own fill price
+      OpenEntryAs(dir, lot, withStops, tag, ENTRY_MARKET, true);
+      return;
+     }
    if(InpEntryType == ENTRY_HYBRID) OpenHybrid(dir, lot, withStops, tag);
    else                             OpenEntry(dir, lot, withStops, tag);
   }
@@ -1237,41 +1243,38 @@ double PriceForProfit(const Basket &b, const double money, const double px)
    return px + b.dir * (money - b.profit) / mpp;
   }
 
+// Signal trade on its own -> TP1. Once a grid trade is added -> shared basket TP.
+// Basket TP off -> every grid trade closes at TP1.
+bool GridUsesTP1(const Basket &b)
+  {
+   return (LoadTP1() > 0 && (!InpBasketTPOn || b.count <= 1));
+  }
+
 double GridTPPrice(const Basket &b, const double px)
   {
    double tp1 = LoadTP1();
-   if(!InpBasketTPOn && tp1 > 0) return tp1;
+   if(GridUsesTP1(b)) return tp1;
    if(InpBasketTPType == BASKET_DISTANCE) return b.avg + b.dir * BasketDist();
    return PriceForProfit(b, InpBasketTPMoney, px);
   }
 
-// tightest of: basket break-even/trailing stop, Equity Protector price
-double GridSLPrice(const Basket &b, const double px)
-  {
-   double sl = LoadBStop();
-   if(InpEquityProtOn)
-     {
-      double limit = -AccountInfoDouble(ACCOUNT_BALANCE) * InpEquityProtPct / 100.0;
-      double eq = PriceForProfit(b, limit, px);
-      if(eq > 0 && (sl <= 0 || (b.dir > 0 ? eq > sl : eq < sl))) sl = eq;
-     }
-   return sl;
-  }
 
+
+// Grid trades never carry an SL (the basket stop and the Equity Protector are enforced by
+// the EA itself). All grid trades share one TP: TP1 while the signal trade is alone
+// (or basket TP is off), the basket TP once grid trades were added.
 void SyncGridLevels(const Basket &b)
   {
-   if(!InpGridBrokerLevels || b.count == 0) return;
+   if(b.count == 0) return;
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double px  = (b.dir > 0 ? bid : ask);
    double ms  = MinStop() + _Point;
    double tol = 5 * Pt();   // ignore changes smaller than 5 points (avoid modify spam)
 
-   double tp = NormalizeDouble(GridTPPrice(b, px), _Digits);
-   double sl = NormalizeDouble(GridSLPrice(b, px), _Digits);
-   // a level too close to price is left off; the EA's own check still closes the basket
+   double tp = (InpGridBrokerLevels ? NormalizeDouble(GridTPPrice(b, px), _Digits) : 0.0);
+   // a TP too close to price is left off; the EA's own check still closes the basket
    if(tp > 0 && (b.dir > 0 ? tp < bid + ms : tp > ask - ms)) tp = 0;
-   if(sl > 0 && (b.dir > 0 ? sl > bid - ms : sl < ask + ms)) sl = 0;
 
    for(int i = PositionsTotal() - 1; i >= 0; i--)
      {
@@ -1279,10 +1282,9 @@ void SyncGridLevels(const Basket &b)
       if(tk == 0 || !Ours()) continue;
       double csl = PositionGetDouble(POSITION_SL);
       double ctp = PositionGetDouble(POSITION_TP);
-      double nsl = (sl > 0 ? sl : csl);
+      double nsl = 0.0;                       // never an SL on a grid trade
       double ntp = (tp > 0 ? tp : ctp);
-      bool chg = (MathAbs(nsl - csl) >= tol || MathAbs(ntp - ctp) >= tol
-                  || (csl == 0 && nsl > 0) || (ctp == 0 && ntp > 0));
+      bool chg = (csl != 0 || MathAbs(ntp - ctp) >= tol || (ctp == 0 && ntp > 0));
       if(!chg) continue;
       if(trade.PositionModify(tk, nsl, ntp))
          Log("GRID_LEVELS", StringFormat("ticket %I64u  SL %s  TP %s", tk, (nsl > 0 ? Px(nsl) : "none"), (ntp > 0 ? Px(ntp) : "none")));
@@ -1310,7 +1312,7 @@ void ManageGrid(const Basket &b)
    bool   close = false;
    string why   = "";
    double tp1   = LoadTP1();
-   if(InpBasketTPOn || tp1 <= 0)
+   if(!GridUsesTP1(b))
      {
       if(InpBasketTPType == BASKET_MONEY)
         {
@@ -1326,7 +1328,7 @@ void ManageGrid(const Basket &b)
    else
      {
       close = (b.dir > 0 ? bid >= tp1 : ask <= tp1);
-      why = "grid closed at single-trade TP1 " + Px(tp1);
+      why = (b.count <= 1 ? "signal trade closed at TP1 " : "grid closed at single-trade TP1 ") + Px(tp1);
      }
    string bwhy = "";
    if(!close && BasketStopHit(b, bid, ask, bwhy)) { close = true; why = bwhy; }
@@ -1749,7 +1751,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.15  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.16  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
