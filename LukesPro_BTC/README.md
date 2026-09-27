@@ -65,3 +65,11 @@ Related tuning (set the same in the indicator and the EA): a smaller `InpPending
 - In **Full grid** mode HYBRID does not split: it opens ONE market trade with the full grid lot and the
   grid adds trades on pullbacks (a filled pending leg would otherwise count as grid level #2).
   All grid trades share one basket TP/SL by design (`InpGridBrokerLevels`).
+
+## Grid basket TP (v1.96)
+
+`InpGridBrokerLevels = false` (default): grid trades carry **no TP/SL of their own**. The EA closes the whole
+basket together when price reaches the basket TP (`InpBasketTPType` / `InpBasketTPUsd`, default avg ± $100),
+shown as a green dashed line and on the panel. The equity protector and the optional basket BE/trailing stop
+also close the whole basket. MT5 must be running (use a VPS). Set it to `true` to copy the basket TP/SL
+onto every trade instead (works with MT5 off, but each trade then shows its own TP/SL).

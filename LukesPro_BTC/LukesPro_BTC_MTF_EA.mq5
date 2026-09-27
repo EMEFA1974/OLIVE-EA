@@ -6,7 +6,7 @@
 //+------------------------------------------------------------------+
 #property copyright "LukesPro BTC MTF EA"
 #property link      ""
-#property version   "1.95"
+#property version   "1.96"
 
 #include <Trade/Trade.mqh>
 
@@ -161,7 +161,8 @@ input double InpBasketTrailStartUsd = 100.0;  // start trailing when price is th
 input double InpBasketTrailDistUsd  = 75.0;   // trail this many USD behind price
 input double InpBasketTrailStepUsd  = 10.0;   // move the basket stop in steps of, USD
 input color  InpBasketStopColor     = clrOrange;
-input bool   InpGridBrokerLevels    = true;   // put the basket TP/SL on every grid trade (visible on PC + mobile, works if MT5 is off)
+input color  InpBasketTPColor       = clrLime;  // basket TP line on the chart
+input bool   InpGridBrokerLevels    = false;  // false = ONE basket TP (EA closes all trades together, no TP/SL on the trades; MT5 must run). true = copy basket TP/SL onto every trade
 
 input group "=== Equity Protector ==="
 input bool   InpEquityProtOn  = true;
@@ -1563,9 +1564,39 @@ double GridSLPrice(const Basket &b, const double px)
    return sl;
   }
 
+// basket TP line on the chart (0 = remove)
+void DrawBasketTP(const double p)
+  {
+   string name = EAPRE + "BTP";
+   if(p <= 0) { ObjectDelete(0, name); return; }
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_HLINE, 0, 0, p);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, p);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, InpBasketTPColor);
+   ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DASH);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+   ObjectSetString(0, name, OBJPROP_TOOLTIP, "Basket TP " + DoubleToString(p, _Digits));
+  }
+
+// basket mode (InpGridBrokerLevels = false): the trades carry no TP/SL of their own;
+// remove any left from an earlier setting so only the basket TP closes them
+void ClearTradeLevels()
+  {
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0 || !Ours()) continue;
+      if(PositionGetDouble(POSITION_SL) == 0 && PositionGetDouble(POSITION_TP) == 0) continue;
+      if(trade.PositionModify(tk, 0, 0))
+         Log("GRID_LEVELS", StringFormat("ticket %I64u TP/SL removed (basket TP manages the grid)", tk));
+     }
+  }
+
 void SyncGridLevels(const Basket &b)
   {
-   if(!InpGridBrokerLevels || b.count == 0) return;
+   if(b.count == 0) return;
+   if(!InpGridBrokerLevels) { ClearTradeLevels(); return; }
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double px  = (b.dir > 0 ? bid : ask);
@@ -1605,6 +1636,7 @@ void ManageGrid(const Basket &b)
         }
       gPrevGridCount = 0;
       if(LoadBStop() > 0) SaveBStop(0);
+      DrawBasketTP(0);
       return;
      }
    gPrevGridCount = b.count;
@@ -1647,6 +1679,7 @@ void ManageGrid(const Basket &b)
      }
 
    SyncGridLevels(b);
+   DrawBasketTP(GridTPPrice(b, b.dir > 0 ? bid : ask));
 
    // 2) add a grid trade
    if(b.count >= InpGridMaxTrades) return;
@@ -2014,7 +2047,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKESPRO BTC MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.95  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.96  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -2090,6 +2123,9 @@ void UpdatePanel(const bool force = false)
       if(InpMode == MODE_GRID)
         {
          PRow("Grid trades open", StringFormat("%d/%d  gap $%.0f", b.count, InpGridMaxTrades, GridGapUsd((int)MathMax(1, b.count))), C_TXT);
+         double bpx = SymbolInfoDouble(_Symbol, b.dir > 0 ? SYMBOL_BID : SYMBOL_ASK);
+         double btp = GridTPPrice(b, bpx);
+         if(btp > 0) PRow("Basket TP", StringFormat("%s  ($%.0f away)", Px(btp), MathAbs(btp - bpx)), C_UP);
          double bs = LoadBStop();
          if(InpBasketBEOn || InpBasketTrailOn) PRow("Basket stop", (bs > 0 ? Px(bs) : "not active"), (bs > 0 ? C_UP : C_MUTE));
         }
