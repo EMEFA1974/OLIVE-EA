@@ -20,7 +20,8 @@ enum ENUM_EA_MODE
 enum ENUM_ENTRY_TYPE
   {
    ENTRY_MARKET  = 0,  // Market price at signal
-   ENTRY_PENDING = 1   // Pending order at indicator Entry level
+   ENTRY_PENDING = 1,  // Pending order at indicator Entry level
+   ENTRY_HYBRID  = 2   // Split: part at market now, rest as pending at the Entry level
   };
 
 enum ENUM_BASKET_TP
@@ -39,7 +40,8 @@ enum ENUM_GRADE
 
 input group "=== EA Mode ==="
 input ENUM_EA_MODE    InpMode        = MODE_GRID;
-input ENUM_ENTRY_TYPE InpEntryType   = ENTRY_PENDING;   // Pending = exactly the indicator's Entry/SL/TP1
+input ENUM_ENTRY_TYPE InpEntryType   = ENTRY_HYBRID;    // Pending = exactly the indicator's Entry/SL/TP1; Hybrid = never miss a runaway move
+input double          InpHybridMktPct = 50.0;           // Hybrid: % of the lot opened at market on the signal (rest waits at the Entry level)
 input long            InpMagic       = 26092601;
 input string          InpComment     = "LukesBTC";
 input double          InpSlippageUsd = 15.0;     // max slippage in USD (gold: 30 pts)
@@ -1125,12 +1127,12 @@ void SaveBStop(const double p)
 //| Entries                                                          |
 //+------------------------------------------------------------------+
 // TP1 for a market entry: indicator TP1, or from the fill price with the same R
-double MarketTP1(const int dir, const double price, const double sl)
+double MarketTP1(const int dir, const double price, const double sl, const bool fromFill = false)
   {
    double tp = idea.tp1;
    double ms = MinStop();
    bool valid = (dir > 0 ? tp > price + ms : tp < price - ms);
-   if(InpTPFromFill || !valid)
+   if(InpTPFromFill || fromFill || !valid)
      {
       double risk = MathAbs(price - sl);
       tp = (dir > 0 ? price + risk * InpRR1 : price - risk * InpRR1);
@@ -1139,12 +1141,12 @@ double MarketTP1(const int dir, const double price, const double sl)
   }
 
 // TP2 for a market entry (runner target), same rules as MarketTP1
-double MarketTP2(const int dir, const double price, const double sl)
+double MarketTP2(const int dir, const double price, const double sl, const bool fromFill = false)
   {
    double tp = idea.tp2;
    double ms = MinStop();
    bool valid = (dir > 0 ? tp > price + ms : tp < price - ms);
-   if(InpTPFromFill || !valid)
+   if(InpTPFromFill || fromFill || !valid)
      {
       double risk = MathAbs(price - sl);
       tp = (dir > 0 ? price + risk * InpRR2 : price - risk * InpRR2);
@@ -1152,7 +1154,9 @@ double MarketTP2(const int dir, const double price, const double sl)
    return NormalizeDouble(tp, _Digits);
   }
 
-bool OpenEntry(const int dir, const double lotIn, const bool withStops, const string tag)
+// forceMarket: open at market now (hybrid market leg), TP1/TP2 measured from the fill
+bool OpenEntry(const int dir, const double lotIn, const bool withStops, const string tag,
+               const bool forceMarket = false)
   {
    double lot = NormLot(lotIn);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -1161,7 +1165,7 @@ bool OpenEntry(const int dir, const double lotIn, const bool withStops, const st
    double sl  = NormalizeDouble(idea.sl, _Digits);
    string cmt = InpComment + "|" + IntegerToString((long)idea.signalTime);
 
-   bool pending = (InpEntryType == ENTRY_PENDING);
+   bool pending = (!forceMarket && InpEntryType != ENTRY_MARKET);
    double entry = NormalizeDouble(idea.entry, _Digits);
    ENUM_ORDER_TYPE otype = ORDER_TYPE_BUY;
    if(pending)
@@ -1187,12 +1191,12 @@ bool OpenEntry(const int dir, const double lotIn, const bool withStops, const st
       Log("SKIP", StringFormat("%s: price %s already beyond SL %s", tag, Px(price), Px(sl)));
       return false;
      }
-   double tp1 = (pending ? NormalizeDouble(idea.tp1, _Digits) : MarketTP1(dir, price, sl));
+   double tp1 = (pending ? NormalizeDouble(idea.tp1, _Digits) : MarketTP1(dir, price, sl, forceMarket));
 
    // trade management: the broker TP is TP2, TP1 is handled by ManageRunner (partial + BE)
    double tpOrder = tp1;
    if(InpMode == MODE_SINGLE && InpManageOn)
-      tpOrder = (pending ? NormalizeDouble(idea.tp2, _Digits) : MarketTP2(dir, price, sl));
+      tpOrder = (pending ? NormalizeDouble(idea.tp2, _Digits) : MarketTP2(dir, price, sl, forceMarket));
 
    double oSL = (withStops ? sl      : 0.0);
    double oTP = (withStops ? tpOrder : 0.0);
@@ -1223,6 +1227,26 @@ bool OpenEntry(const int dir, const double lotIn, const bool withStops, const st
    return true;
   }
 
+// Opens the trade(s) for a signal. Hybrid: one leg at market right away so a move that
+// never pulls back to the Entry level is still caught, the other leg as the pending order.
+// A lot too small to split goes in whole as the pending order (same as ENTRY_PENDING).
+void OpenSignal(const int dir, const double lot, const bool withStops, const string tag)
+  {
+   if(InpEntryType != ENTRY_HYBRID) { OpenEntry(dir, lot, withStops, tag); return; }
+   double vmin = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double mLot = NormLot(lot * MathMax(0.0, MathMin(100.0, InpHybridMktPct)) / 100.0);
+   double pLot = NormLot(lot - mLot);
+   if(InpHybridMktPct >= 100.0) { OpenEntry(dir, lot, withStops, tag + " mkt", true); return; }
+   if(InpHybridMktPct <= 0.0 || mLot < vmin - 1e-9 || lot - mLot < vmin - 1e-9)
+     {
+      Log("HYBRID_SKIP", StringFormat("%s: lot %.2f cannot be split (min lot %.2f), pending only", tag, lot, vmin));
+      OpenEntry(dir, lot, withStops, tag);
+      return;
+     }
+   OpenEntry(dir, mLot, withStops, tag + " mkt", true);
+   OpenEntry(dir, pLot, withStops, tag + " pend");   // last, so the grid keeps the indicator TP1
+  }
+
 //+------------------------------------------------------------------+
 //| Acting on a new signal                                           |
 //+------------------------------------------------------------------+
@@ -1248,7 +1272,7 @@ void ActOnSignal(const int sig)
          if(GetBasket().count > 0) { gClosing = true; Log("SKIP", tag + ": could not close opposite trade yet"); return; }
         }
       if(CountOrders() > 0) DeleteOrders("replaced by " + tag);
-      OpenEntry(dir, InpSingleLot, true, tag);
+      OpenSignal(dir, InpSingleLot, true, tag);
       return;
      }
 
@@ -1262,7 +1286,7 @@ void ActOnSignal(const int sig)
          return;
         }
       if(CountOrders() > 0) DeleteOrders("replaced by " + tag);
-      OpenEntry(dir, InpGridStartLot, false, tag + " grid#1");
+      OpenSignal(dir, InpGridStartLot, false, tag + " grid#1");
      }
   }
 
@@ -1827,6 +1851,7 @@ void TodayStats(int &trades, int &wins, int &losses, double &pl,
    if(!HistorySelect(DayStart(), TimeCurrent() + 60)) return;
    int n = HistoryDealsTotal();
    datetime gT = 0; long gType = -1; double gPL = 0; bool open = false;
+   string lastEntryCmt = "";
    for(int i = 0; i < n; i++)
      {
       ulong tk = HistoryDealGetTicket(i);
@@ -1837,8 +1862,10 @@ void TodayStats(int &trades, int &wins, int &losses, double &pl,
       if(entry == DEAL_ENTRY_IN)
         {
          // first trade of a signal: comment "LukesBTC|<signal time>"; grid levels: "LukesBTC|gridN"
-         if(StringFind(HistoryDealGetString(tk, DEAL_COMMENT), "|grid") >= 0) gridAdds++;
-         else entries++;
+         string dc = HistoryDealGetString(tk, DEAL_COMMENT);
+         if(StringFind(dc, "|grid") >= 0) gridAdds++;
+         else if(dc == "" || dc != lastEntryCmt) entries++;   // hybrid: market + pending leg = one signal
+         lastEntryCmt = dc;
          continue;
         }
       if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY) continue;
@@ -2016,7 +2043,8 @@ void UpdatePanel(const bool force = false)
 
    PSection("EA");
    PRow("Mode", ModeName(), (InpMode == MODE_SIGNALS ? C_INFO : C_TXT));
-   PRow("Entry", (InpEntryType == ENTRY_MARKET ? "Market" : "Pending"), C_TXT);
+   PRow("Entry", (InpEntryType == ENTRY_MARKET ? "Market" :
+                  (InpEntryType == ENTRY_HYBRID ? StringFormat("Hybrid %.0f%% mkt", InpHybridMktPct) : "Pending")), C_TXT);
    if(InpMode == MODE_SINGLE)
       PRow("Trade mgmt", (InpManageOn ? StringFormat("%.0f%% @TP1%s, rest TP2%s", InpPartialPct, (InpMoveBE ? " + BE" : ""),
                                                      (InpRunnerTrailOn ? " / trail" : "")) : "OFF (all at TP1)"),
@@ -2194,7 +2222,7 @@ int OnInit()
    ResetIdea();
    ResetCounts();
    Log("START", StringFormat("mode %s, entry %s, digits %d, slippage %I64u pts", ModeName(),
-                             (InpEntryType == ENTRY_MARKET ? "market" : "pending"), _Digits, SlipPts()));
+                             (InpEntryType == ENTRY_MARKET ? "market" : (InpEntryType == ENTRY_HYBRID ? "hybrid" : "pending")), _Digits, SlipPts()));
    gEmaFast = iMA(_Symbol, InpTrendTF, InpTrendFast, 0, MODE_EMA, PRICE_CLOSE);
    gEmaSlow = iMA(_Symbol, InpTrendTF, InpTrendSlow, 0, MODE_EMA, PRICE_CLOSE);
    if(!FiltersInit())

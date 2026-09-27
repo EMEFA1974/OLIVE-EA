@@ -44,3 +44,17 @@ EA defaults: Mode = Full grid, basket TP = price distance ($100 beyond the baske
 single-trade lot = 1.0, grid start lot = 2.0 (x1.5 per level, max 5 trades).
 
 Check your broker's BTC contract size: `InpBasketTPMoney` assumes 1 lot = 1 BTC.
+
+## Hybrid entry (default)
+
+`InpEntryType = Hybrid` splits every signal's lot: `InpHybridMktPct` (default 50%) opens at market
+immediately, the rest is the usual pending order at the indicator's Entry level.
+
+- If price runs away without pulling back (big displacement candles), the market leg still catches the move.
+- If price does pull back, the pending leg fills at the better indicator Entry.
+- The market leg keeps the indicator SL; its TP1/TP2 are measured from its own fill price (same R multiples).
+- A lot too small to split (e.g. 0.01 when min lot is 0.01) goes in whole as the pending order.
+- `Pending` / `Market` still behave exactly as before.
+
+Related tuning (set the same in the indicator and the EA): a smaller `InpPendingRetrace`
+(e.g. 0.20 instead of 0.40) places the limit closer to the signal close, so it fills more often.
