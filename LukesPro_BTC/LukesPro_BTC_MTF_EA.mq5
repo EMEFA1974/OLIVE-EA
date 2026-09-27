@@ -6,7 +6,7 @@
 //+------------------------------------------------------------------+
 #property copyright "LukesPro BTC MTF EA"
 #property link      ""
-#property version   "1.91"
+#property version   "1.92"
 
 #include <Trade/Trade.mqh>
 
@@ -19,9 +19,9 @@ enum ENUM_EA_MODE
 
 enum ENUM_ENTRY_TYPE
   {
-   ENTRY_MARKET  = 0,  // Market price at signal
-   ENTRY_PENDING = 1,  // Pending order at indicator Entry level
-   ENTRY_HYBRID  = 2   // Split: part at market now, rest as pending at the Entry level
+   ENTRY_MARKET  = 0,  // MARKET: all at market price on the signal
+   ENTRY_PENDING = 1,  // PENDING: all as pending order at the indicator Entry level
+   ENTRY_HYBRID  = 2   // HYBRID: part at market now + rest pending at Entry (never miss a move)
   };
 
 enum ENUM_BASKET_TP
@@ -40,8 +40,8 @@ enum ENUM_GRADE
 
 input group "=== EA Mode ==="
 input ENUM_EA_MODE    InpMode        = MODE_GRID;
-input ENUM_ENTRY_TYPE InpEntryType   = ENTRY_HYBRID;    // Pending = exactly the indicator's Entry/SL/TP1; Hybrid = never miss a runaway move
-input double          InpHybridMktPct = 50.0;           // Hybrid: % of the lot opened at market on the signal (rest waits at the Entry level)
+input ENUM_ENTRY_TYPE InpEntryType   = ENTRY_HYBRID;    // Entry type (MARKET / PENDING / HYBRID)
+input double          InpHybridMktPct = 50.0;           // HYBRID: % of the lot opened at market (rest = pending)
 input long            InpMagic       = 26092601;
 input string          InpComment     = "LukesBTC";
 input double          InpSlippageUsd = 15.0;     // max slippage in USD (gold: 30 pts)
@@ -1997,7 +1997,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKESPRO BTC MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.91  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.92  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
