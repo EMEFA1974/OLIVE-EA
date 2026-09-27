@@ -15,7 +15,8 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 | G2 | **All distances are in points** (grid distance, trailing, basket distance, plus the signal inputs). 1 point = 0.01 on XAUUSD. On 3-digit brokers the EA scales them x10 automatically (`InpAutoDigits`), so 500 points = $5.00 move on both broker types. | Changed |
 | G3 | Signal point inputs (pending pts, SL buffer, min SL gap) are auto-scaled x10 on 3/5-digit brokers (`InpAutoDigits`, default on). Same setting must be used in EA and indicator. | Done |
 | G4 | Mode toggle: **Signals only** (default) / **Single trades only** / **Full grid**. | Done |
-| G5 | Entry toggle: **Pending order** at the indicator's Entry level (default since v1.05 — trades exactly the indicator's Entry/SL/TP1) / **Market price** at signal. | Changed |
+| G5 | Entry type (`InpEntryType`): **MARKET** (whole lot at market) / **PENDING** (whole lot as pending at the indicator Entry) / **HYBRID** (default since v1.13). MARKET and PENDING behave exactly as before. | Changed (v1.13) |
+| G5b | **HYBRID**: on each signal `InpHybridMarketPct` % (default 50) of the lot opens at market with the signal's SL; its TP1 is measured from its own fill price with the same R multiple (`InpRR1`). The rest is placed as the normal pending order at the signal's Entry (signal SL/TP1). Lot too small to split -> all in as `InpHybridFallback` (default: pending). Grid mode: the market part is grid trade #1 (its TP1 is the basket's "close at TP1" level); the pending part joins the same basket when it fills; a leftover pending part is deleted when the basket closes. Panel shows "Hybrid 50% mkt"; both parts of one signal count as one trade. Indicator unchanged. | Done (v1.13) |
 | G6 | Trades identified by magic number + symbol. State is rebuilt from open positions/orders after a restart. | Done |
 | G7 | Every signal, order, close and protection event is written to the Experts log and to `MQL5/Files/LukesEA_log.csv`. | Done |
 | G8 | Signals-only mode draws a small dot on each EA signal candle (history + live) so it can be compared with the indicator's arrows on the same chart. | Done |
@@ -125,3 +126,4 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 - 2026-09-25 – Indicator v1.82: zone and labels are removed once the signal is mitigated (TP1 hit – or TP2 with `InpHideAtTP1`=false –, SL hit, cancelled or expired). `InpKeepLastZone` now defaults to false.
 - 2026-09-26 – Bug fixes: SL/TP checked on the pending fill bar (S5); SL buffer scales with ATR + spread (S6). Signal levels change slightly vs. before.
 - 2026-09-27 – EA v1.12 defaults changed: `InpMode` = Full grid (was Signals only), `InpBasketTPType` = price distance beyond basket average (`InpBasketTPPts`, was money).
+- 2026-09-27 – EA v1.13: HYBRID entry type (G5b), now the default.
