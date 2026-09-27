@@ -66,10 +66,14 @@ Related tuning (set the same in the indicator and the EA): a smaller `InpPending
   grid adds trades on pullbacks (a filled pending leg would otherwise count as grid level #2).
   All grid trades share one basket TP/SL by design (`InpGridBrokerLevels`).
 
-## Grid basket TP (v1.96)
+## Full grid TP / SL rules (v1.97)
 
-`InpGridBrokerLevels = false` (default): grid trades carry **no TP/SL of their own**. The EA closes the whole
-basket together when price reaches the basket TP (`InpBasketTPType` / `InpBasketTPUsd`, default avg ± $100),
-shown as a green dashed line and on the panel. The equity protector and the optional basket BE/trailing stop
-also close the whole basket. MT5 must be running (use a VPS). Set it to `true` to copy the basket TP/SL
-onto every trade instead (works with MT5 off, but each trade then shows its own TP/SL).
+- **No grid trade ever has an SL.**
+- **First (signal) trade alone:** TP only = the signal's TP1.
+- **From the 2nd grid trade on, basket TP ON** (`InpBasketTPOn = true`): every trade gets the same basket TP
+  (`InpBasketTPType` / `InpBasketTPUsd`, default avg ± $100) and they all close together there.
+- **Basket TP OFF:** every grid trade gets the first trade's TP1 and they all close there.
+- The TP is written on each trade (broker side) and moves as new grid trades change the average.
+  It is shown as a green dashed line and on the panel.
+- The equity protector (and the optional basket BE/trailing stop) are not SLs on the trades;
+  the EA closes the whole basket itself when they are hit, so MT5 must be running for those.
