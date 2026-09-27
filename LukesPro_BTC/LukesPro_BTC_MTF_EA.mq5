@@ -165,7 +165,7 @@ input color  InpBasketTPColor       = clrLime;  // basket TP line on the chart
 
 input group "=== Equity Protector ==="
 input bool   InpEquityProtOn  = true;
-input double InpEquityProtPct = 10.0;      // close all when floating loss reaches % of current balance
+input double InpEquityProtPct = 25.0;      // close all when floating loss reaches % of current balance
 
 input group "=== Alerts ==="
 input bool   InpAlertTrades  = true;       // opens, closes, basket TP, equity stop
