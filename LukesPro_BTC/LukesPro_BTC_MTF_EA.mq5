@@ -38,7 +38,7 @@ enum ENUM_GRADE
 #define GRADE_NONE 3
 
 input group "=== EA Mode ==="
-input ENUM_EA_MODE    InpMode        = MODE_SIGNALS;
+input ENUM_EA_MODE    InpMode        = MODE_GRID;
 input ENUM_ENTRY_TYPE InpEntryType   = ENTRY_PENDING;   // Pending = exactly the indicator's Entry/SL/TP1
 input long            InpMagic       = 26092601;
 input string          InpComment     = "LukesBTC";
@@ -120,7 +120,7 @@ input ENUM_GRADE InpMinGrade = GRADE_C;            // lowest grade that becomes 
 input bool       InpReNeedA  = true;               // re-entries only on a fresh A-grade trigger
 
 input group "=== Single Trades ==="
-input double InpSingleLot       = 0.01;
+input double InpSingleLot       = 1.0;
 input bool   InpTPFromFill      = false;   // market entry: TP1 from fill price (same R) instead of indicator TP1
 input bool   InpCloseOnOpposite = true;    // opposite signal closes the trade and reverses
 input bool   InpTrailOn         = false;   // trailing stop
@@ -137,7 +137,7 @@ input bool   InpRunnerTrailOn  = false;   // after TP1 trail the runner by ATR
 input double InpRunnerTrailATR = 1.5;     // runner trail distance in ATR (chart timeframe)
 
 input group "=== Grid ==="
-input double         InpGridStartLot   = 0.01;
+input double         InpGridStartLot   = 2.0;
 input double         InpGridDistUsd    = 250.0;         // add a trade every $N against the basket (gold: 500 pts)
 input double         InpGridMultiplier = 1.50;          // lot multiplier per grid level
 input bool           InpGridWidenOn    = false;         // widen the gap at each new grid level
@@ -145,7 +145,7 @@ input double         InpGridGapMult    = 1.20;          // gap multiplier per le
 input double         InpGridMaxGapUsd  = 0.0;           // largest allowed gap in USD (0 = no cap)
 input int            InpGridMaxTrades  = 5;             // max running trades (stop adding at this count)
 input bool           InpBasketTPOn     = true;          // off = close all grid trades at single-trade TP1
-input ENUM_BASKET_TP InpBasketTPType   = BASKET_MONEY;
+input ENUM_BASKET_TP InpBasketTPType   = BASKET_DISTANCE;
 input double         InpBasketTPMoney  = 2.50;          // basket TP in account money (0.01 BTC x $250 move)
 input double         InpBasketTPUsd    = 100.0;         // basket TP: USD beyond basket average (gold: 200 pts)
 

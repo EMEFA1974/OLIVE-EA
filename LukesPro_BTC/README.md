@@ -38,6 +38,9 @@ zones, panel and trade management are unchanged — only the inputs and labels w
 | Spread warning (panel)   | 50 pts       | InpSpreadWarnUsd        | $25         |
 
 Ratio/ATR/percentage inputs (body ratios, ATR multiples, R-multiples, EMA periods, equity %),
-timeframes, bar counts and lot sizes (0.01) are unchanged because they don't depend on price scale.
+timeframes and bar counts are unchanged because they don't depend on price scale.
+
+EA defaults: Mode = Full grid, basket TP = price distance ($100 beyond the basket average),
+single-trade lot = 1.0, grid start lot = 2.0 (x1.5 per level, max 5 trades).
 
 Check your broker's BTC contract size: `InpBasketTPMoney` assumes 1 lot = 1 BTC.
