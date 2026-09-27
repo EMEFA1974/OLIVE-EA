@@ -61,3 +61,6 @@ Related tuning (set the same in the indicator and the EA): a smaller `InpPending
 - `InpHybridMinGapUsd` (default $50): the lot is only split when the indicator Entry is at least this far
   from the current price. Closer than that, the whole lot goes in as ONE market trade (no near-duplicate trades).
   Set it to 0 to always split.
+- In **Full grid** mode HYBRID does not split: it opens ONE market trade with the full grid lot and the
+  grid adds trades on pullbacks (a filled pending leg would otherwise count as grid level #2).
+  All grid trades share one basket TP/SL by design (`InpGridBrokerLevels`).
