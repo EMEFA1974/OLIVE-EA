@@ -57,3 +57,16 @@ grid set `InpManageOn=false` on both.
 * Panel: the Entry row shows `Hybrid 50% mkt`. Both parts of one signal count as one entry,
   and as one closed trade in the TODAY stats.
 * The signal engine and the indicator are unchanged.
+
+## EA v1.93 — HYBRID fix in Full grid mode
+
+* Bug: in Full grid mode, HYBRID opened a market part plus a pending part. When the pending
+  part filled, the grid counted it as its next trade. It used up one of the `InpGridMaxTrades`
+  slots, pushed the next grid lot one multiplier step too far, and got the same basket TP/SL
+  as trade #1. So two trades were placed close together with the same TP and SL.
+* Fix: in Full grid mode, HYBRID no longer splits. Each signal opens **one market trade with the
+  full `InpGridStartLot`**, and the grid adds trades as before when price moves against the basket.
+  The panel shows `Hybrid: grid = market`.
+* Single trades mode is unchanged: HYBRID still splits into a market part and a pending part.
+  They share the signal's SL, but their TPs are measured from their own entry prices, so they
+  differ. MARKET and PENDING are unchanged in both modes.

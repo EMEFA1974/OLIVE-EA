@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "LukesPro MTF EA"
 #property link      ""
-#property version   "1.92"
+#property version   "1.93"
 
 #include <Trade/Trade.mqh>
 
@@ -1236,13 +1236,17 @@ bool OpenEntryAs(const int dir, const double lotIn, const bool withStops, const 
   }
 
 // MARKET / PENDING: exactly as before.
-// HYBRID: InpHybridMktPct % of the lot at market now (signal SL, TP from its own fill),
-// the rest as the normal pending order at the signal's Entry. A lot too small to split
-// goes in whole as the pending order.
+// HYBRID (single trades): InpHybridMktPct % of the lot at market now (signal SL, TP from its
+// own fill), the rest as the normal pending order at the signal's Entry. A lot too small to
+// split goes in whole as the pending order.
+// HYBRID (full grid): no split. One trade at market with the full grid lot. A pending part
+// would join the basket as an extra grid trade: it took a grid slot, pushed the next lot one
+// multiplier step too far and got the shared basket TP/SL.
 bool OpenEntry(const int dir, const double lotIn, const bool withStops, const string tag)
   {
    if(InpEntryType == ENTRY_MARKET)  return OpenEntryAs(dir, lotIn, withStops, tag, false, false);
    if(InpEntryType == ENTRY_PENDING) return OpenEntryAs(dir, lotIn, withStops, tag, true,  false);
+   if(InpMode == MODE_GRID)          return OpenEntryAs(dir, lotIn, withStops, tag + " hybrid mkt", false, true);
 
    double lot  = NormLot(lotIn);
    double vmin = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
@@ -1269,6 +1273,7 @@ string EntryName()
   {
    if(InpEntryType == ENTRY_MARKET)  return "Market";
    if(InpEntryType == ENTRY_PENDING) return "Pending";
+   if(InpMode == MODE_GRID) return "Hybrid: grid = market";
    return StringFormat("Hybrid %.0f%% mkt", MathMax(0.0, MathMin(100.0, InpHybridMktPct)));
   }
 
@@ -2093,7 +2098,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKESPRO MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.92  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.93  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
