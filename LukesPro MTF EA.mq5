@@ -955,11 +955,13 @@ void DrawSignal(const int i, const int sig)
    if(t == 0) return;
    string name = EAPRE + "S" + IntegerToString((long)t);
    if(ObjectFind(0, name) < 0)
-      ObjectCreate(0, name, OBJ_ARROW, 0, t, iClose(_Symbol, _Period, i));
-   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 159);   // small dot on the signal candle's close
+      ObjectCreate(0, name, OBJ_ARROW, 0, t, iLow(_Symbol, _Period, i));
+   ObjectSetInteger(0, name, OBJPROP_TIME, t);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, iLow(_Symbol, _Period, i));
+   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 159);   // small dot hanging under the signal candle's low
    ObjectSetInteger(0, name, OBJPROP_COLOR, SigColor(sig));
    ObjectSetInteger(0, name, OBJPROP_WIDTH, 3);
-   ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_CENTER);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_TOP);   // top of the dot at the low: dot sits below the candle
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
    ObjectSetString(0, name, OBJPROP_TOOLTIP, "EA " + SigName(sig));
