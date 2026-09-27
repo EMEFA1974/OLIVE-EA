@@ -47,11 +47,11 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 
 | # | Rule | Status |
 |---|------|--------|
-| R1 | Own starting lot (`InpGridStartLot`), separate from single-trade lot. | Done |
+| R1 | The **signal trade** (grid trade #1) uses the single-trade lot `InpSingleLot`. `InpGridStartLot` is the lot of the **first extra grid trade** (#2). | Changed (v1.15) |
 | R2 | First grid trade opens on a signal (market or pending, per G5). | Done |
 | R3 | Add a grid trade each time price moves a **fixed distance** (`InpGridDistPts`, points) against the most adverse open grid trade. | Done |
 | R3b | **Widening gaps** (toggle `InpGridWidenOn`, default off): gap to trade #2 = `InpGridDistPts`, each next gap × `InpGridGapMult` (e.g. 500, 600, 720, 864…). Optional cap `InpGridMaxGapPts` (0 = none). | Done (v1.03) |
-| R4 | Lot of each new grid trade = start lot × `InpGridMultiplier` ^ (trades already open). | Done |
+| R4 | Extra grid trades: #2 = `InpGridStartLot`, #3 = start lot x `InpGridMultiplier`, #4 = start lot x multiplier^2 ... | Changed (v1.15) |
 | R5 | `InpGridMaxTrades`: when this many trades are running, stop adding grid trades. | Done |
 | R6 | **Basket TP** closes all grid trades. Adjustable: money profit (`InpBasketTPMoney`, $) or points beyond the basket average (`InpBasketTPPts`), selected by `InpBasketTPType`. | Done |
 | R7 | Basket TP toggle (`InpBasketTPOn`). When **off**, all grid trades close when price reaches the single-trade **TP1** of the signal that started the basket. | Done |
@@ -128,3 +128,4 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 - 2026-09-27 – EA v1.12 defaults changed: `InpMode` = Full grid (was Signals only), `InpBasketTPType` = price distance beyond basket average (`InpBasketTPPts`, was money).
 - 2026-09-27 – EA v1.13: HYBRID entry type (G5b), now the default.
 - 2026-09-27 – EA v1.14: HYBRID no longer splits in Full grid mode (the pending half was counted as a grid trade).
+- 2026-09-27 – EA v1.15: in Full grid mode the signal trade uses the Single lot; grid extras start at the Grid start lot (R1, R4). Before, the signal trade used the Grid start lot and the first extra was already multiplied.
