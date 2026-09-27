@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Lukes MTF EA"
 #property link      ""
-#property version   "1.13"
+#property version   "1.14"
 
 #include <Trade/Trade.mqh>
 
@@ -1045,6 +1045,14 @@ void OpenHybrid(const int dir, const double lotIn, const bool withStops, const s
 
 void EnterSignal(const int dir, const double lot, const bool withStops, const string tag)
   {
+   if(InpEntryType == ENTRY_HYBRID && InpMode == MODE_GRID)
+     {
+      // Full grid: no split. A filled pending half would join the basket as an extra
+      // grid trade (wrong lot multiplier, uses a grid slot). The grid itself adds
+      // trades on pullbacks, so the whole grid lot opens at market as grid trade #1.
+      OpenEntryAs(dir, lot, withStops, tag + " [hybrid: grid = market]", ENTRY_MARKET, true);
+      return;
+     }
    if(InpEntryType == ENTRY_HYBRID) OpenHybrid(dir, lot, withStops, tag);
    else                             OpenEntry(dir, lot, withStops, tag);
   }
@@ -1053,6 +1061,7 @@ string EntryName()
   {
    if(InpEntryType == ENTRY_MARKET)  return "Market";
    if(InpEntryType == ENTRY_PENDING) return "Pending";
+   if(InpMode == MODE_GRID) return "Hybrid (grid: market)";
    return StringFormat("Hybrid %d%% mkt", InpHybridMarketPct);
   }
 
@@ -1739,7 +1748,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.13  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.14  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
