@@ -80,3 +80,17 @@ grid set `InpManageOn=false` on both.
   #2 = Grid Lot, #3 = Grid Lot x `InpGridMultiplier`, #4 = Grid Lot x multiplier², and so on.
   Example with Single 1.0, Grid 2.0, multiplier 1.5: 1.0 → 2.0 → 3.0 → 4.5 → 6.75.
 * `InpGridMaxTrades` still counts the signal trade, so the default of 5 is the signal trade plus 4 extra trades.
+
+## EA v1.95 — Full grid: TP only, never an SL; Equity Protector 25%
+
+* **No SL on any grid trade.** Before, `InpGridBrokerLevels` wrote an SL (the Equity Protector
+  price, or the basket break-even/trailing stop) onto every grid trade. Now grid trades are sent
+  without an SL, and any SL found on one is removed. The Equity Protector and the optional basket
+  break-even/trailing stop still work, but the EA checks them itself and closes the trades, so
+  they are never placed on the trades.
+* **Signal trade alone: TP1 only.** Measured from its own fill price for a market entry.
+* **Two or more trades: one basket TP on all of them.** Once the distance threshold is reached and
+  a grid trade is added, every trade gets the same basket TP (money or distance), and they all
+  close together there.
+* **Basket TP off (`InpBasketTPOn = false`):** every grid trade gets TP1 and they all close there.
+* **Equity Protector default: 25%** of the balance (was 10%).

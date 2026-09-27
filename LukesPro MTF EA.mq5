@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "LukesPro MTF EA"
 #property link      ""
-#property version   "1.94"
+#property version   "1.95"
 
 #include <Trade/Trade.mqh>
 
@@ -160,11 +160,11 @@ input int    InpBasketTrailStartPts = 200;    // start trailing when price is th
 input int    InpBasketTrailDistPts  = 150;    // trail this many points behind price
 input int    InpBasketTrailStepPts  = 20;     // move the basket stop in steps of (points)
 input color  InpBasketStopColor     = clrOrange;
-input bool   InpGridBrokerLevels    = true;   // put the basket TP/SL on every grid trade (visible on PC + mobile, works if MT5 is off)
+input bool   InpGridBrokerLevels    = true;   // put the TP on every grid trade (TP1 for the signal trade alone, then the basket TP); grid trades never get an SL
 
 input group "=== Equity Protector ==="
 input bool   InpEquityProtOn  = true;
-input double InpEquityProtPct = 10.0;      // close all when floating loss reaches % of current balance
+input double InpEquityProtPct = 25.0;      // close all when floating loss reaches % of current balance
 
 input group "=== Alerts ==="
 input bool   InpAlertTrades  = true;       // opens, closes, basket TP, equity stop
@@ -1213,6 +1213,8 @@ bool OpenEntryAs(const int dir, const double lotIn, const bool withStops, const 
      }
 
    // TP from the real fill price (it can differ from the quote the TP was sent with)
+   if(!pending && fromFill && !withStops && InpMode == MODE_GRID && trade.ResultPrice() > 0)
+      tp1 = MarketTP1(dir, trade.ResultPrice(), sl, true);   // grid: TP1 of the signal trade from its fill
    if(!pending && fromFill && withStops)
      {
       double fp = trade.ResultPrice();
@@ -1533,9 +1535,9 @@ bool BasketStopHit(const Basket &b, const double bid, const double ask, string &
   }
 
 //+------------------------------------------------------------------+
-//| Basket TP/SL as real levels on every grid trade                  |
-//| All trades share ONE TP and ONE SL price, so they still close    |
-//| together as a basket (rule R8: no individual TP/SL per trade).   |
+//| Grid TP as a real level on every grid trade. No SL, ever.        |
+//| One trade: its TP1. Two or more: all share ONE basket TP, so     |
+//| they close together (Basket TP off: all share TP1).              |
 //+------------------------------------------------------------------+
 int gPrevGridCount = 0;
 
@@ -1556,25 +1558,21 @@ double PriceForProfit(const Basket &b, const double money, const double px)
    return px + b.dir * (money - b.profit) / mpp;
   }
 
+// Grid trades never carry an SL. The TP is:
+//  - one trade (the signal trade): its own TP1
+//  - two or more trades: the basket TP (money or distance), shared by all of them
+//  - Basket TP off: TP1 on every trade, so all of them close there
+bool GridUsesTP1(const Basket &b, const double tp1)
+  {
+   return (tp1 > 0 && (!InpBasketTPOn || b.count <= 1));
+  }
+
 double GridTPPrice(const Basket &b, const double px)
   {
    double tp1 = LoadTP1();
-   if(!InpBasketTPOn && tp1 > 0) return tp1;
+   if(GridUsesTP1(b, tp1)) return tp1;
    if(InpBasketTPType == BASKET_DISTANCE) return b.avg + b.dir * BasketDist();
    return PriceForProfit(b, InpBasketTPMoney, px);
-  }
-
-// tightest of: basket break-even/trailing stop, Equity Protector price
-double GridSLPrice(const Basket &b, const double px)
-  {
-   double sl = LoadBStop();
-   if(InpEquityProtOn)
-     {
-      double limit = -AccountInfoDouble(ACCOUNT_BALANCE) * InpEquityProtPct / 100.0;
-      double eq = PriceForProfit(b, limit, px);
-      if(eq > 0 && (sl <= 0 || (b.dir > 0 ? eq > sl : eq < sl))) sl = eq;
-     }
-   return sl;
   }
 
 void SyncGridLevels(const Basket &b)
@@ -1587,10 +1585,8 @@ void SyncGridLevels(const Basket &b)
    double tol = 5 * Pt();   // ignore changes smaller than 5 points (avoid modify spam)
 
    double tp = NormalizeDouble(GridTPPrice(b, px), _Digits);
-   double sl = NormalizeDouble(GridSLPrice(b, px), _Digits);
-   // a level too close to price is left off; the EA's own check still closes the basket
+   // a TP too close to price is left off; the EA's own check still closes the basket
    if(tp > 0 && (b.dir > 0 ? tp < bid + ms : tp > ask - ms)) tp = 0;
-   if(sl > 0 && (b.dir > 0 ? sl > bid - ms : sl < ask + ms)) sl = 0;
 
    for(int i = PositionsTotal() - 1; i >= 0; i--)
      {
@@ -1598,13 +1594,13 @@ void SyncGridLevels(const Basket &b)
       if(tk == 0 || !Ours()) continue;
       double csl = PositionGetDouble(POSITION_SL);
       double ctp = PositionGetDouble(POSITION_TP);
-      double nsl = (sl > 0 ? sl : csl);
       double ntp = (tp > 0 ? tp : ctp);
-      bool chg = (MathAbs(nsl - csl) >= tol || MathAbs(ntp - ctp) >= tol
-                  || (csl == 0 && nsl > 0) || (ctp == 0 && ntp > 0));
+      // no SL on grid trades: any SL found is removed (the Equity Protector and the basket
+      // break-even / trailing stop are checked by the EA itself, not left on the trades)
+      bool chg = (csl != 0 || MathAbs(ntp - ctp) >= tol || (ctp == 0 && ntp > 0));
       if(!chg) continue;
-      if(trade.PositionModify(tk, nsl, ntp))
-         Log("GRID_LEVELS", StringFormat("ticket %I64u  SL %s  TP %s", tk, (nsl > 0 ? Px(nsl) : "none"), (ntp > 0 ? Px(ntp) : "none")));
+      if(trade.PositionModify(tk, 0.0, ntp))
+         Log("GRID_LEVELS", StringFormat("ticket %I64u  SL none  TP %s", tk, (ntp > 0 ? Px(ntp) : "none")));
      }
   }
 
@@ -1631,7 +1627,7 @@ void ManageGrid(const Basket &b)
    bool   close = false;
    string why   = "";
    double tp1   = LoadTP1();
-   if(InpBasketTPOn || tp1 <= 0)
+   if(!GridUsesTP1(b, tp1))
      {
       if(InpBasketTPType == BASKET_MONEY)
         {
@@ -1647,7 +1643,7 @@ void ManageGrid(const Basket &b)
    else
      {
       close = (b.dir > 0 ? bid >= tp1 : ask <= tp1);
-      why = "grid closed at single-trade TP1 " + Px(tp1);
+      why = (b.count <= 1 ? "signal trade closed at TP1 " : "grid closed at single-trade TP1 ") + Px(tp1);
      }
    string bwhy = "";
    if(!close && BasketStopHit(b, bid, ask, bwhy)) { close = true; why = bwhy; }
@@ -2099,7 +2095,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKESPRO MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.94  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.95  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
