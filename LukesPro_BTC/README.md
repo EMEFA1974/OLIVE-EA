@@ -41,7 +41,8 @@ Ratio/ATR/percentage inputs (body ratios, ATR multiples, R-multiples, EMA period
 timeframes and bar counts are unchanged because they don't depend on price scale.
 
 EA defaults: Mode = Full grid, basket TP = price distance ($100 beyond the basket average),
-single-trade lot = 1.0, grid start lot = 2.0 (x1.5 per level, max 5 trades).
+signal trade lot = 1.0 (Single Lot, also the first trade of a grid), grid adds start at 2.0
+(Grid Lot) x1.5 per level, max 5 trades: 1.0 → 2.0 → 3.0 → 4.5 → 6.75.
 
 Check your broker's BTC contract size: `InpBasketTPMoney` assumes 1 lot = 1 BTC.
 
