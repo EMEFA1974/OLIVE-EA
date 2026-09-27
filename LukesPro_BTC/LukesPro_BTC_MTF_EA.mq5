@@ -953,12 +953,16 @@ void DrawSignal(const int i, const int sig)
    datetime t = iTime(_Symbol, _Period, i);
    if(t == 0) return;
    string name = EAPRE + "S" + IntegerToString((long)t);
+   // buy / re-buy: dot under the candle's low; sell / re-sell: dot above the candle's high
+   double price = (sig > 0 ? iLow(_Symbol, _Period, i) : iHigh(_Symbol, _Period, i));
    if(ObjectFind(0, name) < 0)
-      ObjectCreate(0, name, OBJ_ARROW, 0, t, iClose(_Symbol, _Period, i));
-   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 159);   // small dot on the signal candle's close
+      ObjectCreate(0, name, OBJ_ARROW, 0, t, price);
+   ObjectSetInteger(0, name, OBJPROP_TIME, t);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, price);
+   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 159);   // small dot
    ObjectSetInteger(0, name, OBJPROP_COLOR, SigColor(sig));
    ObjectSetInteger(0, name, OBJPROP_WIDTH, 3);
-   ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_CENTER);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, sig > 0 ? ANCHOR_TOP : ANCHOR_BOTTOM);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
    ObjectSetString(0, name, OBJPROP_TOOLTIP, "EA " + SigName(sig));
