@@ -138,3 +138,19 @@ Check both files carry the same engine inputs (`InpSpreadAware`, `InpReNeedA`, .
 * A refused grid order (requote, price changed, busy) is retried after 3 s instead of 10 s.
 * Grid mode by design: while a basket is running, new signals and re-entries are not traded.
   The grid trades are the recovery.
+
+## Ind v1.93 / EA v1.98 — adjustable wider SL
+
+* New input **`InpSLWidenPct`** (default **50**, 0 = off), in both the indicator and the EA.
+  Set the same value in both.
+* The SL is moved this % of the entry-SL distance further away. Example: a buy at 4200 with the
+  signal SL at 4190 (10 away) gets its SL at 4185 (15 away) with 50%.
+* The TPs don't move: TP1/TP2 are still measured from the original SL distance (in the example
+  TP1 4210, TP2 4220). Market/HYBRID fills measure their TPs from the fill price with the
+  original R, and the partial close + break-even still triggers at the original TP1.
+* The signal logic uses the widened SL too, so the indicator's zone and stats and the
+  re-entry wait follow the real trade's SL.
+* Money risk per trade grows by the same % at the same lot size (1.5x with 50%). Lower the
+  Single Lot if you want to keep the same risk.
+* Full grid mode: grid trades still never get an SL. The setting only moves the signal's SL, which
+  the grid doesn't use.

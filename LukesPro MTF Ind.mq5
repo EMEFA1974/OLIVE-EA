@@ -1,6 +1,6 @@
 #property copyright "LukesPro MTF Ind"
 #property link      ""
-#property version   "1.92"
+#property version   "1.93"
 #property indicator_chart_window
 #property indicator_buffers 4
 #property indicator_plots   4
@@ -68,6 +68,7 @@ input int            InpMinSLGapPts     = 15;    // keep pending entry this far 
 input group "=== Re-entry after SL ==="
 input bool   InpReentryOn      = true;
 input int    InpSLBufferPts    = 20;
+input double InpSLWidenPct     = 50.0;  // widen the SL by this % of the entry-SL distance (0 = off). TP1/TP2 keep the original R. Set the same in Ind and EA
 input double InpRR1            = 1.0;   // TP1 R-multiple
 input double InpRR2            = 2.0;   // TP2 R-multiple
 input int    InpMaxReentry     = 1;     // one re-entry at most
@@ -211,6 +212,7 @@ struct Idea
    IdeaState state;
    int       dir;
    double    entry, sl, tp1, tp2;
+   double    slR;        // original (not widened) SL: TP1/TP2 are measured from it
    datetime  signalTime, slTime, fillTime;
    int       reCount, slBarAge, pendAge;
    bool      tp1Done;
@@ -340,7 +342,7 @@ void ResetIdea()
   {
    idea.state = IDEA_IDLE;
    idea.dir = 0;
-   idea.entry = idea.sl = idea.tp1 = idea.tp2 = 0;
+   idea.entry = idea.sl = idea.tp1 = idea.tp2 = idea.slR = 0;
    idea.signalTime = idea.slTime = idea.fillTime = 0;
    idea.reCount = idea.slBarAge = idea.pendAge = 0;
    idea.tp1Done = false;
@@ -394,8 +396,12 @@ void ApplyLevels(const int dir, const double entry, const double sl)
    idea.dir   = dir;
    idea.entry = entry;
    idea.sl    = sl;
+   idea.slR   = sl;
    double risk = (dir > 0 ? (entry - sl) : (sl - entry));
    if(risk <= 0.0) risk = Pt() * 10;
+   // wider SL, same TPs: the SL moves InpSLWidenPct % further away, TP1/TP2 keep the original R
+   double w = 1.0 + MathMax(0.0, InpSLWidenPct) / 100.0;
+   idea.sl = (dir > 0 ? entry - risk * w : entry + risk * w);
    if(dir > 0)
      {
       idea.tp1 = entry + risk * InpRR1;
@@ -1267,7 +1273,7 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKESPRO MTF IND", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.92  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.93  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
