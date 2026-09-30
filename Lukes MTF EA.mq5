@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Lukes MTF EA"
 #property link      ""
-#property version   "1.19"
+#property version   "1.20"
 
 #include <Trade/Trade.mqh>
 
@@ -99,6 +99,7 @@ input int    InpReentryCool    = 3;
 
 input group "=== Single Trades ==="
 input double InpSingleLot       = 0.01;    // lot of every signal trade (also the first trade of a grid basket)
+input double InpSLExpandPct     = 50.0;    // Single trades: widen the SL distance by this % (0 = signal SL). TP unchanged
 input bool   InpTPFromFill      = false;   // market entry: TP1 from fill price (same R) instead of indicator TP1
 input bool   InpCloseOnOpposite = true;    // opposite signal closes the trade and reverses
 input bool   InpTrailOn         = false;   // trailing stop
@@ -933,6 +934,15 @@ double MarketTP1(const int dir, const double price, const double sl)
 // market fill price with the same R multiple (hybrid market part).
 double gLastOpenTP1 = 0;   // TP1 of the last order opened by OpenEntryAs
 
+// Single trades: SL distance from the entry widened by InpSLExpandPct %.
+// Only the real order's SL moves; TP1 and the signal engine keep the signal's risk.
+double ExpandSL(const int dir, const double base, const double sl)
+  {
+   if(InpMode != MODE_SINGLE || InpSLExpandPct <= 0) return sl;
+   double risk = MathAbs(base - sl);
+   return NormalizeDouble(base - dir * risk * (1.0 + InpSLExpandPct / 100.0), _Digits);
+  }
+
 bool OpenEntryAs(const int dir, const double lotIn, const bool withStops, const string tag,
                  const ENUM_ENTRY_TYPE kind, const bool tpFromFill)
   {
@@ -974,7 +984,8 @@ bool OpenEntryAs(const int dir, const double lotIn, const bool withStops, const 
    if(!pending && tpFromFill)
       tp1 = NormalizeDouble(dir > 0 ? price + risk * InpRR1 : price - risk * InpRR1, _Digits);
 
-   double oSL = (withStops ? sl  : 0.0);
+   double slx = ExpandSL(dir, (pending ? entry : price), sl);
+   double oSL = (withStops ? slx : 0.0);
    double oTP = (withStops ? tp1 : 0.0);
 
    bool ok;
@@ -1001,15 +1012,17 @@ bool OpenEntryAs(const int dir, const double lotIn, const bool withStops, const 
         {
          double frisk = MathAbs(fill - sl);
          double ftp1  = NormalizeDouble(dir > 0 ? fill + frisk * InpRR1 : fill - frisk * InpRR1, _Digits);
-         if(MathAbs(ftp1 - tp1) >= _Point)
+         double fslx  = ExpandSL(dir, fill, sl);
+         if(MathAbs(ftp1 - tp1) >= _Point || MathAbs(fslx - slx) >= _Point)
            {
             tp1 = ftp1;
+            slx = fslx;
             if(withStops)
               {
                ulong pt = trade.ResultOrder();   // position ticket = order ticket on hedging accounts
                ulong dl = trade.ResultDeal();
                if(dl > 0 && HistoryDealSelect(dl)) pt = (ulong)HistoryDealGetInteger(dl, DEAL_POSITION_ID);
-               if(pt > 0 && PositionSelectByTicket(pt)) trade.PositionModify(pt, sl, tp1);
+               if(pt > 0 && PositionSelectByTicket(pt)) trade.PositionModify(pt, slx, tp1);
               }
            }
         }
@@ -1020,7 +1033,8 @@ bool OpenEntryAs(const int dir, const double lotIn, const bool withStops, const 
    string what = StringFormat("%s %s lot %.2f @ %s  SL %s  TP %s", tag,
                               (pending ? EnumToString(otype) : (dir > 0 ? "BUY market" : "SELL market")),
                               lot, Px(pending ? entry : trade.ResultPrice()),
-                              (withStops ? Px(sl) : "none"), (withStops ? Px(tp1) : "none"));
+                              (withStops ? Px(slx) + (slx != sl ? StringFormat(" (signal SL %s +%.0f%%)", Px(sl), InpSLExpandPct) : "") : "none"),
+                              (withStops ? Px(tp1) : "none"));
    Log("OPEN", what);
    if(InpAlertTrades) Notify("OPEN " + what);
    return true;
@@ -1887,7 +1901,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.19  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.20  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -1939,6 +1953,8 @@ void UpdatePanel(const bool force = false)
    PSection("EA");
    PRow("Mode", ModeName(), (InpMode == MODE_SIGNALS ? C_INFO : C_TXT));
    PRow("Entry", EntryName(), C_TXT);
+   if(InpMode == MODE_SINGLE && InpSLExpandPct > 0)
+      PRow("SL widened", StringFormat("+%.0f%%", InpSLExpandPct), C_WARN);
    PRow("Trading", (blk == "" ? "ENABLED" : "OFF"), (blk == "" ? C_UP : C_DN));
    if(InpEquityProtOn)
       PRow("Equity protector", StringFormat("-%.1f%%  (%.0f)", InpEquityProtPct, -AccountInfoDouble(ACCOUNT_BALANCE) * InpEquityProtPct / 100.0), C_WARN);

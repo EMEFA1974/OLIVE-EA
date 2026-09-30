@@ -45,6 +45,7 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 | T4 | Trailing stop with toggle (`InpTrailOn`): starts after `InpTrailStartPts` points profit, trails `InpTrailDistPts` points behind price, moves in steps of `InpTrailStepPts` points. | Done |
 | T5 | New signal while a trade is open: same direction → ignored. Opposite direction → close and reverse (`InpCloseOnOpposite`, default on). | Done |
 | T7 | Re-entry follows the EA's own trades (single trades): when a signal trade closes at its SL **with a loss**, the EA starts the re-entry wait for that signal (`REENTRY_SYNC` in the log) even if the engine had already dropped the signal (MARKET/HYBRID trades open at once while the engine tracks a pending entry that expires after 12 bars). Break-even/trailing stops in profit do not count. The indicator cannot see real trades, so here the EA may take a re-entry the indicator does not show. | Done (v1.19) |
+| T8 | Single trades: the real trade's SL distance is widened by `InpSLExpandPct` % (default 50, 0 = off): SL = entry -/+ signal risk x 1.5 (market: measured from the fill). TP1 is unchanged (still based on the signal's risk). The indicator and the signal engine keep the original SL, so the indicator may show SL hit / re-entry while the EA trade is still open (a same-direction re-entry is then skipped). | Done (v1.20) |
 | T6 | Pending entry mode: pending order is deleted when the indicator cancels/expires that idea, or after `InpPendingExpire` bars. | Done |
 
 ## 3. Grid (mode = Full grid)
@@ -138,3 +139,4 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 - 2026-09-30 – Fix (S7): signals no longer cancelled by a D1 bias that was not required; zones stay until TP1/SL/expiry again.
 - 2026-09-30 – EA v1.18: HYBRID opens ONE market trade per signal in Single trades mode (no more two trades with different TPs). Split optional via `InpHybridSplitSingle`.
 - 2026-09-30 – Spread-aware SL/TP/entry checks (S8), EA re-entry after real stop-outs (T7), grid margin check + retry rules (R3c). No `InpReNeedA` in this EA; `InpMaxReentry` stays 2.
+- 2026-09-30 – EA v1.20: Single trades SL widened by `InpSLExpandPct` (default 50%) (T8).
