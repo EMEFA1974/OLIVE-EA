@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "LukesPro MTF EA"
 #property link      ""
-#property version   "1.96"
+#property version   "1.97"
 
 #include <Trade/Trade.mqh>
 
@@ -83,9 +83,10 @@ input bool   InpReentryOn      = true;
 input int    InpSLBufferPts    = 20;
 input double InpRR1            = 1.0;   // TP1 R-multiple
 input double InpRR2            = 2.0;   // TP2 R-multiple
-input int    InpMaxReentry     = 1;     // one re-entry at most (see InpReNeedA)
+input int    InpMaxReentry     = 1;     // one re-entry at most
 input int    InpReentryWindow  = 24;
 input int    InpReentryCool    = 3;
+input bool   InpSpreadAware    = true;  // fills / SL / TP use the ask where the broker does (buy entries, sell exits)
 
 input group "=== Trend Filter (EMA, replaces the one-candle bias vote) ==="
 input bool            InpFiltOn     = true;        // on = EMA trend on TF1 AND TF2 must agree with the trade (legacy candle vote is skipped)
@@ -120,7 +121,7 @@ input int    InpPinSweep    = 3;                   // and the wick takes out the
 
 input group "=== Signal Grade ==="
 input ENUM_GRADE InpMinGrade = GRADE_C;            // lowest grade that becomes a signal (zone / alert / EA trade); C = A, B and C all accepted
-input bool       InpReNeedA  = true;               // re-entries only on a fresh A-grade trigger
+input bool       InpReNeedA  = false;              // true = re-entries only on a fresh A-grade trigger (false = same grades as InpMinGrade)
 
 input group "=== Single Trades ==="
 input double InpSingleLot       = 0.01;    // Single Lot: lot of every signal trade (single trades, and grid trade #1)
@@ -229,6 +230,7 @@ Idea idea;
 struct Candle
   {
    double o,h,l,c;
+   double spr;      // bar spread as a price (ask = bid + spr)
    datetime t;
    bool valid;
   };
@@ -260,9 +262,14 @@ void ResetIdea()
    idea.armTrend = 0;
   }
 
-// the indicator uses EndIdea to keep its chart zone; the EA only needs the reset
+// the indicator uses EndIdea to keep its chart zone; the EA keeps the ended idea so a
+// later broker stop-out of its trade can still start the re-entry wait (EngineBrokerSL)
+Idea gEnded;
+bool gEndedValid = false;
+
 void EndIdea(const string status, const datetime t)
   {
+   if(idea.signalTime != 0) { gEnded = idea; gEndedValid = true; }
    ResetIdea();
   }
 
@@ -370,9 +377,10 @@ void ArmIdea(const int dir, const Candle &bar, const bool re, const double buf,
       idea.fillTime = bar.t;
   }
 
-bool TouchedLevel(const Candle &bar, const double price)
+// shift = spread for prices the broker checks on the ask (chart bars are bid)
+bool TouchedLevel(const Candle &bar, const double price, const double shift = 0.0)
   {
-   return (bar.valid && bar.l <= price && bar.h >= price);
+   return (bar.valid && bar.l + shift <= price && bar.h + shift >= price);
   }
 
 // break-even after TP1 is simulated only when the EA manages trades that way
@@ -398,13 +406,16 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int tren
   {
    if(idea.state == IDEA_IDLE) return;
    bool fillBar = false;
+   // buys are filled at the ask, sells are closed (SL / TP) at the ask
+   double sp = (InpSpreadAware ? bar.spr : 0.0);
+   double xs = (idea.dir < 0 ? sp : 0.0);
 
    if(idea.state == IDEA_PENDING)
      {
       idea.pendAge++;
       if(idea.pendAge > InpPendingExpire) { EndIdea(" [EXPIRED]", bar.t); return; }
       if(TrendAgainst(idea.dir, d, h4, trendDir)) { EndIdea(" [CANCELLED]", bar.t); return; }
-      if(!TouchedLevel(bar, idea.entry)) return;
+      if(!TouchedLevel(bar, idea.entry, (idea.dir > 0 ? sp : 0.0))) return;
       idea.state = IDEA_LIVE;
       idea.fillTime = bar.t;
       idea.slBarAge = 0;
@@ -419,9 +430,9 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int tren
 
    idea.slBarAge++;
 
-   bool hitTP2 = (idea.dir > 0 ? (bar.h >= idea.tp2) : (bar.l <= idea.tp2));
-   bool hitTP1 = (idea.dir > 0 ? (bar.h >= idea.tp1) : (bar.l <= idea.tp1));
-   bool hitSL  = (idea.dir > 0 ? (bar.l <= idea.sl)  : (bar.h >= idea.sl));
+   bool hitTP2 = (idea.dir > 0 ? (bar.h >= idea.tp2) : (bar.l + xs <= idea.tp2));
+   bool hitTP1 = (idea.dir > 0 ? (bar.h >= idea.tp1) : (bar.l + xs <= idea.tp1));
+   bool hitSL  = (idea.dir > 0 ? (bar.l <= idea.sl)  : (bar.h + xs >= idea.sl));
 
    if(fillBar)
      {
@@ -430,17 +441,17 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int tren
       // filled coming from the SL side, so only a close beyond the SL proves that.
       if(!InpPendingOn || InpPendingType == PEND_LIMIT)
         {
-         hitTP1 = (idea.dir > 0 ? bar.c >= idea.tp1 : bar.c <= idea.tp1);
-         hitTP2 = (idea.dir > 0 ? bar.c >= idea.tp2 : bar.c <= idea.tp2);
+         hitTP1 = (idea.dir > 0 ? bar.c >= idea.tp1 : bar.c + xs <= idea.tp1);
+         hitTP2 = (idea.dir > 0 ? bar.c >= idea.tp2 : bar.c + xs <= idea.tp2);
         }
       else
-         hitSL = (idea.dir > 0 ? bar.c <= idea.sl : bar.c >= idea.sl);
+         hitSL = (idea.dir > 0 ? bar.c <= idea.sl : bar.c + xs >= idea.sl);
       if(hitSL) hitTP1 = hitTP2 = false;   // both possible: assume the loss
      }
 
    if(idea.state == IDEA_LIVE && hitSL && hitTP1)
      {
-      bool closeFav = (idea.dir > 0 ? (bar.c > idea.entry) : (bar.c < idea.entry));
+      bool closeFav = (idea.dir > 0 ? (bar.c > idea.entry) : (bar.c + xs < idea.entry));
       if(!closeFav)
         {
          StopOut(bar);
@@ -506,7 +517,7 @@ bool Cooled(const datetime now, const datetime lastSig, const int bars)
 Candle CandleAtShift(ENUM_TIMEFRAMES tf, int sh)
   {
    Candle k;
-   k.valid = false; k.o = k.h = k.l = k.c = 0; k.t = 0;
+   k.valid = false; k.o = k.h = k.l = k.c = 0; k.spr = 0; k.t = 0;
    if(sh < 0) return k;
    MqlRates r[];
    if(CopyRates(_Symbol, tf, sh, 1, r) != 1) return k;
@@ -824,6 +835,7 @@ int ProcessBar(const int i)
    bar.t = iTime(_Symbol, _Period, i);
    bar.valid = true;
    if(bar.t == 0) return 0;
+   bar.spr = SpreadPriceAt(i);
 
    Bias d  = TFBiasAt(InpTF_D,  bar.t);
    Bias h4 = TFBiasAt(InpTF_H4, bar.t);
@@ -1543,6 +1555,7 @@ bool BasketStopHit(const Basket &b, const double bid, const double ask, string &
 //| they close together (Basket TP off: all share TP1).              |
 //+------------------------------------------------------------------+
 int gPrevGridCount = 0;
+int gNoMarginLevel = 0;   // grid level already reported as "no margin"
 
 // account money per 1.0 price move for the whole basket
 double MoneyPerPrice(const double lots)
@@ -1673,11 +1686,31 @@ void ManageGrid(const Basket &b)
    // extra grid trades: #2 = Grid Lot, #3 = Grid Lot x multiplier, ... (trade #1 is the signal trade, Single Lot)
    double lot = NormLot(InpGridStartLot * MathPow(InpGridMultiplier, b.count - 1));
    string cmt = InpComment + "|grid" + IntegerToString(b.count + 1);
+
+   // not enough free margin: the broker would refuse it. Say so once per level and re-check
+   // every 30 s (margin frees up if price comes back) instead of sending doomed orders.
+   double need = 0;
+   if(OrderCalcMargin(b.dir > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, lot, (b.dir > 0 ? ask : bid), need)
+      && need > AccountInfoDouble(ACCOUNT_MARGIN_FREE))
+     {
+      gNextGridTry = TimeCurrent() + 30;
+      if(gNoMarginLevel != b.count + 1)
+        {
+         gNoMarginLevel = b.count + 1;
+         string m = StringFormat("grid#%d lot %.2f needs margin %.2f, free %.2f: waiting", b.count + 1, lot, need,
+                                 AccountInfoDouble(ACCOUNT_MARGIN_FREE));
+         Log("GRID_NO_MARGIN", m);
+         if(InpAlertTrades) Notify("GRID NO MARGIN " + m);
+        }
+      return;
+     }
+   gNoMarginLevel = 0;
+
    bool ok = (b.dir > 0 ? trade.Buy(lot, _Symbol, 0, 0, 0, cmt) : trade.Sell(lot, _Symbol, 0, 0, 0, cmt));
    uint rc = trade.ResultRetcode();
    if(!ok || (rc != TRADE_RETCODE_DONE && rc != TRADE_RETCODE_DONE_PARTIAL))
      {
-      gNextGridTry = TimeCurrent() + 10;
+      gNextGridTry = TimeCurrent() + 3;   // requote / price changed / busy: try again shortly
       Log("GRID_FAIL", StringFormat("level %d lot %.2f retcode %u %s", b.count + 1, lot, rc, trade.ResultRetcodeDescription()));
       return;
      }
@@ -1722,6 +1755,74 @@ void ManageTrades()
   }
 
 //+------------------------------------------------------------------+
+//| Re-entry sync with the real trades                               |
+//| The engine sees chart bars; the broker closes the real trade.   |
+//| A market / HYBRID trade can be stopped out after the engine's   |
+//| pending idea expired, or a spread away from the bar. When a real |
+//| EA trade closes at its SL with a loss, the engine is put into    |
+//| the re-entry wait for that signal if it isn't there already.     |
+//+------------------------------------------------------------------+
+void EngineBrokerSL(const datetime sig, const int dir)
+  {
+   if(!InpReentryOn || sig == 0) return;
+   datetime now = iTime(_Symbol, _Period, 0);
+   if(idea.signalTime == sig)
+     {
+      if(idea.state == IDEA_PENDING || idea.state == IDEA_LIVE)
+        {
+         gCntSL++;
+         idea.state = IDEA_SL_WAIT;
+         idea.slTime = now;
+         idea.slBarAge = 0;
+         Log("REENTRY_SYNC", StringFormat("%s SL hit on the broker before the chart: waiting for a re-entry (%d/%d)",
+                                          (dir > 0 ? "BUY" : "SELL"), idea.reCount, InpMaxReentry));
+        }
+      return;
+     }
+   if(idea.state == IDEA_IDLE && gEndedValid && gEnded.signalTime == sig && gEnded.dir == dir)
+     {
+      idea = gEnded;
+      gEndedValid = false;
+      gCntSL++;
+      idea.state = IDEA_SL_WAIT;
+      idea.slTime = now;
+      idea.slBarAge = 0;
+      Log("REENTRY_SYNC", StringFormat("%s trade stopped out after its signal idea ended: waiting for a re-entry (%d/%d)",
+                                       (dir > 0 ? "BUY" : "SELL"), idea.reCount, InpMaxReentry));
+     }
+  }
+
+void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest &request, const MqlTradeResult &result)
+  {
+   if(trans.type != TRADE_TRANSACTION_DEAL_ADD || !gWarm || trans.deal == 0) return;
+   if(!HistoryDealSelect(trans.deal)) return;
+   if(HistoryDealGetString(trans.deal, DEAL_SYMBOL) != _Symbol) return;
+   if(HistoryDealGetInteger(trans.deal, DEAL_MAGIC) != InpMagic) return;
+   long entry = HistoryDealGetInteger(trans.deal, DEAL_ENTRY);
+   if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY) return;
+   if(HistoryDealGetInteger(trans.deal, DEAL_REASON) != DEAL_REASON_SL) return;
+   double p = HistoryDealGetDouble(trans.deal, DEAL_PROFIT) + HistoryDealGetDouble(trans.deal, DEAL_SWAP)
+              + HistoryDealGetDouble(trans.deal, DEAL_COMMISSION);
+   if(p >= 0) return;
+   long pid = HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID);
+   if(GlobalVariableCheck(PDKey((ulong)pid))) return;   // TP1 was reached: a break-even stop, not a loss
+
+   // which signal opened this position
+   datetime sig = 0;
+   int      dir = 0;
+   if(!HistorySelectByPosition(pid)) return;
+   for(int i = HistoryDealsTotal() - 1; i >= 0; i--)
+     {
+      ulong tk = HistoryDealGetTicket(i);
+      if(tk == 0 || HistoryDealGetInteger(tk, DEAL_ENTRY) != DEAL_ENTRY_IN) continue;
+      sig = (datetime)StringToInteger(SigKey(HistoryDealGetString(tk, DEAL_COMMENT)));
+      dir = (HistoryDealGetInteger(tk, DEAL_TYPE) == DEAL_TYPE_BUY ? 1 : -1);
+      break;
+     }
+   EngineBrokerSL(sig, dir);
+  }
+
+//+------------------------------------------------------------------+
 //| Engine driver                                                    |
 //+------------------------------------------------------------------+
 bool WarmUp()
@@ -1736,6 +1837,7 @@ bool WarmUp()
 
    ResetIdea();
    ResetCounts();
+   gEndedValid = false;
    lastBuyTime = lastSellTime = 0;
    int start = (int)MathMin(total - 5, 800);
    if(start < 1) start = 1;
@@ -2098,7 +2200,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKESPRO MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.96  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.97  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 

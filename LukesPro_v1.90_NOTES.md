@@ -108,3 +108,33 @@ grid set `InpManageOn=false` on both.
   mode only), with `InpHybridMktPct` as the market share.
 * The panel shows `Hybrid: 1 market trade` (or `Hybrid 50% mkt` when the split is on).
 * MARKET and PENDING are unchanged, and both already open a single trade.
+
+## Ind v1.92 / EA v1.97 — re-entry and recovery (grid) fixes
+
+Check both files carry the same engine inputs (`InpSpreadAware`, `InpReNeedA`, ...).
+
+**Re-entry (indicator + EA)**
+* Bug: the engine judged fills, SL and TP on the chart's bid prices only. The broker closes a
+  sell (SL/TP) and fills a buy entry at the **ask**. A sell stopped out on the broker a spread
+  away from the bar high was never seen as stopped, so the engine never entered the re-entry
+  wait and no re-entry came. New `InpSpreadAware = true`: buy entries and sell SL/TP are checked
+  at bid + the bar's spread from history.
+* Setting: `InpReNeedA` is now **false**. With `InpMinGrade = C`, requiring an A-grade trigger for
+  re-entries blocked nearly all of them. Re-entries now accept the same grades as signals.
+  `InpMaxReentry` stays 1, the re-entry window 24 bars, and the cool-down 3 bars.
+
+**Re-entry (EA only)**
+* Bug: MARKET and HYBRID trades open at market, but the engine models the idea as a pending
+  order that expires after `InpPendingExpire` bars. A trade stopped out after that
+  lost its re-entry. The EA now watches its own closed trades. When one closes at its SL with a
+  loss, the engine is put into the re-entry wait for that signal if it isn't already there
+  (log: `REENTRY_SYNC`). Break-even stops after TP1 don't count. Because the indicator can't see
+  real trades, the EA can show a re-entry the indicator doesn't in that one case.
+
+**Recovery / grid trades (EA)**
+* A grid add is now checked for free margin first. If the margin is missing, it is reported once
+  per level (`GRID_NO_MARGIN`, plus an alert) and re-checked every 30 s, instead of sending orders
+  the broker will refuse.
+* A refused grid order (requote, price changed, busy) is retried after 3 s instead of 10 s.
+* Grid mode by design: while a basket is running, new signals and re-entries are not traded.
+  The grid trades are the recovery.

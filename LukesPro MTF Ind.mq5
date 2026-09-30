@@ -1,6 +1,6 @@
 #property copyright "LukesPro MTF Ind"
 #property link      ""
-#property version   "1.91"
+#property version   "1.92"
 #property indicator_chart_window
 #property indicator_buffers 4
 #property indicator_plots   4
@@ -70,9 +70,10 @@ input bool   InpReentryOn      = true;
 input int    InpSLBufferPts    = 20;
 input double InpRR1            = 1.0;   // TP1 R-multiple
 input double InpRR2            = 2.0;   // TP2 R-multiple
-input int    InpMaxReentry     = 1;     // one re-entry at most (see InpReNeedA)
+input int    InpMaxReentry     = 1;     // one re-entry at most
 input int    InpReentryWindow  = 24;
 input int    InpReentryCool    = 3;
+input bool   InpSpreadAware    = true;  // fills / SL / TP use the ask where the broker does (buy entries, sell exits)
 
 input group "=== Trend Filter (EMA, replaces the one-candle bias vote) ==="
 input bool            InpFiltOn     = true;        // on = EMA trend on TF1 AND TF2 must agree with the trade (legacy candle vote is skipped)
@@ -107,7 +108,7 @@ input int    InpPinSweep    = 3;                   // and the wick takes out the
 
 input group "=== Signal Grade ==="
 input ENUM_GRADE InpMinGrade = GRADE_C;            // lowest grade that becomes a signal (zone / alert / EA trade); C = A, B and C all accepted
-input bool       InpReNeedA  = true;               // re-entries only on a fresh A-grade trigger
+input bool       InpReNeedA  = false;              // true = re-entries only on a fresh A-grade trigger (false = same grades as InpMinGrade)
 input bool       InpShowFiltered = true;          // grey grade letter on signals below the minimum grade (no zone, no alert)
 input color      InpFiltColor    = clrSilver;
 
@@ -246,6 +247,7 @@ void ResetZone()
 struct Candle
   {
    double o,h,l,c;
+   double spr;      // bar spread as a price (ask = bid + spr)
    datetime t;
    bool valid;
   };
@@ -471,9 +473,10 @@ void ArmIdea(const int dir, const Candle &bar, const bool re, const double buf,
       idea.fillTime = bar.t;
   }
 
-bool TouchedLevel(const Candle &bar, const double price)
+// shift = spread for prices the broker checks on the ask (chart bars are bid)
+bool TouchedLevel(const Candle &bar, const double price, const double shift = 0.0)
   {
-   return (bar.valid && bar.l <= price && bar.h >= price);
+   return (bar.valid && bar.l + shift <= price && bar.h + shift >= price);
   }
 
 // break-even after TP1 is simulated only when the EA manages trades that way
@@ -500,13 +503,16 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int tren
   {
    if(idea.state == IDEA_IDLE) return;
    bool fillBar = false;
+   // buys are filled at the ask, sells are closed (SL / TP) at the ask
+   double sp = (InpSpreadAware ? bar.spr : 0.0);
+   double xs = (idea.dir < 0 ? sp : 0.0);
 
    if(idea.state == IDEA_PENDING)
      {
       idea.pendAge++;
       if(idea.pendAge > InpPendingExpire) { EndIdea(" [EXPIRED]", bar.t); return; }
       if(TrendAgainst(idea.dir, d, h4, trendDir)) { EndIdea(" [CANCELLED]", bar.t); return; }
-      if(!TouchedLevel(bar, idea.entry)) return;
+      if(!TouchedLevel(bar, idea.entry, (idea.dir > 0 ? sp : 0.0))) return;
       idea.state = IDEA_LIVE;
       idea.fillTime = bar.t;
       idea.slBarAge = 0;
@@ -521,9 +527,9 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int tren
 
    idea.slBarAge++;
 
-   bool hitTP2 = (idea.dir > 0 ? (bar.h >= idea.tp2) : (bar.l <= idea.tp2));
-   bool hitTP1 = (idea.dir > 0 ? (bar.h >= idea.tp1) : (bar.l <= idea.tp1));
-   bool hitSL  = (idea.dir > 0 ? (bar.l <= idea.sl)  : (bar.h >= idea.sl));
+   bool hitTP2 = (idea.dir > 0 ? (bar.h >= idea.tp2) : (bar.l + xs <= idea.tp2));
+   bool hitTP1 = (idea.dir > 0 ? (bar.h >= idea.tp1) : (bar.l + xs <= idea.tp1));
+   bool hitSL  = (idea.dir > 0 ? (bar.l <= idea.sl)  : (bar.h + xs >= idea.sl));
 
    if(fillBar)
      {
@@ -532,17 +538,17 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int tren
       // filled coming from the SL side, so only a close beyond the SL proves that.
       if(!InpPendingOn || InpPendingType == PEND_LIMIT)
         {
-         hitTP1 = (idea.dir > 0 ? bar.c >= idea.tp1 : bar.c <= idea.tp1);
-         hitTP2 = (idea.dir > 0 ? bar.c >= idea.tp2 : bar.c <= idea.tp2);
+         hitTP1 = (idea.dir > 0 ? bar.c >= idea.tp1 : bar.c + xs <= idea.tp1);
+         hitTP2 = (idea.dir > 0 ? bar.c >= idea.tp2 : bar.c + xs <= idea.tp2);
         }
       else
-         hitSL = (idea.dir > 0 ? bar.c <= idea.sl : bar.c >= idea.sl);
+         hitSL = (idea.dir > 0 ? bar.c <= idea.sl : bar.c + xs >= idea.sl);
       if(hitSL) hitTP1 = hitTP2 = false;   // both possible: assume the loss
      }
 
    if(idea.state == IDEA_LIVE && hitSL && hitTP1)
      {
-      bool closeFav = (idea.dir > 0 ? (bar.c > idea.entry) : (bar.c < idea.entry));
+      bool closeFav = (idea.dir > 0 ? (bar.c > idea.entry) : (bar.c + xs < idea.entry));
       if(!closeFav)
         {
          StopOut(bar);
@@ -608,7 +614,7 @@ bool Cooled(const datetime now, const datetime lastSig, const int bars)
 Candle CandleAtShift(ENUM_TIMEFRAMES tf, int sh)
   {
    Candle k;
-   k.valid = false; k.o = k.h = k.l = k.c = 0; k.t = 0;
+   k.valid = false; k.o = k.h = k.l = k.c = 0; k.spr = 0; k.t = 0;
    if(sh < 0) return k;
    MqlRates r[];
    if(CopyRates(_Symbol, tf, sh, 1, r) != 1) return k;
@@ -1261,7 +1267,7 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKESPRO MTF IND", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.91  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.92  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -1480,6 +1486,7 @@ int OnCalculate(const int rates_total,
       Candle bar;
       bar.o = open[i]; bar.h = high[i]; bar.l = low[i]; bar.c = close[i];
       bar.t = time[i]; bar.valid = true;
+      bar.spr = SpreadPriceAt(i);
 
       Bias d  = TFBiasAt(InpTF_D,  time[i]);
       Bias h4 = TFBiasAt(InpTF_H4, time[i]);
