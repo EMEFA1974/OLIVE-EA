@@ -6,7 +6,7 @@
 //+------------------------------------------------------------------+
 #property copyright "LukesPro BTC MTF EA"
 #property link      ""
-#property version   "1.97"
+#property version   "1.98"
 
 #include <Trade/Trade.mqh>
 
@@ -21,7 +21,7 @@ enum ENUM_ENTRY_TYPE
   {
    ENTRY_MARKET  = 0,  // MARKET: all at market price on the signal
    ENTRY_PENDING = 1,  // PENDING: all as pending order at the indicator Entry level
-   ENTRY_HYBRID  = 2   // HYBRID: part at market now + rest pending at Entry (never miss a move)
+   ENTRY_HYBRID  = 2   // HYBRID: ONE trade - market if Entry is far from price, else pending at Entry
   };
 
 enum ENUM_BASKET_TP
@@ -41,8 +41,7 @@ enum ENUM_GRADE
 input group "=== EA Mode ==="
 input ENUM_EA_MODE    InpMode        = MODE_GRID;
 input ENUM_ENTRY_TYPE InpEntryType   = ENTRY_HYBRID;    // Entry type (MARKET / PENDING / HYBRID)
-input double          InpHybridMktPct = 50.0;           // HYBRID: % of the lot opened at market (rest = pending)
-input double          InpHybridMinGapUsd = 50.0;        // HYBRID: split only if Entry is at least $ this far from price, else ONE market trade
+input double          InpHybridMinGapUsd = 50.0;        // HYBRID: Entry this many $ or more from price = market trade, closer = pending order
 input long            InpMagic       = 26092601;
 input string          InpComment     = "LukesBTC";
 input double          InpSlippageUsd = 15.0;     // max slippage in USD (gold: 30 pts)
@@ -1234,33 +1233,23 @@ bool OpenEntry(const int dir, const double lotIn, const bool withStops, const st
 void OpenSignal(const int dir, const double lot, const bool withStops, const string tag)
   {
    if(InpEntryType != ENTRY_HYBRID) { OpenEntry(dir, lot, withStops, tag); return; }
-   // Full grid: the grid itself adds trades on a pullback, and a filled pending leg would be
-   // counted as grid level #2 (bigger next lot, one grid slot used up). So in grid mode HYBRID
-   // enters ONE market trade with the full grid lot and lets the grid handle the pullback.
+   // Full grid: one market trade, the grid itself adds trades on a pullback
    if(InpMode == MODE_GRID) { OpenEntry(dir, lot, withStops, tag + " mkt", true); return; }
-   double vmin = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-   double mLot = NormLot(lot * MathMax(0.0, MathMin(100.0, InpHybridMktPct)) / 100.0);
-   double pLot = NormLot(lot - mLot);
-   if(InpHybridMktPct >= 100.0) { OpenEntry(dir, lot, withStops, tag + " mkt", true); return; }
-   if(InpHybridMktPct <= 0.0 || mLot < vmin - 1e-9 || lot - mLot < vmin - 1e-9)
+   // Single trades: always ONE trade per signal.
+   // Entry far from price (big candle, a pullback that far is unlikely) -> market now, so the
+   // move is not missed; Entry close to price -> pending order at the indicator Entry.
+   double px  = SymbolInfoDouble(_Symbol, dir > 0 ? SYMBOL_ASK : SYMBOL_BID);
+   double gap = (dir > 0 ? px - idea.entry : idea.entry - px);   // how far price is beyond the Entry
+   if(gap >= InpHybridMinGapUsd * Usd())
      {
-      Log("HYBRID_SKIP", StringFormat("%s: lot %.2f cannot be split (min lot %.2f), pending only", tag, lot, vmin));
-      OpenEntry(dir, lot, withStops, tag);
-      return;
-     }
-   // Entry level too close to the current price: two trades a few dollars apart add nothing,
-   // so the whole lot goes in as ONE market trade
-   double px = SymbolInfoDouble(_Symbol, dir > 0 ? SYMBOL_ASK : SYMBOL_BID);
-   double gap = (dir > 0 ? px - idea.entry : idea.entry - px);   // how far price is above a buy / below a sell entry
-   if(gap < InpHybridMinGapUsd * Usd())
-     {
-      Log("HYBRID_ONE", StringFormat("%s: Entry %s only $%.2f from price %s (< $%.2f), one market trade",
-                                     tag, Px(idea.entry), gap, Px(px), InpHybridMinGapUsd));
+      Log("HYBRID", StringFormat("%s: Entry %s is $%.2f from price %s (>= $%.2f), market trade",
+                                 tag, Px(idea.entry), gap, Px(px), InpHybridMinGapUsd));
       OpenEntry(dir, lot, withStops, tag + " mkt", true);
       return;
      }
-   OpenEntry(dir, mLot, withStops, tag + " mkt", true);
-   OpenEntry(dir, pLot, withStops, tag + " pend");   // last, so the grid keeps the indicator TP1
+   Log("HYBRID", StringFormat("%s: Entry %s is $%.2f from price %s (< $%.2f), pending order",
+                              tag, Px(idea.entry), gap, Px(px), InpHybridMinGapUsd));
+   OpenEntry(dir, lot, withStops, tag);
   }
 
 //+------------------------------------------------------------------+
@@ -2033,7 +2022,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKESPRO BTC MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.97  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.98  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -2080,7 +2069,7 @@ void UpdatePanel(const bool force = false)
    PSection("EA");
    PRow("Mode", ModeName(), (InpMode == MODE_SIGNALS ? C_INFO : C_TXT));
    PRow("Entry", (InpEntryType == ENTRY_MARKET ? "Market" :
-                  (InpEntryType == ENTRY_HYBRID ? StringFormat("Hybrid %.0f%% mkt", InpHybridMktPct) : "Pending")), C_TXT);
+                  (InpEntryType == ENTRY_HYBRID ? StringFormat("Hybrid (mkt if >= $%.0f)", InpHybridMinGapUsd) : "Pending")), C_TXT);
    if(InpMode == MODE_SINGLE)
       PRow("Trade mgmt", (InpManageOn ? StringFormat("%.0f%% @TP1%s, rest TP2%s", InpPartialPct, (InpMoveBE ? " + BE" : ""),
                                                      (InpRunnerTrailOn ? " / trail" : "")) : "OFF (all at TP1)"),

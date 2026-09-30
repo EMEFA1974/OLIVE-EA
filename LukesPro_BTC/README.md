@@ -46,25 +46,19 @@ signal trade lot = 1.0 (Single Lot, also the first trade of a grid), grid adds s
 
 Check your broker's BTC contract size: `InpBasketTPMoney` assumes 1 lot = 1 BTC.
 
-## Hybrid entry (default)
+## Hybrid entry (default, v1.98)
 
-`InpEntryType = Hybrid` splits every signal's lot: `InpHybridMktPct` (default 50%) opens at market
-immediately, the rest is the usual pending order at the indicator's Entry level.
+`InpEntryType = HYBRID` always opens **ONE trade per signal**:
 
-- If price runs away without pulling back (big displacement candles), the market leg still catches the move.
-- If price does pull back, the pending leg fills at the better indicator Entry.
-- The market leg keeps the indicator SL; its TP1/TP2 are measured from its own fill price (same R multiples).
-- A lot too small to split (e.g. 0.01 when min lot is 0.01) goes in whole as the pending order.
-- `Pending` / `Market` still behave exactly as before.
+- **Single trades:** if the indicator Entry is `InpHybridMinGapUsd` (default $50) or more away from the
+  current price (big candle, a pullback that deep is unlikely), the trade opens **at market** so the move
+  is not missed (TP1/TP2 measured from the fill, same R). Closer than that, it is a **pending order** at the
+  indicator Entry (better price, likely to fill).
+- **Full grid:** one market trade; the grid adds trades on a pullback.
+- `PENDING` / `MARKET` still behave exactly as before.
 
 Related tuning (set the same in the indicator and the EA): a smaller `InpPendingRetrace`
 (e.g. 0.20 instead of 0.40) places the limit closer to the signal close, so it fills more often.
-- `InpHybridMinGapUsd` (default $50): the lot is only split when the indicator Entry is at least this far
-  from the current price. Closer than that, the whole lot goes in as ONE market trade (no near-duplicate trades).
-  Set it to 0 to always split.
-- In **Full grid** mode HYBRID does not split: it opens ONE market trade with the full grid lot and the
-  grid adds trades on pullbacks (a filled pending leg would otherwise count as grid level #2).
-  All grid trades share one basket TP/SL by design (`InpGridBrokerLevels`).
 
 ## Full grid TP / SL rules (v1.97)
 
