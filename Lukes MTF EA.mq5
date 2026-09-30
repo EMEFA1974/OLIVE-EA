@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Lukes MTF EA"
 #property link      ""
-#property version   "1.16"
+#property version   "1.17"
 
 #include <Trade/Trade.mqh>
 
@@ -360,6 +360,14 @@ bool TouchedLevel(const Candle &bar, const double price)
    return (bar.valid && bar.l <= price && bar.h >= price);
   }
 
+// A running signal is cancelled only when a timeframe the signal REQUIRED turns against it.
+// (Before: D1 against cancelled every signal, although D1 is not required by default,
+// so counter-D1 signals died one bar after they appeared.)
+bool BiasTurnedAgainst(const int dir, const Bias &d, const Bias &h4)
+  {
+   return ((InpRequireD && d.dir == -dir) || (InpRequireH4 && h4.dir == -dir));
+  }
+
 void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
   {
    if(idea.state == IDEA_IDLE) return;
@@ -369,8 +377,7 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
      {
       idea.pendAge++;
       if(idea.pendAge > InpPendingExpire) { EndIdea(" [EXPIRED]", bar.t); return; }
-      if(idea.dir > 0 && (d.dir < 0 || h4.dir < 0)) { EndIdea(" [CANCELLED]", bar.t); return; }
-      if(idea.dir < 0 && (d.dir > 0 || h4.dir > 0)) { EndIdea(" [CANCELLED]", bar.t); return; }
+      if(BiasTurnedAgainst(idea.dir, d, h4)) { EndIdea(" [CANCELLED]", bar.t); return; }
 
       if(!TouchedLevel(bar, idea.entry)) return;
       idea.state = IDEA_LIVE;
@@ -439,8 +446,7 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
    if(idea.state == IDEA_SL_WAIT)
      {
       if(idea.slBarAge > InpReentryWindow
-         || (idea.dir > 0 && (d.dir < 0 || h4.dir < 0))
-         || (idea.dir < 0 && (d.dir > 0 || h4.dir > 0)))
+         || BiasTurnedAgainst(idea.dir, d, h4))
          EndIdea(" [SL HIT]", idea.slTime);
      }
   }
@@ -1751,7 +1757,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.16  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.17  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 

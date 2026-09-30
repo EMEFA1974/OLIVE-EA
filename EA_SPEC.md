@@ -30,6 +30,7 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 | S3 | On start the EA replays the last 800 bars (same as the indicator) to rebuild the engine state. No trades are taken from replayed signals. | Done |
 | S5 | The bar that fills a pending entry is also checked for SL/TP (before: only from the next bar, so a same-bar stop-out was missed and the engine stayed LIVE, blocking new signals). On that bar a target only counts if the bar closed beyond it; the SL always counts. | Done (Ind v1.83 / EA v1.10) |
 | S6 | SL buffer: `InpSLBufMode` = ATR (default): buffer = max(`InpSLBufferPts`, ATR(`InpSLBufATRPeriod`) x `InpSLBufATRMult`) + the signal bar's spread (`InpSLBufAddSpread`). Fixed mode = old behaviour (20 pts). Must be set the same in EA and indicator. | Done (Ind v1.83 / EA v1.10) |
+| S7 | A running signal (pending, or waiting for re-entry after SL) is cancelled only when a timeframe it **required** turns against it (`InpRequireH4` -> H4, `InpRequireD` -> D1). Before: D1 against always cancelled it, so counter-D1 signals (allowed, since D1 is not required by default) were cancelled one bar later and their zone / pending order vanished. | Done (Ind v1.84 / EA v1.17) |
 | S4 | Trades are only taken on a signal from the bar that just closed. | Done |
 
 ## 2. Single trades (mode = Single trades only)
@@ -130,3 +131,4 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 - 2026-09-27 – EA v1.14: HYBRID no longer splits in Full grid mode (the pending half was counted as a grid trade).
 - 2026-09-27 – EA v1.15: in Full grid mode the signal trade uses the Single lot; grid extras start at the Grid start lot (R1, R4). Before, the signal trade used the Grid start lot and the first extra was already multiplied.
 - 2026-09-27 – EA v1.16: grid TP/SL rules (R8, R13): no SL on grid trades, signal trade alone -> TP1, grid added -> shared basket TP, basket TP off -> TP1. Equity Protector default 25%.
+- 2026-09-30 – Fix (S7): signals no longer cancelled by a D1 bias that was not required; zones stay until TP1/SL/expiry again.
