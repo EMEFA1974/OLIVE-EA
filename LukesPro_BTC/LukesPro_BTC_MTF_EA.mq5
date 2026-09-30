@@ -6,7 +6,7 @@
 //+------------------------------------------------------------------+
 #property copyright "LukesPro BTC MTF EA"
 #property link      ""
-#property version   "1.98"
+#property version   "1.99"
 
 #include <Trade/Trade.mqh>
 
@@ -85,6 +85,7 @@ input double InpRR2            = 2.0;   // TP2 R-multiple
 input int    InpMaxReentry     = 1;     // one re-entry at most (see InpReNeedA)
 input int    InpReentryWindow  = 24;
 input int    InpReentryCool    = 3;
+input bool   InpSpreadAware    = true;  // SL/TP/fill checks use the ask where the broker does (sell exits, buy entries): bar spread added
 
 input group "=== Trend Filter (EMA, replaces the one-candle bias vote) ==="
 input bool            InpFiltOn     = true;        // on = EMA trend on TF1 AND TF2 must agree with the trade (legacy candle vote is skipped)
@@ -119,7 +120,7 @@ input int    InpPinSweep    = 3;                   // and the wick takes out the
 
 input group "=== Signal Grade ==="
 input ENUM_GRADE InpMinGrade = GRADE_C;            // lowest grade that becomes a signal (zone / alert / EA trade); C = A, B and C all accepted
-input bool       InpReNeedA  = true;               // re-entries only on a fresh A-grade trigger
+input bool       InpReNeedA  = false;              // true = re-entries only on a fresh A-grade trigger; false = same grades as normal signals
 
 input group "=== Single Trades ==="
 input double InpSingleLot       = 1.0;     // lot of the signal trade (Single mode AND the first trade of a Full grid)
@@ -229,6 +230,7 @@ Idea idea;
 struct Candle
   {
    double o,h,l,c;
+   double sp;      // bar spread in price (InpSpreadAware), 0 = bid-only checks
    datetime t;
    bool valid;
   };
@@ -368,9 +370,11 @@ void ArmIdea(const int dir, const Candle &bar, const bool re, const double buf,
       idea.fillTime = bar.t;
   }
 
+// pending fill: buys fill at the ask (bid candle shifted up by the spread), sells at the bid
 bool TouchedLevel(const Candle &bar, const double price)
   {
-   return (bar.valid && bar.l <= price && bar.h >= price);
+   double off = (idea.dir > 0 ? bar.sp : 0.0);
+   return (bar.valid && bar.l + off <= price && bar.h + off >= price);
   }
 
 // break-even after TP1 is simulated only when the EA manages trades that way
@@ -417,9 +421,12 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int tren
 
    idea.slBarAge++;
 
-   bool hitTP2 = (idea.dir > 0 ? (bar.h >= idea.tp2) : (bar.l <= idea.tp2));
-   bool hitTP1 = (idea.dir > 0 ? (bar.h >= idea.tp1) : (bar.l <= idea.tp1));
-   bool hitSL  = (idea.dir > 0 ? (bar.l <= idea.sl)  : (bar.h >= idea.sl));
+   // buys close at the bid (the chart candle); sells close at the ask = candle + spread
+   double xo = (idea.dir < 0 ? bar.sp : 0.0);
+   double xc = bar.c + xo;
+   bool hitTP2 = (idea.dir > 0 ? (bar.h >= idea.tp2) : (bar.l + xo <= idea.tp2));
+   bool hitTP1 = (idea.dir > 0 ? (bar.h >= idea.tp1) : (bar.l + xo <= idea.tp1));
+   bool hitSL  = (idea.dir > 0 ? (bar.l <= idea.sl)  : (bar.h + xo >= idea.sl));
 
    if(fillBar)
      {
@@ -428,17 +435,17 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int tren
       // filled coming from the SL side, so only a close beyond the SL proves that.
       if(!InpPendingOn || InpPendingType == PEND_LIMIT)
         {
-         hitTP1 = (idea.dir > 0 ? bar.c >= idea.tp1 : bar.c <= idea.tp1);
-         hitTP2 = (idea.dir > 0 ? bar.c >= idea.tp2 : bar.c <= idea.tp2);
+         hitTP1 = (idea.dir > 0 ? xc >= idea.tp1 : xc <= idea.tp1);
+         hitTP2 = (idea.dir > 0 ? xc >= idea.tp2 : xc <= idea.tp2);
         }
       else
-         hitSL = (idea.dir > 0 ? bar.c <= idea.sl : bar.c >= idea.sl);
+         hitSL = (idea.dir > 0 ? xc <= idea.sl : xc >= idea.sl);
       if(hitSL) hitTP1 = hitTP2 = false;   // both possible: assume the loss
      }
 
    if(idea.state == IDEA_LIVE && hitSL && hitTP1)
      {
-      bool closeFav = (idea.dir > 0 ? (bar.c > idea.entry) : (bar.c < idea.entry));
+      bool closeFav = (idea.dir > 0 ? (xc > idea.entry) : (xc < idea.entry));
       if(!closeFav)
         {
          StopOut(bar);
@@ -504,7 +511,7 @@ bool Cooled(const datetime now, const datetime lastSig, const int bars)
 Candle CandleAtShift(ENUM_TIMEFRAMES tf, int sh)
   {
    Candle k;
-   k.valid = false; k.o = k.h = k.l = k.c = 0; k.t = 0;
+   k.valid = false; k.o = k.h = k.l = k.c = 0; k.t = 0; k.sp = 0;
    if(sh < 0) return k;
    MqlRates r[];
    if(CopyRates(_Symbol, tf, sh, 1, r) != 1) return k;
@@ -821,6 +828,7 @@ int ProcessBar(const int i)
    bar.c = iClose(_Symbol, _Period, i);
    bar.t = iTime(_Symbol, _Period, i);
    bar.valid = true;
+   bar.sp = (InpSpreadAware ? SpreadPriceAt(i) : 0.0);
    if(bar.t == 0) return 0;
 
    Bias d  = TFBiasAt(InpTF_D,  bar.t);
@@ -1253,6 +1261,81 @@ void OpenSignal(const int dir, const double lot, const bool withStops, const str
   }
 
 //+------------------------------------------------------------------+
+//| Re-entry sync: MARKET / HYBRID trades open at market, but the    |
+//| engine tracks the signal as a pending order that may expire or   |
+//| never "fill". When one of our single trades closes at its SL     |
+//| with a loss, start the re-entry wait for its signal.             |
+//+------------------------------------------------------------------+
+datetime gRcT[];
+int      gRcN[];
+
+// re-entry count of the trade opened for signal t (a re-entry's own stop-out
+// must not re-enter past InpMaxReentry)
+void RememberRe(const datetime t, const int n)
+  {
+   int k = ArraySize(gRcT);
+   if(k >= 200) { ArrayRemove(gRcT, 0, 100); ArrayRemove(gRcN, 0, 100); k = ArraySize(gRcT); }
+   ArrayResize(gRcT, k + 1); ArrayResize(gRcN, k + 1);
+   gRcT[k] = t; gRcN[k] = n;
+  }
+
+int RecallRe(const datetime t)
+  {
+   for(int i = ArraySize(gRcT) - 1; i >= 0; i--) if(gRcT[i] == t) return gRcN[i];
+   return 0;
+  }
+
+void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest &req, const MqlTradeResult &res)
+  {
+   if(trans.type != TRADE_TRANSACTION_DEAL_ADD || trans.deal == 0) return;
+   if(InpMode != MODE_SINGLE || !InpReentryOn || !gWarm) return;
+   if(!HistoryDealSelect(trans.deal)) return;
+   if(HistoryDealGetString(trans.deal, DEAL_SYMBOL) != _Symbol) return;
+   if(HistoryDealGetInteger(trans.deal, DEAL_MAGIC) != InpMagic) return;
+   long de = HistoryDealGetInteger(trans.deal, DEAL_ENTRY);
+   if(de != DEAL_ENTRY_OUT && de != DEAL_ENTRY_OUT_BY) return;
+   if(HistoryDealGetInteger(trans.deal, DEAL_REASON) != DEAL_REASON_SL) return;
+   if(HistoryDealGetDouble(trans.deal, DEAL_PROFIT) >= 0) return;          // BE / locked stop: not a loss
+   int    dir = (HistoryDealGetInteger(trans.deal, DEAL_TYPE) == DEAL_TYPE_SELL ? 1 : -1);   // closing a buy = sell deal
+   double px  = HistoryDealGetDouble(trans.deal, DEAL_PRICE);
+   ulong  pos = (ulong)HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID);
+   if(GlobalVariableCheck(PDKey(pos))) return;                              // TP1 already taken: runner stop, not a loss
+
+   // signal time from the entry deal comment "LukesBTC|<signal time>"
+   datetime sigT = 0;
+   if(HistorySelectByPosition(pos))
+      for(int i = HistoryDealsTotal() - 1; i >= 0; i--)
+        {
+         ulong tk = HistoryDealGetTicket(i);
+         if(tk == 0 || HistoryDealGetInteger(tk, DEAL_ENTRY) != DEAL_ENTRY_IN) continue;
+         string cm = HistoryDealGetString(tk, DEAL_COMMENT);
+         int p = StringFind(cm, "|");
+         if(p >= 0 && StringFind(cm, "grid") < 0) sigT = (datetime)StringToInteger(StringSubstr(cm, p + 1));
+        }
+   if(sigT == 0) return;
+
+   bool same = (idea.signalTime == sigT);
+   // only when the engine has forgotten the signal (expired / ended) or still thinks it is pending;
+   // a live idea stops out by itself, a newer signal is left alone
+   if(!(idea.state == IDEA_IDLE || (same && idea.state == IDEA_PENDING))) return;
+
+   int rc = (same ? idea.reCount : RecallRe(sigT));
+   int at = (same ? idea.armTrend : TrendDirAt(iTime(_Symbol, _Period, 0)));
+   idea.state      = IDEA_SL_WAIT;
+   idea.dir        = dir;
+   idea.signalTime = sigT;
+   idea.slTime     = iTime(_Symbol, _Period, 0);
+   idea.slBarAge   = 0;
+   idea.reCount    = rc;
+   idea.tp1Done    = false;
+   idea.armTrend   = at;
+   gCntSL++;
+   Log("REENTRY_SYNC", StringFormat("%s trade of signal %s stopped at %s with a loss: waiting for re-entry %d/%d",
+                                    (dir > 0 ? "BUY" : "SELL"), TimeToString(sigT, TIME_DATE|TIME_MINUTES), Px(px),
+                                    rc + 1, InpMaxReentry));
+  }
+
+//+------------------------------------------------------------------+
 //| Acting on a new signal                                           |
 //+------------------------------------------------------------------+
 void ActOnSignal(const int sig)
@@ -1277,6 +1360,7 @@ void ActOnSignal(const int sig)
          if(GetBasket().count > 0) { gClosing = true; Log("SKIP", tag + ": could not close opposite trade yet"); return; }
         }
       if(CountOrders() > 0) DeleteOrders("replaced by " + tag);
+      RememberRe(idea.signalTime, idea.reCount);
       OpenSignal(dir, InpSingleLot, true, tag);
       return;
      }
@@ -1600,6 +1684,19 @@ void SyncGridLevels(const Basket &b)
      }
   }
 
+int gNoMarginLevel = 0;   // grid level already alerted for missing margin
+
+void NoMarginAlert(const int level, const double lot, const double need)
+  {
+   gNextGridTry = TimeCurrent() + 30;
+   if(gNoMarginLevel == level) return;
+   gNoMarginLevel = level;
+   string msg = StringFormat("grid#%d lot %.2f needs margin %.2f, free %.2f %s: not opened, re-checking every 30 s",
+                             level, lot, need, AccountInfoDouble(ACCOUNT_MARGIN_FREE), AccountInfoString(ACCOUNT_CURRENCY));
+   Log("GRID_NO_MARGIN", msg);
+   Notify("GRID_NO_MARGIN " + msg);
+  }
+
 void ManageGrid(const Basket &b)
   {
    if(b.count == 0)
@@ -1610,6 +1707,7 @@ void ManageGrid(const Basket &b)
          if(InpAlertTrades) Notify("BASKET CLOSED by TP/SL");
         }
       gPrevGridCount = 0;
+      gNoMarginLevel = 0;
       if(LoadBStop() > 0) SaveBStop(0);
       DrawBasketTP(0);
       return;
@@ -1665,16 +1763,26 @@ void ManageGrid(const Basket &b)
    // trade #2 = grid lot, #3 = grid lot x mult, #4 = grid lot x mult^2 ... (trade #1 is the single lot)
    double lot = NormLot(InpGridStartLot * MathPow(InpGridMultiplier, MathMax(0, b.count - 1)));
    string cmt = InpComment + "|grid" + IntegerToString(b.count + 1);
+   // not enough free margin: do not hammer the broker, alert once per grid level, re-check every 30 s
+   double need = 0;
+   if(OrderCalcMargin(b.dir > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, lot, (b.dir > 0 ? ask : bid), need)
+      && need > AccountInfoDouble(ACCOUNT_MARGIN_FREE))
+     {
+      NoMarginAlert(b.count + 1, lot, need);
+      return;
+     }
    bool ok = (b.dir > 0 ? trade.Buy(lot, _Symbol, 0, 0, 0, cmt) : trade.Sell(lot, _Symbol, 0, 0, 0, cmt));
    uint rc = trade.ResultRetcode();
    if(!ok || (rc != TRADE_RETCODE_DONE && rc != TRADE_RETCODE_DONE_PARTIAL))
      {
-      gNextGridTry = TimeCurrent() + 10;
+      if(rc == TRADE_RETCODE_NO_MONEY) { NoMarginAlert(b.count + 1, lot, need); return; }
+      gNextGridTry = TimeCurrent() + 3;   // requote / price changed / busy: retry soon
       Log("GRID_FAIL", StringFormat("level %d lot %.2f retcode %u %s", b.count + 1, lot, rc, trade.ResultRetcodeDescription()));
       return;
      }
    string what = StringFormat("grid#%d %s lot %.2f @ %s (last %s, distance $%.2f)", b.count + 1,
                               (b.dir > 0 ? "BUY" : "SELL"), lot, Px(trade.ResultPrice()), Px(b.extreme), GridGapUsd(b.count));
+   gNoMarginLevel = 0;
    Log("GRID_ADD", what);
    if(InpAlertTrades) Notify("GRID ADD " + what);
   }
@@ -2022,7 +2130,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKESPRO BTC MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.98  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.99  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 

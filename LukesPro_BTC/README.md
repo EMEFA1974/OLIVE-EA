@@ -71,3 +71,18 @@ Related tuning (set the same in the indicator and the EA): a smaller `InpPending
   It is shown as a green dashed line and on the panel.
 - The equity protector (and the optional basket BE/trailing stop) are not SLs on the trades;
   the EA closes the whole basket itself when they are hit, so MT5 must be running for those.
+
+## Fixes in Ind v1.92 / EA v1.99
+
+- **Spread-aware signal logic (both files, `InpSpreadAware = true`).** Sells close at the ask and buys fill
+  at the ask, so the bar's historical spread is added to those checks. A sell stopped out a spread above the
+  candle high is now registered as stopped (so its re-entry can come).
+- **Re-entry for MARKET / HYBRID trades (EA).** When one of the EA's single trades closes at its SL with a loss
+  and the signal logic had already forgotten the signal (pending expired) or never saw it fill, the EA starts the
+  re-entry wait for that signal (`REENTRY_SYNC` in the log). Break-even stops after TP1 don't count.
+  The indicator can't see real trades, so here the EA may take a re-entry the indicator doesn't show.
+- **Grid trades (EA).** Free margin is checked before each grid trade; if it's not enough, you get one
+  `GRID_NO_MARGIN` alert per grid level and it re-checks every 30 s. Other refusals (requote etc.) retry after 3 s.
+- **`InpReNeedA = false` (both files).** Re-entries accept the same grades as normal signals.
+  Unchanged: `InpMaxReentry = 1`, 24-bar window, 3-bar wait. In Full grid mode, new signals and re-entries are not
+  traded while a basket is open.
