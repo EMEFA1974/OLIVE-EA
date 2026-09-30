@@ -6,7 +6,7 @@
 //+------------------------------------------------------------------+
 #property copyright "LukesPro BTC MTF EA"
 #property link      ""
-#property version   "1.99"
+#property version   "2.00"
 
 #include <Trade/Trade.mqh>
 
@@ -80,6 +80,7 @@ input double         InpMinSLGapUsd     = 8.0;   // keep pending entry this far 
 input group "=== Re-entry after SL ==="
 input bool   InpReentryOn      = true;
 input double InpSLBufferUsd    = 10.0;  // SL beyond the signal candle, USD (gold: 20 pts)
+input double InpSLExpandPct    = 50.0;  // widen the SL by this % of the Entry-SL distance (TP1/TP2 unchanged); 0 = off
 input double InpRR1            = 1.0;   // TP1 R-multiple
 input double InpRR2            = 2.0;   // TP2 R-multiple
 input int    InpMaxReentry     = 1;     // one re-entry at most (see InpReNeedA)
@@ -286,6 +287,9 @@ double PendingDist(const Candle &bar)
    return d;
   }
 
+// SL widening factor: 1.5 = SL 50% further from the entry than the candle stop
+double SLMult() { return 1.0 + MathMax(0.0, InpSLExpandPct) / 100.0; }
+
 void ApplyLevels(const int dir, const double entry, const double sl)
   {
    idea.dir   = dir;
@@ -303,6 +307,8 @@ void ApplyLevels(const int dir, const double entry, const double sl)
       idea.tp1 = entry - risk * InpRR1;
       idea.tp2 = entry - risk * InpRR2;
      }
+   // wider SL: TPs stay at the R-multiples of the candle stop, only the SL moves out
+   idea.sl = (dir > 0 ? entry - risk * SLMult() : entry + risk * SLMult());
   }
 
 bool BuildPendingPrices(const int dir, const Candle &bar, const double buf, double &entry, double &sl)
@@ -1142,7 +1148,7 @@ double MarketTP1(const int dir, const double price, const double sl, const bool 
    bool valid = (dir > 0 ? tp > price + ms : tp < price - ms);
    if(InpTPFromFill || fromFill || !valid)
      {
-      double risk = MathAbs(price - sl);
+      double risk = MathAbs(price - sl) / SLMult();   // R of the candle stop, not of the widened SL
       tp = (dir > 0 ? price + risk * InpRR1 : price - risk * InpRR1);
      }
    return NormalizeDouble(tp, _Digits);
@@ -1156,7 +1162,7 @@ double MarketTP2(const int dir, const double price, const double sl, const bool 
    bool valid = (dir > 0 ? tp > price + ms : tp < price - ms);
    if(InpTPFromFill || fromFill || !valid)
      {
-      double risk = MathAbs(price - sl);
+      double risk = MathAbs(price - sl) / SLMult();
       tp = (dir > 0 ? price + risk * InpRR2 : price - risk * InpRR2);
      }
    return NormalizeDouble(tp, _Digits);
@@ -1451,7 +1457,7 @@ void ManageRunner()
       // 1) TP1 not reached yet: wait for it, then close the partial
       if(!GlobalVariableCheck(key))
         {
-         double risk = (d > 0 ? op - sl : sl - op);
+         double risk = (d > 0 ? op - sl : sl - op) / SLMult();   // TP1 = R of the candle stop (SL is widened)
          if(sl <= 0 || risk <= 0) { GlobalVariableSet(key, 1); continue; }   // SL already at/after entry: nothing to split
          double tp1 = op + d * risk * InpRR1;
          if(d > 0 ? px < tp1 : px > tp1) continue;
@@ -2130,7 +2136,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKESPRO BTC MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.99  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.00  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
