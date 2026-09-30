@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "LukesPro MTF EA"
 #property link      ""
-#property version   "1.95"
+#property version   "1.96"
 
 #include <Trade/Trade.mqh>
 
@@ -40,7 +40,8 @@ enum ENUM_GRADE
 input group "=== EA Mode ==="
 input ENUM_EA_MODE    InpMode        = MODE_GRID;
 input ENUM_ENTRY_TYPE InpEntryType   = ENTRY_HYBRID;    // Entry type (MARKET / PENDING / HYBRID)
-input double          InpHybridMktPct = 50.0;          // HYBRID: % of the lot opened at market
+input bool            InpHybridSplit  = false;         // HYBRID in Single trades: split into 2 trades (market + pending). false = 1 market trade
+input double          InpHybridMktPct = 50.0;          // HYBRID split: % of the lot opened at market
 input long            InpMagic       = 26092501;
 input string          InpComment     = "LukesEA";
 input int             InpSlippagePts = 30;       // max slippage (points)
@@ -1238,9 +1239,10 @@ bool OpenEntryAs(const int dir, const double lotIn, const bool withStops, const 
   }
 
 // MARKET / PENDING: exactly as before.
-// HYBRID (single trades): InpHybridMktPct % of the lot at market now (signal SL, TP from its
-// own fill), the rest as the normal pending order at the signal's Entry. A lot too small to
-// split goes in whole as the pending order.
+// HYBRID (single trades): one trade at market with the full Single Lot, signal SL, TP from its
+// own fill. Only with InpHybridSplit = true: InpHybridMktPct % at market now and the rest as the
+// normal pending order at the signal's Entry (2 trades, same SL, different TPs); a lot too
+// small to split then goes in whole as the pending order.
 // HYBRID (full grid): no split. One trade at market with the full grid lot. A pending part
 // would join the basket as an extra grid trade: it took a grid slot, pushed the next lot one
 // multiplier step too far and got the shared basket TP/SL.
@@ -1248,7 +1250,8 @@ bool OpenEntry(const int dir, const double lotIn, const bool withStops, const st
   {
    if(InpEntryType == ENTRY_MARKET)  return OpenEntryAs(dir, lotIn, withStops, tag, false, false);
    if(InpEntryType == ENTRY_PENDING) return OpenEntryAs(dir, lotIn, withStops, tag, true,  false);
-   if(InpMode == MODE_GRID)          return OpenEntryAs(dir, lotIn, withStops, tag + " hybrid mkt", false, true);
+   if(InpMode == MODE_GRID || !InpHybridSplit)
+      return OpenEntryAs(dir, lotIn, withStops, tag + " hybrid mkt", false, true);   // one trade
 
    double lot  = NormLot(lotIn);
    double vmin = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
@@ -1275,7 +1278,7 @@ string EntryName()
   {
    if(InpEntryType == ENTRY_MARKET)  return "Market";
    if(InpEntryType == ENTRY_PENDING) return "Pending";
-   if(InpMode == MODE_GRID) return "Hybrid: grid = market";
+   if(InpMode == MODE_GRID || !InpHybridSplit) return "Hybrid: 1 market trade";
    return StringFormat("Hybrid %.0f%% mkt", MathMax(0.0, MathMin(100.0, InpHybridMktPct)));
   }
 
@@ -2095,7 +2098,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKESPRO MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.95  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.96  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 

@@ -94,3 +94,17 @@ grid set `InpManageOn=false` on both.
   close together there.
 * **Basket TP off (`InpBasketTPOn = false`):** every grid trade gets TP1 and they all close there.
 * **Equity Protector default: 25%** of the balance (was 10%).
+
+## EA v1.96 — HYBRID opens one trade in Single trades mode too
+
+* Problem: in Single trades mode, HYBRID split every signal into two trades a moment apart:
+  a market part and a pending part at the signal's Entry. They shared the signal's SL, but each
+  part's TP was measured from its own entry price, so the TPs differed
+  (e.g. 2 x SELL 0.3 from a 0.6 Single Lot, SL 4219.0, TPs 4199.2 and 4187.8).
+* Fix: HYBRID now opens **one trade**: the full Single Lot at market, with the signal's SL and
+  the TP measured from its fill price (with trade management on: TP2 on the trade, partial + BE at TP1).
+  Full grid mode already worked this way (v1.93).
+* The old split is still available but off by default: `InpHybridSplit = true` (Single trades
+  mode only), with `InpHybridMktPct` as the market share.
+* The panel shows `Hybrid: 1 market trade` (or `Hybrid 50% mkt` when the split is on).
+* MARKET and PENDING are unchanged, and both already open a single trade.
