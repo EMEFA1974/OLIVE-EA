@@ -32,6 +32,7 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 | S5 | The bar that fills a pending entry is also checked for SL/TP (before: only from the next bar, so a same-bar stop-out was missed and the engine stayed LIVE, blocking new signals). On that bar a target only counts if the bar closed beyond it; the SL always counts. | Done (Ind v1.83 / EA v1.10) |
 | S6 | SL buffer: `InpSLBufMode` = ATR (default): buffer = max(`InpSLBufferPts`, ATR(`InpSLBufATRPeriod`) x `InpSLBufATRMult`) + the signal bar's spread (`InpSLBufAddSpread`). Fixed mode = old behaviour (20 pts). Must be set the same in EA and indicator. | Done (Ind v1.83 / EA v1.10) |
 | S7 | A running signal (pending, or waiting for re-entry after SL) is cancelled only when a timeframe it **required** turns against it (`InpRequireH4` -> H4, `InpRequireD` -> D1). Before: D1 against always cancelled it, so counter-D1 signals (allowed, since D1 is not required by default) were cancelled one bar later and their zone / pending order vanished. | Done (Ind v1.84 / EA v1.17) |
+| S8 | `InpSpreadAware` (default on, EA + indicator): chart bars are bid prices; sell SL/TP and buy entry fills are checked at the ask (bar price + the bar's historical spread), like the broker does. Before, a sell stopped out by the spread was never registered, so no re-entry came. | Done (Ind v1.85 / EA v1.19) |
 | S4 | Trades are only taken on a signal from the bar that just closed. | Done |
 
 ## 2. Single trades (mode = Single trades only)
@@ -43,6 +44,7 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 | T3 | SL = indicator SL. TP = indicator TP1. Market entries: if TP1 is no longer valid (price already past it) or `InpTPFromFill` = true, TP is recalculated from the fill price with the same R-multiple (`InpRR1`). | Done |
 | T4 | Trailing stop with toggle (`InpTrailOn`): starts after `InpTrailStartPts` points profit, trails `InpTrailDistPts` points behind price, moves in steps of `InpTrailStepPts` points. | Done |
 | T5 | New signal while a trade is open: same direction → ignored. Opposite direction → close and reverse (`InpCloseOnOpposite`, default on). | Done |
+| T7 | Re-entry follows the EA's own trades (single trades): when a signal trade closes at its SL **with a loss**, the EA starts the re-entry wait for that signal (`REENTRY_SYNC` in the log) even if the engine had already dropped the signal (MARKET/HYBRID trades open at once while the engine tracks a pending entry that expires after 12 bars). Break-even/trailing stops in profit do not count. The indicator cannot see real trades, so here the EA may take a re-entry the indicator does not show. | Done (v1.19) |
 | T6 | Pending entry mode: pending order is deleted when the indicator cancels/expires that idea, or after `InpPendingExpire` bars. | Done |
 
 ## 3. Grid (mode = Full grid)
@@ -60,6 +62,7 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 | R8 | Full grid: **no grid trade ever has an SL** (sent without one; an existing SL is removed). The **signal trade on its own has only a TP = TP1** (market entry: TP1 measured from its fill price). **Once a grid trade is added, all trades share one basket TP** (money or distance) and close together. **Basket TP off:** every grid trade gets TP1. TP levels are placed on the trades when `InpGridBrokerLevels` = true (visible on PC + mobile); the EA also checks them itself. | Changed (v1.16) |
 | R9 | **One direction at a time**: while a basket is running, new signals (either direction) are ignored. | Done |
 | R10 | Single-trade trailing stop does not apply in grid mode (the grid has its own basket stop, R11–R12). | Done |
+| R3c | Grid trade refused: free margin is checked first (OrderCalcMargin). Not enough -> one `GRID_NO_MARGIN` alert per grid level and a re-check every 30 s. Other refusals (requote etc.) retry after 3 s (was: blind retry every 10 s). | Done (v1.19) |
 | R11 | **Basket break-even** (toggle `InpBasketBEOn`, default off): when price is `InpBasketBEStartPts` points past the basket average, a basket stop is set at average + `InpBasketBELockPts` points. | Done (Phase 4) |
 | R12 | **Basket trailing** (toggle `InpBasketTrailOn`, default off): when price is `InpBasketTrailStartPts` points past the average, the basket stop trails `InpBasketTrailDistPts` points behind price in steps of `InpBasketTrailStepPts`, and only ever moves in profit. | Done (Phase 4) |
 | R13 | The basket break-even/trailing stop and the Equity Protector are **virtual**: the EA closes all grid trades when price reaches them (no SL on the trades, R8). The basket stop is shown as an orange dashed line and survives a restart. They only work while MT5 is running and connected. | Changed (v1.16) |
@@ -134,3 +137,4 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 - 2026-09-27 – EA v1.16: grid TP/SL rules (R8, R13): no SL on grid trades, signal trade alone -> TP1, grid added -> shared basket TP, basket TP off -> TP1. Equity Protector default 25%.
 - 2026-09-30 – Fix (S7): signals no longer cancelled by a D1 bias that was not required; zones stay until TP1/SL/expiry again.
 - 2026-09-30 – EA v1.18: HYBRID opens ONE market trade per signal in Single trades mode (no more two trades with different TPs). Split optional via `InpHybridSplitSingle`.
+- 2026-09-30 – Spread-aware SL/TP/entry checks (S8), EA re-entry after real stop-outs (T7), grid margin check + retry rules (R3c). No `InpReNeedA` in this EA; `InpMaxReentry` stays 2.

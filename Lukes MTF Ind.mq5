@@ -1,6 +1,6 @@
 #property copyright "Lukes MTF Ind"
 #property link      ""
-#property version   "1.84"
+#property version   "1.85"
 #property indicator_chart_window
 #property indicator_buffers 4
 #property indicator_plots   4
@@ -70,6 +70,7 @@ input ENUM_SLBUF_MODE InpSLBufMode = SLBUF_ATR;
 input double InpSLBufATRMult   = 0.15;  // ATR mode: buffer = max(min points, ATR x this)
 input int    InpSLBufATRPeriod = 14;    // ATR period (signal timeframe)
 input bool   InpSLBufAddSpread = true;  // add the signal bar's spread to the buffer
+input bool   InpSpreadAware    = true;  // check sell SL/TP and buy entries at the ASK (bar price + bar spread), like the broker
 input double InpRR1            = 1.0;   // TP1 R-multiple
 input double InpRR2            = 2.0;   // TP2 R-multiple
 input int    InpMaxReentry     = 2;
@@ -453,9 +454,22 @@ bool BiasTurnedAgainst(const int dir, const Bias &d, const Bias &h4)
    return ((InpRequireD && d.dir == -dir) || (InpRequireH4 && h4.dir == -dir));
   }
 
+// historical spread of the bar at time t, as a price distance
+double BarSpreadPx(const datetime t)
+  {
+   int sp[];
+   if(CopySpread(_Symbol, _Period, t, 1, sp) == 1 && sp[0] > 0) return sp[0] * _Point;
+   return 0.0;
+  }
+
 void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
   {
    if(idea.state == IDEA_IDLE) return;
+
+   // Chart bars are BID prices. The broker fills buy entries and closes sells at the ASK,
+   // so sell SL/TP and buy entries are checked against bid + the bar's spread.
+   double sp  = (InpSpreadAware ? BarSpreadPx(bar.t) : 0.0);
+   double aH  = bar.h + sp, aL = bar.l + sp, aC = bar.c + sp;
 
    bool fillBar = false;
    if(idea.state == IDEA_PENDING)
@@ -464,7 +478,9 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
       if(idea.pendAge > InpPendingExpire) { EndIdea(" [EXPIRED]", bar.t); return; }
       if(BiasTurnedAgainst(idea.dir, d, h4)) { EndIdea(" [CANCELLED]", bar.t); return; }
 
-      if(!TouchedLevel(bar, idea.entry)) return;
+      bool touched = (idea.dir > 0 ? (aL <= idea.entry && aH >= idea.entry)      // buy fills at the ask
+                                   : TouchedLevel(bar, idea.entry));             // sell fills at the bid
+      if(!touched) return;
       idea.state = IDEA_LIVE;
       idea.fillTime = bar.t;
       idea.slBarAge = 0;
@@ -479,17 +495,18 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
 
    idea.slBarAge++;
 
-   bool hitTP2 = (idea.dir > 0 ? (bar.h >= idea.tp2) : (bar.l <= idea.tp2));
-   bool hitTP1 = (idea.dir > 0 ? (bar.h >= idea.tp1) : (bar.l <= idea.tp1));
-   bool hitSL  = (idea.dir > 0 ? (bar.l <= idea.sl)  : (bar.h >= idea.sl));
+   // buys close at the bid (chart prices), sells close at the ask (bid + spread)
+   bool hitTP2 = (idea.dir > 0 ? (bar.h >= idea.tp2) : (aL <= idea.tp2));
+   bool hitTP1 = (idea.dir > 0 ? (bar.h >= idea.tp1) : (aL <= idea.tp1));
+   bool hitSL  = (idea.dir > 0 ? (bar.l <= idea.sl)  : (aH >= idea.sl));
 
    // On the fill bar the order of events is unknown (price may have reached a
    // target before the entry filled). Conservative: a target only counts if the
    // bar CLOSED beyond it; the SL always counts.
    if(fillBar)
      {
-      if(hitTP1 && !(idea.dir > 0 ? bar.c >= idea.tp1 : bar.c <= idea.tp1)) hitTP1 = false;
-      if(hitTP2 && !(idea.dir > 0 ? bar.c >= idea.tp2 : bar.c <= idea.tp2)) hitTP2 = false;
+      if(hitTP1 && !(idea.dir > 0 ? bar.c >= idea.tp1 : aC <= idea.tp1)) hitTP1 = false;
+      if(hitTP2 && !(idea.dir > 0 ? bar.c >= idea.tp2 : aC <= idea.tp2)) hitTP2 = false;
      }
 
    if(idea.state == IDEA_LIVE && hitSL && hitTP1)
@@ -994,7 +1011,7 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES MTF IND", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.84  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.85  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
