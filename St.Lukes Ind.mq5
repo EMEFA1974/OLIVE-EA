@@ -1,6 +1,6 @@
 #property copyright "St.Lukes Ind"
 #property link      ""
-#property version   "1.86"
+#property version   "1.87"
 #property indicator_chart_window
 #property indicator_buffers 4
 #property indicator_plots   4
@@ -53,6 +53,7 @@ input bool   InpRequireD     = false;
 input bool   InpRequireH4    = true;
 input bool   InpUseM5Trigger = false;
 input bool   InpAutoDigits   = true;   // 3/5-digit brokers: point inputs are scaled x10 (same $ distances on 2- and 3-digit XAUUSD)
+input int    InpHistoryBars  = 3000;   // closed bars replayed for history arrows / dots (was fixed at 800). Same value in Ind and EA
 
 input group "=== Pending Entry ==="
 input bool           InpPendingOn       = true;
@@ -700,15 +701,20 @@ Bias TFBiasAt(ENUM_TIMEFRAMES tf, const datetime t)
    return BiasFromTwo(CandleAtShift(tf, sh), CandleAtShift(tf, sh + 1));
   }
 
-// all higher timeframes have history loaded and synchronized
-bool HTFReady()
+// Higher timeframes have history loaded far enough back to give a bias for every
+// replayed bar, starting at `oldest`. (Before, bars older than the loaded higher-TF
+// history got no bias, so their arrows / dots were missing.)
+bool HTFReady(const datetime oldest)
   {
    ENUM_TIMEFRAMES tfs[4];
    tfs[0] = InpTF_D; tfs[1] = InpTF_H4; tfs[2] = InpTF_H1; tfs[3] = InpTF_M5;
    for(int i = 0; i < 4; i++)
      {
       if(iTime(_Symbol, tfs[i], 1) == 0) return false;
-      if(!(bool)SeriesInfoInteger(_Symbol, tfs[i], SERIES_SYNCHRONIZED)) return false;
+      int nb = Bars(_Symbol, tfs[i]);
+      if(nb < 3) return false;
+      datetime first = iTime(_Symbol, tfs[i], nb - 1);
+      if(first == 0 || first > oldest - 2 * PeriodSeconds(tfs[i])) return false;
      }
    return true;
   }
@@ -1073,7 +1079,7 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "ST.LUKES IND", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.86  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.87  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -1255,7 +1261,9 @@ int OnCalculate(const int rates_total,
    // The history replay needs D1/H4/H1/M5 data. On terminal start that data is often still
    // loading: the replay then saw no bias on any bar, found no signals and never ran again,
    // so no zone / levels were drawn until the next new signal. Wait for the data instead.
-   if(prev_calculated <= 0 && !HTFReady() && gWaitTries < 60)
+   ArraySetAsSeries(time, true);
+   int histStart = (int)MathMax(1, MathMin(rates_total - 5, InpHistoryBars));
+   if(prev_calculated <= 0 && !HTFReady(time[histStart]) && gWaitTries < 60)
      {
       gWaitTries++;
       gNeedCalc = true;
@@ -1264,7 +1272,6 @@ int OnCalculate(const int rates_total,
    gNeedCalc = false;
    gWaitTries = 0;
 
-   ArraySetAsSeries(time, true);
    ArraySetAsSeries(open, true);
    ArraySetAsSeries(high, true);
    ArraySetAsSeries(low, true);
@@ -1284,7 +1291,7 @@ int OnCalculate(const int rates_total,
       ResetCounts();
       ClearZones();
       gLastBar = 0;
-      start = (int)MathMin(rates_total - 5, 800);
+      start = histStart;
      }
    else
       start = (int)MathMax(2, rates_total - prev_calculated + 1);

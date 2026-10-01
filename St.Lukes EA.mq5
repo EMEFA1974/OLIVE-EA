@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "St.Lukes EA"
 #property link      ""
-#property version   "1.21"
+#property version   "1.22"
 
 #include <Trade/Trade.mqh>
 
@@ -73,6 +73,7 @@ input bool   InpRequireD     = false;
 input bool   InpRequireH4    = true;
 input bool   InpUseM5Trigger = false;
 input bool   InpAutoDigits   = true;   // 3/5-digit brokers: point inputs are scaled x10 (same $ distances on 2- and 3-digit XAUUSD)
+input int    InpHistoryBars  = 3000;   // closed bars replayed for history arrows / dots (was fixed at 800). Same value in Ind and EA
 
 input group "=== Pending Entry ==="
 input bool           InpPendingOn       = true;
@@ -180,6 +181,7 @@ datetime lastSellTime  = 0;
 int gCntBuy = 0, gCntSell = 0, gCntTP1 = 0, gCntTP2 = 0, gCntSL = 0;
 
 bool     gWarm          = false;   // engine replayed history
+int      gWarmTries     = 0;       // warm-up attempts while higher-TF history loads
 datetime gLastProcessed = 0;       // last closed bar fed to the engine
 bool     gClosing       = false;   // closing everything, retry each tick until flat
 datetime gNextGridTry   = 0;
@@ -610,15 +612,20 @@ Bias TFBiasAt(ENUM_TIMEFRAMES tf, const datetime t)
    return BiasFromTwo(CandleAtShift(tf, sh), CandleAtShift(tf, sh + 1));
   }
 
-// all higher timeframes have history loaded and synchronized
-bool HTFReady()
+// Higher timeframes have history loaded far enough back to give a bias for every
+// replayed bar, starting at `oldest`. (Before, bars older than the loaded higher-TF
+// history got no bias, so their arrows / dots were missing.)
+bool HTFReady(const datetime oldest)
   {
    ENUM_TIMEFRAMES tfs[4];
    tfs[0] = InpTF_D; tfs[1] = InpTF_H4; tfs[2] = InpTF_H1; tfs[3] = InpTF_M5;
    for(int i = 0; i < 4; i++)
      {
       if(iTime(_Symbol, tfs[i], 1) == 0) return false;
-      if(!(bool)SeriesInfoInteger(_Symbol, tfs[i], SERIES_SYNCHRONIZED)) return false;
+      int nb = Bars(_Symbol, tfs[i]);
+      if(nb < 3) return false;
+      datetime first = iTime(_Symbol, tfs[i], nb - 1);
+      if(first == 0 || first > oldest - 2 * PeriodSeconds(tfs[i])) return false;
      }
    return true;
   }
@@ -1619,13 +1626,15 @@ bool WarmUp()
   {
    int total = Bars(_Symbol, _Period);
    if(total < 40) return false;
-   if(!HTFReady()) return false;   // higher timeframe history still loading
+   int start = (int)MathMax(1, MathMin(total - 5, InpHistoryBars));
+   // higher timeframe history still loading: wait (about 30 s at most, then replay anyway;
+   // before, the EA could wait forever and draw no dots / place no trades)
+   if(!HTFReady(iTime(_Symbol, _Period, start)) && gWarmTries < 30) { gWarmTries++; return false; }
+   gWarmTries = 0;
 
    ResetIdea();
    ResetCounts();
    lastBuyTime = lastSellTime = 0;
-   int start = (int)MathMin(total - 5, 800);
-   if(start < 1) start = 1;
    for(int i = start; i >= 1; i--)
      {
       int s = ProcessBar(i);
@@ -1972,7 +1981,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "ST.LUKES EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.21  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.22  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -2193,6 +2202,7 @@ int OnInit()
       Print("StLukesEA: built for M5, running on ", EnumToString(_Period));
 
    gWarm = false;
+   gWarmTries = 0;
    gClosing = false;
    ResetIdea();
    ResetCounts();
