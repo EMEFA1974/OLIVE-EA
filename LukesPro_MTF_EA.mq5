@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "LukesPro MTF EA"
 #property link      ""
-#property version   "1.98"
+#property version   "1.99"
 
 #include <Trade/Trade.mqh>
 
@@ -36,6 +36,21 @@ enum ENUM_GRADE
    GRADE_C = 2    // A + B + C: every base signal (v1.82 behaviour)
   };
 #define GRADE_NONE 3
+
+enum ENUM_ADX_MODE
+  {
+   ADX_OFF   = 0,   // off
+   ADX_GRADE = 1,   // grade: a weak ADX counts as one failed filter (A -> B -> C)
+   ADX_BLOCK = 2    // block: no signal at all while ADX is weak
+  };
+
+enum ENUM_CHART_TF
+  {
+   CTF_ANY    = 0,  // any chart timeframe
+   CTF_M15_H1 = 1,  // M15 or H1 only
+   CTF_M15    = 2,  // M15 only
+   CTF_H1     = 3   // H1 only
+  };
 
 input group "=== EA Mode ==="
 input ENUM_EA_MODE    InpMode        = MODE_GRID;
@@ -123,6 +138,19 @@ input int    InpPinSweep    = 3;                   // and the wick takes out the
 input group "=== Signal Grade ==="
 input ENUM_GRADE InpMinGrade = GRADE_C;            // lowest grade that becomes a signal (zone / alert / EA trade); C = A, B and C all accepted
 input bool       InpReNeedA  = false;              // true = re-entries only on a fresh A-grade trigger (false = same grades as InpMinGrade)
+
+input group "=== Chart Timeframe (set the same in Ind and EA) ==="
+input ENUM_CHART_TF   InpChartTF    = CTF_M15_H1;  // chart timeframes the signal engine runs on (other charts: no signals, no new trades)
+
+input group "=== ADX Filter (set the same in Ind and EA) ==="
+input ENUM_ADX_MODE   InpADXMode    = ADX_BLOCK;   // OFF / GRADE (weak ADX = one failed filter) / BLOCK (weak ADX = no signal)
+input ENUM_TIMEFRAMES InpADXTF      = PERIOD_H1;   // ADX timeframe (last closed bar)
+input int             InpADXPeriod  = 14;
+input double          InpADXMin     = 20.0;        // ADX below this = no trend (chop)
+input bool            InpADXUseDI   = true;        // also need +DI above -DI for buys (-DI above +DI for sells)
+
+input group "=== Re-entry Confirmation (set the same in Ind and EA) ==="
+input bool            InpReTrendConfirm = true;    // re-entry only while the EMA trend (InpFiltTF1 + InpFiltTF2) points the trade's way
 
 input group "=== Single Trades ==="
 input double InpSingleLot       = 0.01;    // Single Lot: lot of every signal trade (single trades, and grid trade #1)
@@ -359,14 +387,14 @@ bool BuildPendingPrices(const int dir, const Candle &bar, const double buf, doub
    return true;
   }
 
-void ArmIdea(const int dir, const Candle &bar, const bool re, const double buf,
+bool ArmIdea(const int dir, const Candle &bar, const bool re, const double buf,
              const int grade, const int trendDir)
   {
    double entry = 0, sl = 0;
    if(!BuildPendingPrices(dir, bar, buf, entry, sl))
      {
       EndIdea(idea.state == IDEA_SL_WAIT ? " [SL HIT]" : " [CANCELLED]", bar.t);
-      return;
+      return false;
      }
    idea.signalTime = bar.t;
    idea.slTime = 0;
@@ -381,6 +409,7 @@ void ArmIdea(const int dir, const Candle &bar, const bool re, const double buf,
    idea.state = (InpPendingOn ? IDEA_PENDING : IDEA_LIVE);
    if(idea.state == IDEA_LIVE)
       idea.fillTime = bar.t;
+   return true;
   }
 
 // shift = spread for prices the broker checks on the ask (chart bars are bid)
@@ -514,10 +543,14 @@ bool StructureAllows(const int dir, const Bias &d, const Bias &h4, const Bias &h
    return true;
   }
 
+// cooldown in chart bars: counting seconds let a weekend / session gap end it early
 bool Cooled(const datetime now, const datetime lastSig, const int bars)
   {
    if(lastSig == 0) return true;
-   return ((now - lastSig) >= (datetime)bars * PeriodSeconds(_Period));
+   int a = iBarShift(_Symbol, _Period, lastSig, false);
+   int b = iBarShift(_Symbol, _Period, now, false);
+   if(a < 0 || b < 0) return ((now - lastSig) >= (datetime)bars * PeriodSeconds(_Period));
+   return ((a - b) >= bars);
   }
 
 Candle CandleAtShift(ENUM_TIMEFRAMES tf, int sh)
@@ -588,7 +621,7 @@ Bias TFBiasNow(ENUM_TIMEFRAMES tf)
 Bias TFBiasAt(ENUM_TIMEFRAMES tf, const datetime t)
   {
    int sh = ClosedShiftAt(tf, t);
-   if(sh < 0) return TFBiasNow(tf);
+   if(sh < 0) { Bias b; b.dir = 0; b.strong = false; return b; }   // unknown, not the current bias (look-ahead)
    return BiasFromTwo(CandleAtShift(tf, sh), CandleAtShift(tf, sh + 1));
   }
 
@@ -619,6 +652,24 @@ bool QualityBearTrigger(const Candle &k, const double prevLow)
 int gHTf1F = INVALID_HANDLE, gHTf1S = INVALID_HANDLE;
 int gHTf2F = INVALID_HANDLE, gHTf2S = INVALID_HANDLE;
 int gHD1   = INVALID_HANDLE, gHLoc  = INVALID_HANDLE, gHATR = INVALID_HANDLE;
+int gHADX  = INVALID_HANDLE;
+bool gTFOk = true;   // chart timeframe allowed by InpChartTF
+
+bool ChartTFAllowed()
+  {
+   if(InpChartTF == CTF_M15_H1) return (_Period == PERIOD_M15 || _Period == PERIOD_H1);
+   if(InpChartTF == CTF_M15)    return (_Period == PERIOD_M15);
+   if(InpChartTF == CTF_H1)     return (_Period == PERIOD_H1);
+   return true;
+  }
+
+string ChartTFName()
+  {
+   if(InpChartTF == CTF_M15_H1) return "M15 or H1";
+   if(InpChartTF == CTF_M15)    return "M15";
+   if(InpChartTF == CTF_H1)     return "H1";
+   return "any";
+  }
 
 bool FiltersInit()
   {
@@ -629,6 +680,12 @@ bool FiltersInit()
    gHD1   = iMA(_Symbol, PERIOD_D1, InpD1EmaP, 0, MODE_EMA, PRICE_CLOSE);
    gHLoc  = iMA(_Symbol, _Period, InpLocEmaP, 0, MODE_EMA, PRICE_CLOSE);
    gHATR  = iATR(_Symbol, _Period, InpATRPeriod);
+   gTFOk  = ChartTFAllowed();
+   if(InpADXMode != ADX_OFF)
+     {
+      gHADX = iADX(_Symbol, InpADXTF, (int)MathMax(1, InpADXPeriod));
+      if(gHADX == INVALID_HANDLE) return false;
+     }
    return (gHTf1F != INVALID_HANDLE && gHTf1S != INVALID_HANDLE && gHTf2F != INVALID_HANDLE
            && gHTf2S != INVALID_HANDLE && gHD1 != INVALID_HANDLE && gHLoc != INVALID_HANDLE
            && gHATR != INVALID_HANDLE);
@@ -645,6 +702,7 @@ void FiltersRelease()
    ReleaseHandle(gHTf1F); ReleaseHandle(gHTf1S);
    ReleaseHandle(gHTf2F); ReleaseHandle(gHTf2S);
    ReleaseHandle(gHD1);   ReleaseHandle(gHLoc);  ReleaseHandle(gHATR);
+   ReleaseHandle(gHADX);
   }
 
 bool HReady(const int h) { return (h != INVALID_HANDLE && BarsCalculated(h) > 0); }
@@ -653,7 +711,8 @@ bool HReady(const int h) { return (h != INVALID_HANDLE && BarsCalculated(h) > 0)
 bool FiltersReady()
   {
    return (HReady(gHTf1F) && HReady(gHTf1S) && HReady(gHTf2F) && HReady(gHTf2S)
-           && HReady(gHD1) && HReady(gHLoc) && HReady(gHATR));
+           && HReady(gHD1) && HReady(gHLoc) && HReady(gHATR)
+           && (InpADXMode == ADX_OFF || HReady(gHADX)));
   }
 
 double BufAt(const int h, const int sh)
@@ -769,11 +828,45 @@ bool StrictTrigger(const int dir, const Candle &k, const int sh)
    return (dir > 0 ? k.l < ext : k.h > ext);
   }
 
+double BufAtN(const int h, const int buf, const int sh)
+  {
+   if(h == INVALID_HANDLE || sh < 0) return 0.0;
+   double v[1];
+   if(CopyBuffer(h, buf, sh, 1, v) != 1) return 0.0;
+   if(v[0] == EMPTY_VALUE) return 0.0;
+   return v[0];
+  }
+
+// ADX on InpADXTF, last bar closed at time t: strong enough (and DI on the trade's side)
+bool ADXPass(const int dir, const datetime t)
+  {
+   if(InpADXMode == ADX_OFF) return true;
+   int sh = ClosedShiftAt(InpADXTF, t);
+   double adx = BufAtN(gHADX, 0, sh);
+   if(adx <= 0 || adx < InpADXMin) return false;   // no data counts as a fail, like the other filters
+   if(!InpADXUseDI) return true;
+   double pdi = BufAtN(gHADX, 1, sh), mdi = BufAtN(gHADX, 2, sh);
+   return (dir > 0 ? pdi > mdi : mdi > pdi);
+  }
+
+// ADX in BLOCK mode: true = this signal is not allowed at all
+bool ADXBlocks(const int dir, const datetime t)
+  {
+   return (InpADXMode == ADX_BLOCK && !ADXPass(dir, t));
+  }
+
+// re-entry confirmation: the EMA trend still points the trade's way
+bool ReTrendOk(const int dir, const int trendDir)
+  {
+   return (!InpReTrendConfirm || trendDir == dir);
+  }
+
 // A = passes every enabled filter, B = fails one, C = fails two or more
 int SignalGrade(const int dir, const Candle &k, const int sh, const int trendDir, string &why)
   {
    int fails = 0;
    why = "";
+   if(InpADXMode == ADX_GRADE && !ADXPass(dir, k.t)) { fails++; why += " adx"; }
    if(InpFiltOn && trendDir != dir)          { fails++; why += " trend"; }
    if(InpD1FilterOn && D1Against(dir, k.t))  { fails++; why += " D1"; }
    double atr = ATRAt(sh);
@@ -833,6 +926,7 @@ double RecentSwingLow(const int i)
 // Returns 1 = BUY, -1 = SELL, 2 = RE-BUY, -2 = RE-SELL, 0 = none.
 int ProcessBar(const int i)
   {
+   if(!gTFOk) return 0;   // chart timeframe not allowed (InpChartTF)
    Candle bar;
    bar.o = iOpen(_Symbol, _Period, i);
    bar.h = iHigh(_Symbol, _Period, i);
@@ -872,48 +966,64 @@ int ProcessBar(const int i)
    string whyB = "", whyS = "";
    int gradeB = ((trigB && allowB) ? SignalGrade(1, bar, i, trendDir, whyB) : GRADE_NONE);
    int gradeS = ((trigS && allowS) ? SignalGrade(-1, bar, i, trendDir, whyS) : GRADE_NONE);
+   // ADX in BLOCK mode: the trigger can never arm (same as the indicator)
+   bool blkB = (gradeB != GRADE_NONE && ADXBlocks(1, bar.t));
+   bool blkS = (gradeS != GRADE_NONE && ADXBlocks(-1, bar.t));
    double buf = StopBuffer(i);
 
    if(InpReentryOn && idea.state == IDEA_SL_WAIT && idea.reCount < InpMaxReentry
       && idea.slBarAge >= InpReentryCool)
      {
-      if(idea.dir > 0 && gradeB <= ReLimit())
+      if(idea.dir > 0 && !blkB && gradeB <= ReLimit() && ReTrendOk(1, trendDir))
         {
          int rc = idea.reCount + 1;
-         ArmIdea(1, bar, true, buf, gradeB, trendDir);
-         idea.reCount = rc;
-         lastBuyTime = bar.t;
-         gCntBuy++;
-         return 2;
+         if(ArmIdea(1, bar, true, buf, gradeB, trendDir))
+           {
+            idea.reCount = rc;
+            lastBuyTime = bar.t;
+            gCntBuy++;
+            return 2;
+           }
         }
-      else if(idea.dir < 0 && gradeS <= ReLimit())
+      else if(idea.dir < 0 && !blkS && gradeS <= ReLimit() && ReTrendOk(-1, trendDir))
         {
          int rc = idea.reCount + 1;
-         ArmIdea(-1, bar, true, buf, gradeS, trendDir);
-         idea.reCount = rc;
-         lastSellTime = bar.t;
-         gCntSell++;
-         return -2;
+         if(ArmIdea(-1, bar, true, buf, gradeS, trendDir))
+           {
+            idea.reCount = rc;
+            lastSellTime = bar.t;
+            gCntSell++;
+            return -2;
+           }
         }
      }
 
    bool coolB = Cooled(bar.t, lastBuyTime, InpCooldown) && Cooled(bar.t, lastSellTime, 3);
    bool coolS = Cooled(bar.t, lastSellTime, InpCooldown) && Cooled(bar.t, lastBuyTime, 3);
-   bool free = (idea.state == IDEA_IDLE);
+   // an opposite signal may end a re-entry wait (it used to be blocked for the whole window)
+   bool freeB = (idea.state == IDEA_IDLE || (idea.state == IDEA_SL_WAIT && idea.dir < 0));
+   bool freeS = (idea.state == IDEA_IDLE || (idea.state == IDEA_SL_WAIT && idea.dir > 0));
 
-   if(free && gradeB <= FreshLimit() && coolB)
+   if(freeB && !blkB && gradeB <= FreshLimit() && coolB)
      {
-      lastBuyTime = bar.t;
-      ArmIdea(1, bar, false, buf, gradeB, trendDir);
-      gCntBuy++;
-      return 1;
+      if(idea.state == IDEA_SL_WAIT) EndIdea(" [SL HIT]", idea.slTime);
+      if(ArmIdea(1, bar, false, buf, gradeB, trendDir))
+        {
+         lastBuyTime = bar.t;
+         gCntBuy++;
+         return 1;
+        }
+      return 0;
      }
-   if(free && gradeS <= FreshLimit() && coolS)
+   if(freeS && !blkS && gradeS <= FreshLimit() && coolS)
      {
-      lastSellTime = bar.t;
-      ArmIdea(-1, bar, false, buf, gradeS, trendDir);
-      gCntSell++;
-      return -1;
+      if(idea.state == IDEA_SL_WAIT) EndIdea(" [SL HIT]", idea.slTime);
+      if(ArmIdea(-1, bar, false, buf, gradeS, trendDir))
+        {
+         lastSellTime = bar.t;
+         gCntSell++;
+         return -1;
+        }
      }
    return 0;
   }
@@ -1865,17 +1975,20 @@ void OnNewBars()
    if(sh > 1) from = sh - 1;
 
    int sig = 0;
+   datetime sigT = 0;
    for(int i = from; i >= 1; i--)
      {
-      sig = ProcessBar(i);
-      if(sig != 0) { DrawSignal(i, sig); AddSignalTime(iTime(_Symbol, _Period, i)); }
+      int si = ProcessBar(i);
+      if(si != 0) { sig = si; sigT = iTime(_Symbol, _Period, i); DrawSignal(i, si); AddSignalTime(sigT); }
      }
    gLastProcessed = iTime(_Symbol, _Period, 1);
 
    if(InpMode != MODE_SIGNALS) SyncOrders();
    if(sig == 0) return;
+   // after a catch-up (several bars at once) act only while that signal's idea is still running
+   if(idea.signalTime != sigT || (idea.state != IDEA_PENDING && idea.state != IDEA_LIVE)) return;
 
-   gLastSignal = SigName(sig) + " " + GradeName(idea.grade) + " " + TimeToString(gLastProcessed, TIME_DATE|TIME_MINUTES);
+   gLastSignal = SigName(sig) + " " + GradeName(idea.grade) + " " + TimeToString(sigT, TIME_DATE|TIME_MINUTES);
    string lv = StringFormat("%s %s  Entry %s  SL %s  TP1 %s  TP2 %s", SigName(sig), GradeName(idea.grade),
                             Px(idea.entry), Px(idea.sl), Px(idea.tp1), Px(idea.tp2));
    Log("SIGNAL", lv);
@@ -1903,6 +2016,8 @@ string TradeBlocker()
   {
    if(InpMode == MODE_SIGNALS)
       return "MODE = SIGNALS ONLY: no trades. Set InpMode to Single trades or Full grid.";
+   if(!gTFOk)
+      return "CHART " + StringSubstr(EnumToString(_Period), 7) + " NOT ALLOWED: use " + ChartTFName() + " (InpChartTF). Open trades are still managed.";
    if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
       return "ALGO TRADING IS OFF: press the 'Algo Trading' button in the MT5 toolbar.";
    if(!MQLInfoInteger(MQL_TRADE_ALLOWED))
@@ -2129,6 +2244,18 @@ string FilterTrendText(color &c)
    return "NONE (no A signals)";
   }
 
+string ADXText(color &c)
+  {
+   if(InpADXMode == ADX_OFF) { c = C_MUTE; return "OFF"; }
+   int sh = ClosedShiftAt(InpADXTF, iTime(_Symbol, _Period, 0));
+   double adx = BufAtN(gHADX, 0, sh), pdi = BufAtN(gHADX, 1, sh), mdi = BufAtN(gHADX, 2, sh);
+   if(adx <= 0) { c = C_MUTE; return "-"; }
+   string side = (pdi > mdi ? "+DI" : "-DI");
+   string mode = (InpADXMode == ADX_BLOCK ? "block" : "grade");
+   c = (adx >= InpADXMin ? (pdi > mdi ? C_UP : C_DN) : C_WARN);
+   return StringFormat("%.1f %s  min %.0f %s", adx, side, InpADXMin, mode);
+  }
+
 string BiasText(const ENUM_TIMEFRAMES tf, color &c)
   {
    Bias b = TFBiasNow(tf);
@@ -2208,7 +2335,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKESPRO MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.98  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.99  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -2228,6 +2355,9 @@ void UpdatePanel(const bool force = false)
    int ss = (bd.dir==-1) + (b4.dir==-1) + (b1.dir==-1) + (b5.dir==-1);
    PRow("Align B / S", StringFormat("%d / %d", sb, ss), (sb >= InpMinAlign ? C_UP : (ss >= InpMinAlign ? C_DN : C_MUTE)));
    v = FilterTrendText(c);  PRow("Trend filter", v, c);
+   v = ADXText(c);  PRow("ADX (" + StringSubstr(EnumToString(InpADXTF), 7) + ")", v, c);
+   PRow("Re-entry trend check", (InpReTrendConfirm ? "ON" : "OFF"), (InpReTrendConfirm ? C_UP : C_MUTE));
+   if(!gTFOk) PRow("Chart TF " + StringSubstr(EnumToString(_Period), 7), "NOT ALLOWED: use " + ChartTFName(), C_DN);
    PRow("Min grade / re-entry", GradeName(FreshLimit()) + " / " + GradeName(ReLimit()), C_INFO);
    double spr = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID)) / Pt();
    PRow("Spread", StringFormat("%.0f pts", spr), (spr > 50 ? C_WARN : C_TXT));
@@ -2422,9 +2552,6 @@ int OnInit()
    trade.SetMarginMode();
    trade.LogLevel(LOG_LEVEL_ERRORS);
 
-   if(_Period != PERIOD_M5)
-      Print("LukesPro EA: built for M5, running on ", EnumToString(_Period));
-
    gWarm = false;
    gClosing = false;
    ResetIdea();
@@ -2435,9 +2562,12 @@ int OnInit()
    gEmaSlow = iMA(_Symbol, InpTrendTF, InpTrendSlow, 0, MODE_EMA, PRICE_CLOSE);
    if(!FiltersInit())
      {
-      Print("LukesPro EA: could not create the filter indicators (EMA / ATR)");
+      Print("LukesPro EA: could not create the filter indicators (EMA / ATR / ADX)");
       return(INIT_FAILED);
      }
+   if(!gTFOk)
+      Print("LukesPro EA: chart ", EnumToString(_Period), " is not allowed by InpChartTF (", ChartTFName(),
+            "): no signals and no new trades, open trades are still managed");
    CleanPDKeys();
    ArrayResize(gSigTimes, 0);
    PanelInit();
