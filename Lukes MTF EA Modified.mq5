@@ -3,7 +3,7 @@
 //| Trades the signals of the Lukes MTF Ind indicator.               |
 //| Rules: see EA_SPEC.md                                            |
 //+------------------------------------------------------------------+
-#property copyright "Lukes MTF EA"
+#property copyright "Lukes MTF EA Modified"
 #property link      ""
 #property version   "1.21"
 
@@ -810,7 +810,7 @@ void Log(const string event, const string details)
 
 void Notify(const string msg)
   {
-   string full = "Lukes MTF EA " + _Symbol + " | " + msg;
+   string full = "Lukes MTF EA Modified " + _Symbol + " | " + msg;
    if(InpAlertPopup) Alert(full);
    if(InpAlertSound) PlaySound(InpSoundFile);
    if(InpAlertPush)  SendNotification(full);
@@ -2003,7 +2003,7 @@ void UpdatePanel(const bool force = false)
    else if(blk != "")               { st = "NOT TRADING";  sc = C_DN; }
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
-   PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
+   PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES MTF EA MODIFIED", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
    PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.21  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);

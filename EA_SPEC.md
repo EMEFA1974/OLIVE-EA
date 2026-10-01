@@ -1,7 +1,7 @@
 # Lukes MTF EA – Specification
 
 Single source of truth for the EA's rules. Read this before every phase or change.
-Files: `Lukes MTF EA.mq5` (the EA), `Lukes MTF Ind.mq5` (the indicator it replicates).
+Files: `Lukes MTF EA Modified.mq5` (the EA), `Lukes MTF Ind Modified.mq5` (the indicator it replicates). Renamed from "Lukes MTF EA/Ind" on 2026-10-01.
 
 Status legend: **Done** = built in code · **To do** = agreed, not built yet · **Changed** = rule was updated (see history).
 
@@ -142,3 +142,4 @@ Status legend: **Done** = built in code · **To do** = agreed, not built yet · 
 - 2026-09-30 – Spread-aware SL/TP/entry checks (S8), EA re-entry after real stop-outs (T7), grid margin check + retry rules (R3c). No `InpReNeedA` in this EA; `InpMaxReentry` stays 2.
 - 2026-09-30 – EA v1.20: Single trades SL widened by `InpSLExpandPct` (default 50%) (T8).
 - 2026-10-01 – Ind v1.86 / EA v1.21: deeper entry, swing SL, rollover no-trade window, optional reclaim confirmation (S9). EA default entry PENDING, SL widening 0%.
+- 2026-10-01 – Renamed to "Lukes MTF EA Modified" / "Lukes MTF Ind Modified" (files, chart names, panel titles, alerts).
