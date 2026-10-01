@@ -1013,7 +1013,7 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_LIVE)    { st = (idea.dir > 0 ? "LIVE BUY" : "LIVE SELL"); sc = (idea.dir > 0 ? InpBuyColor : InpSellColor); }
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
-   PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES MTF IND", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
+   PText(PPRE + "T1", gPX + 10, gPY + 6, "St.LukesMTF Ind", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
    PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.85  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
