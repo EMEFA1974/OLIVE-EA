@@ -1,6 +1,6 @@
-#property copyright "Lukes BTC MTF Ind"
+#property copyright "Lukes BTC Ind"
 #property link      ""
-#property version   "1.94"
+#property version   "1.95"
 #property indicator_chart_window
 #property indicator_buffers 4
 #property indicator_plots   4
@@ -290,16 +290,16 @@ int OnInit()
    PlotIndexSetDouble(2, PLOT_EMPTY_VALUE, EMPTY_VALUE);
    PlotIndexSetDouble(3, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "Lukes BTC MTF Ind");
+   IndicatorSetString(INDICATOR_SHORTNAME, "Lukes BTC Ind");
    gEmaFast = iMA(_Symbol, InpTrendTF, InpTrendFast, 0, MODE_EMA, PRICE_CLOSE);
    gEmaSlow = iMA(_Symbol, InpTrendTF, InpTrendSlow, 0, MODE_EMA, PRICE_CLOSE);
    if(!FiltersInit())
      {
-      Print("Lukes BTC MTF Ind: could not create the filter indicators (EMA / ATR)");
+      Print("Lukes BTC Ind: could not create the filter indicators (EMA / ATR)");
       return(INIT_FAILED);
      }
    if(StringFind(_Symbol, "BTC") < 0 && StringFind(_Symbol, "XBT") < 0)
-      Print("Lukes BTC MTF Ind: built for BTC, attached to ", _Symbol, " - USD distance inputs may not fit this symbol");
+      Print("Lukes BTC Ind: built for BTC, attached to ", _Symbol, " - USD distance inputs may not fit this symbol");
    PanelInit();
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
    lastAlertBar = 0;
@@ -1104,7 +1104,7 @@ string StateText()
   }
 
 //+------------------------------------------------------------------+
-//| Dashboard panel (same style as Lukes MTF EA)                     |
+//| Dashboard panel (same style as Lukes BTC EA)                     |
 //+------------------------------------------------------------------+
 #define PPRE    "CSMTF_P_"
 int  gPX = 0, gPY = 0, gPanelH = 0;
@@ -1273,8 +1273,8 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_LIVE)    { st = (idea.dir > 0 ? "LIVE BUY" : "LIVE SELL"); sc = (idea.dir > 0 ? InpBuyColor : InpSellColor); }
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
-   PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES BTC MTF IND", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.94  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES BTC IND", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.95  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -1620,14 +1620,14 @@ void FireAlert(const string side, const datetime barTime, const double barClose)
                            DoubleToString(idea.tp1, _Digits),
                            DoubleToString(idea.tp2, _Digits));
 
-   string msg = StringFormat("Lukes BTC MTF %s %s | %s | close %s | %s%s",
+   string msg = StringFormat("Lukes BTC %s %s | %s | close %s | %s%s",
                              side, _Symbol, tf, DoubleToString(barClose, _Digits),
                              TimeToString(barTime, TIME_DATE|TIME_MINUTES), extra);
 
    if(InpAlertPopup) Alert(msg);
    if(InpAlertSound) PlaySound(InpSoundFile);
    if(InpAlertPush)  SendNotification(msg);
-   if(InpAlertEmail) SendMail("Lukes BTC MTF " + side + " " + _Symbol, msg);
+   if(InpAlertEmail) SendMail("Lukes BTC " + side + " " + _Symbol, msg);
   }
 
 void CheckAlerts(const datetime barTime, const double barClose)

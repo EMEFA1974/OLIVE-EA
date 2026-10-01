@@ -1,12 +1,12 @@
 //+------------------------------------------------------------------+
-//| Lukes BTC MTF EA                                              |
-//| Trades the signals of the Lukes BTC MTF Ind indicator.        |
+//| Lukes BTC EA                                              |
+//| Trades the signals of the Lukes BTC Ind indicator.        |
 //| All distance inputs are USD of BTC price.                        |
 //| Rules: see EA_SPEC.md                                            |
 //+------------------------------------------------------------------+
-#property copyright "Lukes BTC MTF EA"
+#property copyright "Lukes BTC EA"
 #property link      ""
-#property version   "2.01"
+#property version   "2.02"
 
 #include <Trade/Trade.mqh>
 
@@ -39,7 +39,7 @@ enum ENUM_GRADE
 #define GRADE_NONE 3
 
 input group "=== EA Mode ==="
-input ENUM_EA_MODE    InpMode        = MODE_GRID;
+input ENUM_EA_MODE    InpMode        = MODE_SINGLE;
 input ENUM_ENTRY_TYPE InpEntryType   = ENTRY_HYBRID;    // Entry type (MARKET / PENDING / HYBRID)
 input double          InpHybridMinGapUsd = 50.0;        // HYBRID: Entry this many $ or more from price = market trade, closer = pending order
 input long            InpMagic       = 26092601;
@@ -243,7 +243,7 @@ struct Bias
   };
 
 //+------------------------------------------------------------------+
-//| Signal engine – copied from Lukes BTC MTF Ind. Keep in sync. |
+//| Signal engine – copied from Lukes BTC Ind. Keep in sync. |
 //+------------------------------------------------------------------+
 void ResetCounts()
   {
@@ -957,7 +957,7 @@ void Log(const string event, const string details)
 
 void Notify(const string msg)
   {
-   string full = "Lukes BTC MTF EA " + _Symbol + " | " + msg;
+   string full = "Lukes BTC EA " + _Symbol + " | " + msg;
    if(InpAlertPopup) Alert(full);
    if(InpAlertSound) PlaySound(InpSoundFile);
    if(InpAlertPush)  SendNotification(full);
@@ -2135,8 +2135,8 @@ void UpdatePanel(const bool force = false)
    else if(blk != "")               { st = "NOT TRADING";  sc = C_DN; }
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
-   PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES BTC MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.01  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES BTC EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.02  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 

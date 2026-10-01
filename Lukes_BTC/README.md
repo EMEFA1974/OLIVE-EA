@@ -1,4 +1,4 @@
-# Lukes BTC MTF (Indicator + EA)
+# Lukes BTC (Indicator + EA)
 
 BTC builds of `LukesPro_MTF_Ind` / `LukesPro_MTF_EA` v1.91. The signal engine, grading, filters,
 zones, panel and trade management are unchanged — only the inputs and labels were converted for BTC.
@@ -40,7 +40,7 @@ zones, panel and trade management are unchanged — only the inputs and labels w
 Ratio/ATR/percentage inputs (body ratios, ATR multiples, R-multiples, EMA periods, equity %),
 timeframes and bar counts are unchanged because they don't depend on price scale.
 
-EA defaults: Mode = Full grid, basket TP = price distance ($100 beyond the basket average),
+EA defaults: Mode = Single trades (Full grid: see below), basket TP = price distance ($100 beyond the basket average),
 signal trade lot = 1.0 (Single Lot, also the first trade of a grid), grid adds start at 2.0
 (Grid Lot) x1.5 per level, max 5 trades: 1.0 → 2.0 → 3.0 → 4.5 → 6.75.
 
