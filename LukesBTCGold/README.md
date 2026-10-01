@@ -1,4 +1,4 @@
-# Lukes BTC (Indicator + EA)
+# LukesBTCGold (Indicator + EA)
 
 BTC builds of `LukesPro_MTF_Ind` / `LukesPro_MTF_EA` v1.91. The signal engine, grading, filters,
 zones, panel and trade management are unchanged — only the inputs and labels were converted for BTC.
