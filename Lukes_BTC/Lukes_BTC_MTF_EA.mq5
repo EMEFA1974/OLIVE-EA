@@ -1,12 +1,12 @@
 //+------------------------------------------------------------------+
-//| LukesPro BTC MTF EA                                              |
-//| Trades the signals of the LukesPro BTC MTF Ind indicator.        |
+//| Lukes BTC MTF EA                                              |
+//| Trades the signals of the Lukes BTC MTF Ind indicator.        |
 //| All distance inputs are USD of BTC price.                        |
 //| Rules: see EA_SPEC.md                                            |
 //+------------------------------------------------------------------+
-#property copyright "LukesPro BTC MTF EA"
+#property copyright "Lukes BTC MTF EA"
 #property link      ""
-#property version   "2.00"
+#property version   "2.01"
 
 #include <Trade/Trade.mqh>
 
@@ -80,7 +80,7 @@ input double         InpMinSLGapUsd     = 8.0;   // keep pending entry this far 
 input group "=== Re-entry after SL ==="
 input bool   InpReentryOn      = true;
 input double InpSLBufferUsd    = 10.0;  // SL beyond the signal candle, USD (gold: 20 pts)
-input double InpSLExpandPct    = 50.0;  // widen the SL by this % of the Entry-SL distance (TP1/TP2 unchanged); 0 = off
+input double InpSLExpandPct    = 100.0;  // widen the SL by this % of the Entry-SL distance (TP1/TP2 unchanged); 0 = off
 input double InpRR1            = 1.0;   // TP1 R-multiple
 input double InpRR2            = 2.0;   // TP2 R-multiple
 input int    InpMaxReentry     = 1;     // one re-entry at most (see InpReNeedA)
@@ -243,7 +243,7 @@ struct Bias
   };
 
 //+------------------------------------------------------------------+
-//| Signal engine – copied from LukesPro BTC MTF Ind. Keep in sync. |
+//| Signal engine – copied from Lukes BTC MTF Ind. Keep in sync. |
 //+------------------------------------------------------------------+
 void ResetCounts()
   {
@@ -944,7 +944,7 @@ string Px(const double p) { return DoubleToString(p, _Digits); }
 void Log(const string event, const string details)
   {
    gLastEvent = TimeToString(TimeCurrent(), TIME_DATE|TIME_MINUTES) + "  " + event + "  " + details;
-   Print("LukesPro BTC EA ", event, " | ", details);
+   Print("Lukes BTC EA ", event, " | ", details);
    if(!InpLogToFile) return;
    int h = FileOpen(LOGFILE, FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ|FILE_SHARE_WRITE, ',');
    if(h == INVALID_HANDLE) return;
@@ -957,7 +957,7 @@ void Log(const string event, const string details)
 
 void Notify(const string msg)
   {
-   string full = "LukesPro BTC MTF EA " + _Symbol + " | " + msg;
+   string full = "Lukes BTC MTF EA " + _Symbol + " | " + msg;
    if(InpAlertPopup) Alert(full);
    if(InpAlertSound) PlaySound(InpSoundFile);
    if(InpAlertPush)  SendNotification(full);
@@ -2135,8 +2135,8 @@ void UpdatePanel(const bool force = false)
    else if(blk != "")               { st = "NOT TRADING";  sc = C_DN; }
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
-   PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKESPRO BTC MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.00  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES BTC MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.01  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -2354,10 +2354,10 @@ int OnInit()
    trade.LogLevel(LOG_LEVEL_ERRORS);
 
    if(_Period != PERIOD_M5)
-      Print("LukesPro BTC EA: built for M5, running on ", EnumToString(_Period));
+      Print("Lukes BTC EA: built for M5, running on ", EnumToString(_Period));
 
    if(StringFind(_Symbol, "BTC") < 0 && StringFind(_Symbol, "XBT") < 0)
-      Print("LukesPro BTC EA: built for BTC, attached to ", _Symbol, " - USD distance inputs may not fit this symbol");
+      Print("Lukes BTC EA: built for BTC, attached to ", _Symbol, " - USD distance inputs may not fit this symbol");
 
    gWarm = false;
    gClosing = false;
@@ -2369,7 +2369,7 @@ int OnInit()
    gEmaSlow = iMA(_Symbol, InpTrendTF, InpTrendSlow, 0, MODE_EMA, PRICE_CLOSE);
    if(!FiltersInit())
      {
-      Print("LukesPro BTC EA: could not create the filter indicators (EMA / ATR)");
+      Print("Lukes BTC EA: could not create the filter indicators (EMA / ATR)");
       return(INIT_FAILED);
      }
    CleanPDKeys();

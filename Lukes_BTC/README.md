@@ -1,4 +1,4 @@
-# LukesPro BTC MTF (Indicator + EA)
+# Lukes BTC MTF (Indicator + EA)
 
 BTC builds of `LukesPro_MTF_Ind` / `LukesPro_MTF_EA` v1.91. The signal engine, grading, filters,
 zones, panel and trade management are unchanged — only the inputs and labels were converted for BTC.
@@ -89,8 +89,8 @@ Related tuning (set the same in the indicator and the EA): a smaller `InpPending
 
 ## Wider SL (Ind v1.93 / EA v2.00)
 
-`InpSLExpandPct` (default 50, set the same in both files) moves the SL further from the entry by that % of
+`InpSLExpandPct` (default 100, set the same in both files) moves the SL further from the entry by that % of
 the Entry–SL distance. TP1 and TP2 stay where they were (R-multiples of the original candle stop), and the
 EA's partial close at TP1 still happens at that same TP1. 0 = original SL. Example: entry 100 000, candle SL
-99 900 ($100) → with 50% the SL is 99 850 ($150); TP1 (1R) stays 100 100, TP2 (2R) stays 100 200.
+99 900 ($100) → with 100% the SL is 99 800 ($200); TP1 (1R) stays 100 100, TP2 (2R) stays 100 200.
 Full grid trades have no SL, so there it only changes the indicator's zone and signal bookkeeping.
