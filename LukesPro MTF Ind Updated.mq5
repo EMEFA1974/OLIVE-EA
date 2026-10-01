@@ -1,6 +1,6 @@
-#property copyright "LukesPro MTF Ind"
+#property copyright "LukesPro MTF Ind Updated"
 #property link      ""
-#property version   "1.93"
+#property version   "2.00"
 #property indicator_chart_window
 #property indicator_buffers 4
 #property indicator_plots   4
@@ -28,7 +28,8 @@
 enum ENUM_PEND_TYPE
   {
    PEND_LIMIT = 0,   // pullback (buy below / sell above)
-   PEND_STOP  = 1    // confirmation break (buy above / sell below)
+   PEND_STOP  = 1,   // confirmation break (buy above / sell below)
+   PEND_CONFIRM = 2  // confirmation close: enter at market when a bar closes beyond the signal candle
   };
 
 enum ENUM_GRADE
@@ -60,7 +61,7 @@ input group "=== Pending Entry ==="
 input bool           InpPendingOn       = true;
 input ENUM_PEND_TYPE InpPendingType     = PEND_LIMIT;
 input int            InpPendingPts      = 40;    // minimum distance in points
-input double         InpPendingRetrace  = 0.40;  // fraction of signal candle range
+input double         InpPendingRetrace  = 0.50;  // fraction of signal candle range (limit entry: 0.50 = half-way back into the candle)
 input bool           InpPendingUseRange = true;  // use max(points, range*retrace)
 input int            InpPendingExpire   = 12;    // cancel pending after N closed bars
 input int            InpMinSLGapPts     = 15;    // keep pending entry this far from SL
@@ -68,13 +69,21 @@ input int            InpMinSLGapPts     = 15;    // keep pending entry this far 
 input group "=== Re-entry after SL ==="
 input bool   InpReentryOn      = true;
 input int    InpSLBufferPts    = 20;
-input double InpSLWidenPct     = 50.0;  // widen the SL by this % of the entry-SL distance (0 = off). TP1/TP2 keep the original R. Set the same in Ind and EA
+input double InpSLWidenPct     = 0.0;   // widen the SL by this % of the entry-SL distance (0 = off). TP1/TP2 keep the original R. Set the same in Ind and EA
 input double InpRR1            = 1.0;   // TP1 R-multiple
 input double InpRR2            = 2.0;   // TP2 R-multiple
 input int    InpMaxReentry     = 1;     // one re-entry at most
 input int    InpReentryWindow  = 24;
 input int    InpReentryCool    = 3;
 input bool   InpSpreadAware    = true;  // fills / SL / TP use the ask where the broker does (buy entries, sell exits)
+
+input group "=== Stop Placement & Entry Timing ==="
+input bool   InpStructSLOn   = true;   // SL beyond the lowest low / highest high of the last N bars, not just the signal candle
+input int    InpStructSLBars = 15;     // N bars for the structure SL
+input double InpMinSLATR     = 1.2;    // SL at least this x ATR from the entry (0 = off)
+input double InpMaxSLATR     = 4.0;    // SL at most this x ATR from the entry (0 = off)
+input int    InpConfirmBars  = 3;      // confirmation entry (InpPendingType = confirmation close): bars to wait
+input bool   InpTrendHard    = true;   // countertrend signals never trade (needs InpFiltOn); grades still rate the other filters
 
 input group "=== Trend Filter (EMA, replaces the one-candle bias vote) ==="
 input bool            InpFiltOn     = true;        // on = EMA trend on TF1 AND TF2 must agree with the trade (legacy candle vote is skipped)
@@ -108,7 +117,7 @@ input double InpPinWickPct  = 0.55;                // and >= this share of the c
 input int    InpPinSweep    = 3;                   // and the wick takes out the low/high of the previous N bars
 
 input group "=== Signal Grade ==="
-input ENUM_GRADE InpMinGrade = GRADE_C;            // lowest grade that becomes a signal (zone / alert / EA trade); C = A, B and C all accepted
+input ENUM_GRADE InpMinGrade = GRADE_B;            // lowest grade that becomes a signal (zone / alert / EA trade); B = A and B, C = all
 input bool       InpReNeedA  = false;              // true = re-entries only on a fresh A-grade trigger (false = same grades as InpMinGrade)
 input bool       InpShowFiltered = true;          // grey grade letter on signals below the minimum grade (no zone, no alert)
 input color      InpFiltColor    = clrSilver;
@@ -213,6 +222,7 @@ struct Idea
    int       dir;
    double    entry, sl, tp1, tp2;
    double    slR;        // original (not widened) SL: TP1/TP2 are measured from it
+   double    minDist, maxDist;   // SL distance limits (ATR based) for a confirmation entry
    datetime  signalTime, slTime, fillTime;
    int       reCount, slBarAge, pendAge;
    bool      tp1Done;
@@ -291,12 +301,12 @@ int OnInit()
    PlotIndexSetDouble(2, PLOT_EMPTY_VALUE, EMPTY_VALUE);
    PlotIndexSetDouble(3, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "LukesPro MTF Ind");
+   IndicatorSetString(INDICATOR_SHORTNAME, "LukesPro MTF Ind Updated");
    gEmaFast = iMA(_Symbol, InpTrendTF, InpTrendFast, 0, MODE_EMA, PRICE_CLOSE);
    gEmaSlow = iMA(_Symbol, InpTrendTF, InpTrendSlow, 0, MODE_EMA, PRICE_CLOSE);
    if(!FiltersInit())
      {
-      Print("LukesPro MTF Ind: could not create the filter indicators (EMA / ATR)");
+      Print("LukesPro MTF Ind Updated: could not create the filter indicators (EMA / ATR)");
       return(INIT_FAILED);
      }
    PanelInit();
@@ -343,6 +353,7 @@ void ResetIdea()
    idea.state = IDEA_IDLE;
    idea.dir = 0;
    idea.entry = idea.sl = idea.tp1 = idea.tp2 = idea.slR = 0;
+   idea.minDist = idea.maxDist = 0;
    idea.signalTime = idea.slTime = idea.fillTime = 0;
    idea.reCount = idea.slBarAge = idea.pendAge = 0;
    idea.tp1Done = false;
@@ -414,52 +425,62 @@ void ApplyLevels(const int dir, const double entry, const double sl)
      }
   }
 
-bool BuildPendingPrices(const int dir, const Candle &bar, const double buf, double &entry, double &sl)
+bool ConfirmMode() { return (InpPendingOn && InpPendingType == PEND_CONFIRM); }
+
+// SL distance from the entry kept between minD and maxD (0 = no limit)
+double FitSL(const int dir, const double entry, const double sl, const double minD, const double maxD)
+  {
+   double d = (dir > 0 ? entry - sl : sl - entry);
+   if(minD > 0 && d < minD) d = minD;
+   if(maxD > 0 && d > maxD) d = MathMax(maxD, minD);
+   return (dir > 0 ? entry - d : entry + d);
+  }
+
+// slBase = structure / candle SL incl. buffer (SignalSLBase)
+bool BuildPendingPrices(const int dir, const Candle &bar, const double slBase, const double minD, const double maxD,
+                        double &entry, double &sl)
   {
    double gap = (double)InpMinSLGapPts * Pt();
    if(gap <= 0.0) gap = 5.0 * Pt();
    double dist = PendingDist(bar);
+   sl = slBase;
 
    if(dir > 0)
      {
-      sl = bar.l - buf;
       if(InpPendingOn)
         {
-         if(InpPendingType == PEND_LIMIT)
-            entry = bar.c - dist;
-         else
-            entry = bar.h + dist;
-         if(entry <= sl + gap)
+         if(InpPendingType == PEND_LIMIT)     entry = bar.c - dist;
+         else if(InpPendingType == PEND_STOP) entry = bar.h + dist;
+         else                                 entry = bar.h;   // a close above the signal high confirms
+         if(InpPendingType != PEND_CONFIRM && entry <= sl + gap)
             entry = sl + gap;
         }
       else
          entry = bar.c;
-      if(entry <= sl) return false;
      }
    else
      {
-      sl = bar.h + buf;
       if(InpPendingOn)
         {
-         if(InpPendingType == PEND_LIMIT)
-            entry = bar.c + dist;
-         else
-            entry = bar.l - dist;
-         if(entry >= sl - gap)
+         if(InpPendingType == PEND_LIMIT)     entry = bar.c + dist;
+         else if(InpPendingType == PEND_STOP) entry = bar.l - dist;
+         else                                 entry = bar.l;   // a close below the signal low confirms
+         if(InpPendingType != PEND_CONFIRM && entry >= sl - gap)
             entry = sl - gap;
         }
       else
          entry = bar.c;
-      if(entry >= sl) return false;
      }
-   return true;
+   // confirmation entry: the real entry is the confirming close, the SL is fitted then
+   if(!ConfirmMode()) sl = FitSL(dir, entry, sl, minD, maxD);
+   return (dir > 0 ? entry > sl : entry < sl);
   }
 
-void ArmIdea(const int dir, const Candle &bar, const bool re, const double buf,
-             const int grade, const int trendDir)
+void ArmIdea(const int dir, const Candle &bar, const bool re, const double slBase,
+             const double minD, const double maxD, const int grade, const int trendDir)
   {
    double entry = 0, sl = 0;
-   if(!BuildPendingPrices(dir, bar, buf, entry, sl))
+   if(!BuildPendingPrices(dir, bar, slBase, minD, maxD, entry, sl))
      {
       EndIdea(idea.state == IDEA_SL_WAIT ? " [SL HIT]" : " [CANCELLED]", bar.t);
       return;
@@ -473,6 +494,8 @@ void ArmIdea(const int dir, const Candle &bar, const bool re, const double buf,
    idea.re = re;
    idea.grade = grade;
    idea.armTrend = trendDir;
+   idea.minDist = minD;
+   idea.maxDist = maxD;
    ApplyLevels(dir, entry, sl);
    idea.state = (InpPendingOn ? IDEA_PENDING : IDEA_LIVE);
    if(idea.state == IDEA_LIVE)
@@ -505,6 +528,21 @@ void StopOut(const Candle &bar)
    idea.slBarAge = 0;
   }
 
+datetime gConfirmBar = 0;   // bar on which a confirmation entry was taken (EA acts on it)
+
+// confirmation entry: the confirming close is the entry; SL from the signal's structure SL
+void ConfirmIdea(const Candle &bar)
+  {
+   double e  = bar.c;
+   double sl = FitSL(idea.dir, e, idea.slR, idea.minDist, idea.maxDist);
+   if(idea.dir > 0 ? sl >= e : sl <= e) { EndIdea(" [CANCELLED]", bar.t); return; }
+   ApplyLevels(idea.dir, e, sl);
+   idea.state = IDEA_LIVE;
+   idea.fillTime = bar.t;
+   idea.slBarAge = 0;
+   gConfirmBar = bar.t;
+  }
+
 void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int trendDir)
   {
    if(idea.state == IDEA_IDLE) return;
@@ -516,8 +554,16 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int tren
    if(idea.state == IDEA_PENDING)
      {
       idea.pendAge++;
-      if(idea.pendAge > InpPendingExpire) { EndIdea(" [EXPIRED]", bar.t); return; }
+      if(idea.pendAge > (ConfirmMode() ? InpConfirmBars : InpPendingExpire)) { EndIdea(" [EXPIRED]", bar.t); return; }
       if(TrendAgainst(idea.dir, d, h4, trendDir)) { EndIdea(" [CANCELLED]", bar.t); return; }
+      if(ConfirmMode())
+        {
+         // the setup fails if price reaches the SL before it confirms
+         if(idea.dir > 0 ? bar.l <= idea.slR : bar.h + xs >= idea.slR) { EndIdea(" [NO CONFIRM]", bar.t); return; }
+         bool conf = (idea.dir > 0 ? bar.c > idea.entry : bar.c < idea.entry);
+         if(conf) ConfirmIdea(bar);   // entered at the close: SL / TP count from the next bar
+         return;
+        }
       if(!TouchedLevel(bar, idea.entry, (idea.dir > 0 ? sp : 0.0))) return;
       idea.state = IDEA_LIVE;
       idea.fillTime = bar.t;
@@ -866,6 +912,28 @@ bool StrictTrigger(const int dir, const Candle &k, const int sh)
    return (dir > 0 ? k.l < ext : k.h > ext);
   }
 
+// SL before the ATR limits: beyond the signal candle, or beyond the structure of the
+// last InpStructSLBars bars, plus the buffer (fixed / ATR / spread)
+double SignalSLBase(const int dir, const Candle &k, const int sh)
+  {
+   double ext = (dir > 0 ? k.l : k.h);
+   if(InpStructSLOn)
+      for(int j = sh + 1; j <= sh + InpStructSLBars; j++)
+        {
+         double p = BarHL(j, -dir);
+         if(p <= 0) break;   // no more history
+         if(dir > 0 ? p < ext : p > ext) ext = p;
+        }
+   double buf = StopBuffer(sh);
+   return (dir > 0 ? ext - buf : ext + buf);
+  }
+
+double MinSLDist(const int sh) { double a = ATRAt(sh); return ((InpMinSLATR > 0 && a > 0) ? a * InpMinSLATR : 0.0); }
+double MaxSLDist(const int sh) { double a = ATRAt(sh); return ((InpMaxSLATR > 0 && a > 0) ? a * InpMaxSLATR : 0.0); }
+
+// trend as a hard rule: countertrend (or no trend) never trades
+bool TrendOK(const int dir, const int trendDir) { return (!InpFiltOn || !InpTrendHard || trendDir == dir); }
+
 // A = passes every enabled filter, B = fails one, C = fails two or more
 int SignalGrade(const int dir, const Candle &k, const int sh, const int trendDir, string &why)
   {
@@ -1043,7 +1111,7 @@ void DrawLiveZone()
       gz.t1    = idea.signalTime;
       gz.tEnd  = 0;
       gz.status = "";
-      if(idea.state == IDEA_PENDING) gz.status = (InpPendingType == PEND_LIMIT ? " [LIMIT]" : " [STOP]");
+      if(idea.state == IDEA_PENDING) gz.status = (InpPendingType == PEND_LIMIT ? " [LIMIT]" : (InpPendingType == PEND_STOP ? " [STOP]" : " [WAIT CONFIRM]"));
       if(idea.state == IDEA_LIVE)    gz.status = (idea.tp1Done ? " [TP1 HIT]" : " [FILLED]");
       if(idea.state == IDEA_SL_WAIT) gz.status = " [SL HIT]";
      }
@@ -1272,8 +1340,8 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_LIVE)    { st = (idea.dir > 0 ? "LIVE BUY" : "LIVE SELL"); sc = (idea.dir > 0 ? InpBuyColor : InpSellColor); }
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
-   PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKESPRO MTF IND", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.93  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKESPRO MTF IND UPDATED", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.00  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -1522,9 +1590,10 @@ int OnCalculate(const int rates_total,
       bool allowS = (InpFiltOn || StructureAllows(-1, d, h4, h1, sb, ss));
 
       string whyB = "", whyS = "";
-      int gradeB = ((trigB && allowB) ? SignalGrade(1, bar, i, trendDir, whyB) : GRADE_NONE);
-      int gradeS = ((trigS && allowS) ? SignalGrade(-1, bar, i, trendDir, whyS) : GRADE_NONE);
-      double buf = StopBuffer(i);
+      int gradeB = ((trigB && allowB && TrendOK(1, trendDir))  ? SignalGrade(1, bar, i, trendDir, whyB)  : GRADE_NONE);
+      int gradeS = ((trigS && allowS && TrendOK(-1, trendDir)) ? SignalGrade(-1, bar, i, trendDir, whyS) : GRADE_NONE);
+      double slBuy = SignalSLBase(1, bar, i), slSell = SignalSLBase(-1, bar, i);
+      double minD = MinSLDist(i), maxD = MaxSLDist(i);
 
       bool didRe = false;
       if(InpReentryOn && idea.state == IDEA_SL_WAIT && idea.reCount < InpMaxReentry
@@ -1534,7 +1603,7 @@ int OnCalculate(const int rates_total,
            {
             ReBuyBuf[i] = low[i];
             int rc = idea.reCount + 1;
-            ArmIdea(1, bar, true, buf, gradeB, trendDir);
+            ArmIdea(1, bar, true, slBuy, minD, maxD, gradeB, trendDir);
             idea.reCount = rc;
             lastBuyTime = bar.t;
             gCntBuy++; AddEv(EV_SIG, bar.t);
@@ -1545,7 +1614,7 @@ int OnCalculate(const int rates_total,
            {
             ReSellBuf[i] = high[i];
             int rc = idea.reCount + 1;
-            ArmIdea(-1, bar, true, buf, gradeS, trendDir);
+            ArmIdea(-1, bar, true, slSell, minD, maxD, gradeS, trendDir);
             idea.reCount = rc;
             lastSellTime = bar.t;
             gCntSell++; AddEv(EV_SIG, bar.t);
@@ -1565,7 +1634,7 @@ int OnCalculate(const int rates_total,
            {
             BuyBuf[i] = low[i];
             lastBuyTime = bar.t;
-            ArmIdea(1, bar, false, buf, gradeB, trendDir);
+            ArmIdea(1, bar, false, slBuy, minD, maxD, gradeB, trendDir);
             gCntBuy++; AddEv(EV_SIG, bar.t);
             HollowArrow(time[i], low[i], 1, InpBuyColor, false);
             armed = true;
@@ -1574,7 +1643,7 @@ int OnCalculate(const int rates_total,
            {
             SellBuf[i] = high[i];
             lastSellTime = bar.t;
-            ArmIdea(-1, bar, false, buf, gradeS, trendDir);
+            ArmIdea(-1, bar, false, slSell, minD, maxD, gradeS, trendDir);
             gCntSell++; AddEv(EV_SIG, bar.t);
             HollowArrow(time[i], high[i], -1, InpSellColor, false);
             armed = true;
@@ -1619,14 +1688,14 @@ void FireAlert(const string side, const datetime barTime, const double barClose)
                            DoubleToString(idea.tp1, _Digits),
                            DoubleToString(idea.tp2, _Digits));
 
-   string msg = StringFormat("LukesPro MTF %s %s | %s | close %s | %s%s",
+   string msg = StringFormat("LukesPro MTF Updated %s %s | %s | close %s | %s%s",
                              side, _Symbol, tf, DoubleToString(barClose, _Digits),
                              TimeToString(barTime, TIME_DATE|TIME_MINUTES), extra);
 
    if(InpAlertPopup) Alert(msg);
    if(InpAlertSound) PlaySound(InpSoundFile);
    if(InpAlertPush)  SendNotification(msg);
-   if(InpAlertEmail) SendMail("LukesPro MTF " + side + " " + _Symbol, msg);
+   if(InpAlertEmail) SendMail("LukesPro MTF Updated " + side + " " + _Symbol, msg);
   }
 
 void CheckAlerts(const datetime barTime, const double barClose)
@@ -1636,7 +1705,8 @@ void CheckAlerts(const datetime barTime, const double barClose)
    if(InpAlertFill && idea.state == IDEA_LIVE && idea.fillTime == barTime && lastFillAlert != barTime)
      {
       lastFillAlert = barTime;
-      FireAlert(idea.dir > 0 ? "PENDING FILLED BUY" : "PENDING FILLED SELL", barTime, barClose);
+      FireAlert(ConfirmMode() ? (idea.dir > 0 ? "CONFIRMED BUY - ENTER" : "CONFIRMED SELL - ENTER")
+                             : (idea.dir > 0 ? "PENDING FILLED BUY" : "PENDING FILLED SELL"), barTime, barClose);
      }
 
    if(barTime == lastAlertBar) return;
@@ -1650,7 +1720,8 @@ void CheckAlerts(const datetime barTime, const double barClose)
    string side = buy ? "BUY" : (sell ? "SELL" : (rebuy ? "RE-ENTRY BUY" : "RE-ENTRY SELL"));
    if((rebuy || resell) && !InpAlertReentry) return;
    if(idea.state != IDEA_IDLE) side = side + " " + GradeName(idea.grade);
-   if(InpPendingOn) side = side + " PEND";
+   if(ConfirmMode()) side = side + " WAIT CONFIRM";
+   else if(InpPendingOn) side = side + " PEND";
    FireAlert(side, barTime, barClose);
   }
 //+------------------------------------------------------------------+

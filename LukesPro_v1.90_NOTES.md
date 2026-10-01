@@ -154,3 +154,40 @@ Check both files carry the same engine inputs (`InpSpreadAware`, `InpReNeedA`, .
   Single Lot if you want to keep the same risk.
 * Full grid mode: grid trades still never get an SL. The setting only moves the signal's SL, which
   the grid doesn't use.
+
+## v2.00 — "LukesPro MTF EA Updated" / "LukesPro MTF Ind Updated"
+
+The files and on-chart names now end in "Updated". Remove the old EA/indicator from the chart
+before attaching these. Give both the same inputs.
+
+Aimed at Single trades mode, where trades were stopped out before the move played out and were
+entered too early.
+
+**A. Structure stop (new group "Stop Placement & Entry Timing")**
+* `InpStructSLOn = true`: the SL goes beyond the lowest low (buy) / highest high (sell) of the
+  last `InpStructSLBars = 15` bars plus the usual buffer, not just beyond the signal candle. A
+  normal retest of the signal candle no longer takes the SL out.
+* `InpMinSLATR = 1.2`: the SL is never closer than 1.2 x ATR to the entry.
+* `InpMaxSLATR = 4.0`: and never farther than 4 x ATR (0 = off).
+* `InpSLWidenPct` is now **0** by default (the structure stop replaces it).
+
+**B. Later, better entries**
+* EA `InpEntryType` default is now **PENDING**, and `InpPendingRetrace` is **0.50**: the trade
+  waits for price to come half-way back into the signal candle instead of buying its close.
+* New option `InpPendingType = PEND_CONFIRM` (confirmation close), in both files: after a signal
+  the EA waits up to `InpConfirmBars = 3` bars for a bar to close beyond the signal candle's high
+  (buy) / low (sell), then enters at market at that close. The SL is fitted to that entry and TPs
+  are measured from the fill. If price hits the SL first, or nothing confirms in time, the signal
+  is dropped. The indicator shows `[WAIT CONFIRM]` on the zone and alerts "CONFIRMED BUY - ENTER".
+
+**C. Trend as a hard rule**
+* `InpTrendHard = true`: when the H1+H4 EMA trend doesn't agree with the signal (or there is no
+  trend), the signal is not taken. The grade still rates the other filters.
+
+**D. Minimum grade**
+* `InpMinGrade` default is now **B** (A and B signals).
+
+**Expect:** fewer trades (some signals never pull back, never confirm, or are countertrend), and
+wider stops. TPs are measured from the wider R, so they are farther away too. Money risk per
+trade grows at the same lot size, so lower the Single Lot to keep your usual risk. Backtest these
+settings against the previous version before going live.
