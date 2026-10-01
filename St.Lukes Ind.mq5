@@ -1,6 +1,6 @@
-#property copyright "Lukes MTF Ind"
+#property copyright "St.Lukes Ind"
 #property link      ""
-#property version   "1.85"
+#property version   "1.86"
 #property indicator_chart_window
 #property indicator_buffers 4
 #property indicator_plots   4
@@ -62,6 +62,13 @@ input double         InpPendingRetrace  = 0.40;  // fraction of signal candle ra
 input bool           InpPendingUseRange = true;  // use max(points, range*retrace)
 input int            InpPendingExpire   = 12;    // cancel pending after N closed bars
 input int            InpMinSLGapPts     = 15;    // keep pending entry this far from SL
+
+input group "=== Stop Loss (structure) ==="
+input bool   InpSLStructOn     = true;  // SL beyond the lowest low (buy) / highest high (sell) of the last N bars
+input int    InpSLStructBars   = 15;    // structure lookback in bars (signal bar included)
+input double InpSLMinATR       = 1.2;   // SL never closer than this x ATR to the entry (0 = off)
+input double InpSLMaxATR       = 4.0;   // SL never farther than this x ATR from the entry (0 = off)
+input int    InpSLATRPeriod    = 14;    // ATR period for the distance limits (signal timeframe)
 
 input group "=== Re-entry after SL ==="
 input bool   InpReentryOn      = true;
@@ -137,6 +144,8 @@ datetime lastAlertBar  = 0;
 datetime lastFillAlert = 0;
 bool     allowAlerts   = false;
 datetime gLastBar      = 0;      // last closed bar fed to the signal engine
+bool     gNeedCalc     = false;  // full calculation postponed: higher-TF history still loading
+int      gWaitTries    = 0;
 
 int gCntBuy = 0, gCntSell = 0, gCntTP1 = 0, gCntTP2 = 0, gCntSL = 0, gCntLoss = 0;
 
@@ -243,7 +252,7 @@ int OnInit()
    PlotIndexSetDouble(2, PLOT_EMPTY_VALUE, EMPTY_VALUE);
    PlotIndexSetDouble(3, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "Lukes MTF Ind");
+   IndicatorSetString(INDICATOR_SHORTNAME, "St.Lukes Ind");
    gEmaFast = iMA(_Symbol, InpTrendTF, InpTrendFast, 0, MODE_EMA, PRICE_CLOSE);
    gEmaSlow = iMA(_Symbol, InpTrendTF, InpTrendSlow, 0, MODE_EMA, PRICE_CLOSE);
    PanelInit();
@@ -259,11 +268,15 @@ int OnInit()
       ChartSetInteger(0, CHART_SHIFT, true);
       ChartSetDouble(0, CHART_SHIFT_SIZE, MathMax(10, MathMin(50, InpChartShiftPct)));
      }
+   gNeedCalc = false;
+   gWaitTries = 0;
+   EventSetTimer(1);   // retries a postponed calculation and keeps the zone drawn without ticks
    return(INIT_SUCCEEDED);
   }
 
 void OnDeinit(const int reason)
   {
+   EventKillTimer();
    if(gDrag) ChartSetInteger(0, CHART_MOUSE_SCROLL, gScrollWas);
    if(gEmaFast != INVALID_HANDLE) IndicatorRelease(gEmaFast);
    if(gEmaSlow != INVALID_HANDLE) IndicatorRelease(gEmaSlow);
@@ -321,17 +334,47 @@ double Pt()
    return _Point;
   }
 
-// average true range of the N bars ending at bar time t (signal timeframe)
-double ATRAt(const datetime t)
+// average true range of the `period` bars ending at bar time t (signal timeframe)
+double ATRAtN(const datetime t, const int period)
   {
    MqlRates r[];
    ArraySetAsSeries(r, false);
-   int n = CopyRates(_Symbol, _Period, t, InpSLBufATRPeriod + 1, r);
+   int n = CopyRates(_Symbol, _Period, t, (int)MathMax(1, period) + 1, r);
    if(n < 2) return 0.0;
    double sum = 0;
    for(int i = 1; i < n; i++)
       sum += MathMax(r[i].high, r[i - 1].close) - MathMin(r[i].low, r[i - 1].close);
    return sum / (n - 1);
+  }
+
+double ATRAt(const datetime t) { return ATRAtN(t, InpSLBufATRPeriod); }
+
+// lowest low (dir > 0) / highest high (dir < 0) of the InpSLStructBars bars ending at
+// bar time t; `fallback` (the signal candle's own low / high) is always included
+double StructExtreme(const int dir, const datetime t, const double fallback)
+  {
+   double x = fallback;
+   if(!InpSLStructOn || InpSLStructBars <= 1) return x;
+   MqlRates r[];
+   int n = CopyRates(_Symbol, _Period, t, InpSLStructBars, r);
+   for(int i = 0; i < n; i++)
+     {
+      if(dir > 0 && r[i].low  < x) x = r[i].low;
+      if(dir < 0 && r[i].high > x) x = r[i].high;
+     }
+   return x;
+  }
+
+// keep the SL between InpSLMinATR and InpSLMaxATR x ATR from the entry
+double ClampSLDist(const int dir, const double entry, const double sl, const datetime t)
+  {
+   if(InpSLMinATR <= 0 && InpSLMaxATR <= 0) return sl;
+   double atr = ATRAtN(t, InpSLATRPeriod);
+   if(atr <= 0) return sl;
+   double dist = (dir > 0 ? entry - sl : sl - entry);
+   if(InpSLMaxATR > 0 && dist > InpSLMaxATR * atr) dist = InpSLMaxATR * atr;
+   if(InpSLMinATR > 0 && dist < InpSLMinATR * atr) dist = InpSLMinATR * atr;   // the minimum wins
+   return (dir > 0 ? entry - dist : entry + dist);
   }
 
 // SL buffer for a signal on bar time t: fixed points, or ATR-scaled, plus spread
@@ -387,7 +430,8 @@ bool BuildPendingPrices(const int dir, const Candle &bar, double &entry, double 
 
    if(dir > 0)
      {
-      sl = bar.l - PointBuf(bar.t);
+      // structure stop: beyond the lowest low of the last N bars (not just the signal candle)
+      sl = StructExtreme(1, bar.t, bar.l) - PointBuf(bar.t);
       if(InpPendingOn)
         {
          if(InpPendingType == PEND_LIMIT)
@@ -399,11 +443,13 @@ bool BuildPendingPrices(const int dir, const Candle &bar, double &entry, double 
         }
       else
          entry = bar.c;
+      sl = ClampSLDist(1, entry, sl, bar.t);
       if(entry <= sl) return false;
      }
    else
      {
-      sl = bar.h + PointBuf(bar.t);
+      // structure stop: beyond the highest high of the last N bars
+      sl = StructExtreme(-1, bar.t, bar.h) + PointBuf(bar.t);
       if(InpPendingOn)
         {
          if(InpPendingType == PEND_LIMIT)
@@ -415,18 +461,19 @@ bool BuildPendingPrices(const int dir, const Candle &bar, double &entry, double 
         }
       else
          entry = bar.c;
+      sl = ClampSLDist(-1, entry, sl, bar.t);
       if(entry >= sl) return false;
      }
    return true;
   }
 
-void ArmIdea(const int dir, const Candle &bar, const bool re)
+bool ArmIdea(const int dir, const Candle &bar, const bool re)
   {
    double entry = 0, sl = 0;
    if(!BuildPendingPrices(dir, bar, entry, sl))
      {
       EndIdea(idea.state == IDEA_SL_WAIT ? " [SL HIT]" : " [CANCELLED]", bar.t);
-      return;
+      return false;
      }
    idea.signalTime = bar.t;
    idea.slTime = 0;
@@ -439,6 +486,7 @@ void ArmIdea(const int dir, const Candle &bar, const bool re)
    idea.state = (InpPendingOn ? IDEA_PENDING : IDEA_LIVE);
    if(idea.state == IDEA_LIVE)
       idea.fillTime = bar.t;
+   return true;
   }
 
 bool TouchedLevel(const Candle &bar, const double price)
@@ -646,9 +694,23 @@ Bias TFBiasNow(ENUM_TIMEFRAMES tf)
 
 Bias TFBiasAt(ENUM_TIMEFRAMES tf, const datetime t)
   {
+   Bias none; none.dir = 0; none.strong = false;
    int sh = ClosedShiftAt(tf, t);
-   if(sh < 0) return TFBiasNow(tf);
+   if(sh < 0) return none;   // (before: the CURRENT bias was used for an old bar)
    return BiasFromTwo(CandleAtShift(tf, sh), CandleAtShift(tf, sh + 1));
+  }
+
+// all higher timeframes have history loaded and synchronized
+bool HTFReady()
+  {
+   ENUM_TIMEFRAMES tfs[4];
+   tfs[0] = InpTF_D; tfs[1] = InpTF_H4; tfs[2] = InpTF_H1; tfs[3] = InpTF_M5;
+   for(int i = 0; i < 4; i++)
+     {
+      if(iTime(_Symbol, tfs[i], 1) == 0) return false;
+      if(!(bool)SeriesInfoInteger(_Symbol, tfs[i], SERIES_SYNCHRONIZED)) return false;
+     }
+   return true;
   }
 
 bool QualityBullTrigger(const Candle &k, const double prevHigh)
@@ -852,7 +914,7 @@ string StateText()
   }
 
 //+------------------------------------------------------------------+
-//| Dashboard panel (same style as Lukes MTF EA)                     |
+//| Dashboard panel (same style as St.Lukes EA)                      |
 //+------------------------------------------------------------------+
 #define PPRE    "CSMTF_P_"
 int  gPX = 0, gPY = 0, gPanelH = 0;
@@ -1010,8 +1072,8 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_LIVE)    { st = (idea.dir > 0 ? "LIVE BUY" : "LIVE SELL"); sc = (idea.dir > 0 ? InpBuyColor : InpSellColor); }
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
-   PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES MTF IND", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.85  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T1", gPX + 10, gPY + 6, "ST.LUKES IND", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.86  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -1165,7 +1227,16 @@ void PanelMouse(const long lparam, const double dparam, const string sparam)
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
   {
    if(id == CHARTEVENT_MOUSE_MOVE) PanelMouse(lparam, dparam, sparam);
-   else if(id == CHARTEVENT_CHART_CHANGE) DrawPanel(true);
+   else if(id == CHARTEVENT_CHART_CHANGE) { DrawPanel(true); DrawLiveZone(); }
+  }
+
+void OnTimer()
+  {
+   // no tick arrives (weekend, quiet market): ask the terminal to recalculate
+   if(gNeedCalc) { ChartSetSymbolPeriod(0, _Symbol, _Period); return; }
+   // zone objects removed from outside (e.g. "delete all objects") are put back
+   if(InpShowZones && (idea.state == IDEA_PENDING || idea.state == IDEA_LIVE)
+      && ObjectFind(0, ZPRE + "LEN0") < 0) DrawLiveZone();
   }
 
 int OnCalculate(const int rates_total,
@@ -1180,6 +1251,18 @@ int OnCalculate(const int rates_total,
                 const int &spread[])
   {
    if(rates_total < 40) return(0);
+
+   // The history replay needs D1/H4/H1/M5 data. On terminal start that data is often still
+   // loading: the replay then saw no bias on any bar, found no signals and never ran again,
+   // so no zone / levels were drawn until the next new signal. Wait for the data instead.
+   if(prev_calculated <= 0 && !HTFReady() && gWaitTries < 60)
+     {
+      gWaitTries++;
+      gNeedCalc = true;
+      return(0);
+     }
+   gNeedCalc = false;
+   gWaitTries = 0;
 
    ArraySetAsSeries(time, true);
    ArraySetAsSeries(open, true);
@@ -1257,24 +1340,28 @@ int OnCalculate(const int rates_total,
         {
          if(idea.dir > 0 && trigB && allowB)
            {
-            ReBuyBuf[i] = low[i];
             int rc = idea.reCount + 1;
-            ArmIdea(1, bar, true);
-            idea.reCount = rc;
-            lastBuyTime = bar.t;
-            gCntBuy++; AddEv(EV_SIG, bar.t);
-            HollowArrow(time[i], low[i], 1, InpReBuyColor, true);
+            if(ArmIdea(1, bar, true))
+              {
+               ReBuyBuf[i] = low[i];
+               idea.reCount = rc;
+               lastBuyTime = bar.t;
+               gCntBuy++; AddEv(EV_SIG, bar.t);
+               HollowArrow(time[i], low[i], 1, InpReBuyColor, true);
+              }
             didRe = true;
            }
          else if(idea.dir < 0 && trigS && allowS)
            {
-            ReSellBuf[i] = high[i];
             int rc = idea.reCount + 1;
-            ArmIdea(-1, bar, true);
-            idea.reCount = rc;
-            lastSellTime = bar.t;
-            gCntSell++; AddEv(EV_SIG, bar.t);
-            HollowArrow(time[i], high[i], -1, InpReSellColor, true);
+            if(ArmIdea(-1, bar, true))
+              {
+               ReSellBuf[i] = high[i];
+               idea.reCount = rc;
+               lastSellTime = bar.t;
+               gCntSell++; AddEv(EV_SIG, bar.t);
+               HollowArrow(time[i], high[i], -1, InpReSellColor, true);
+              }
             didRe = true;
            }
         }
@@ -1287,19 +1374,23 @@ int OnCalculate(const int rates_total,
 
          if(free && trigB && allowB && coolB)
            {
-            BuyBuf[i] = low[i];
-            lastBuyTime = bar.t;
-            ArmIdea(1, bar, false);
-            gCntBuy++; AddEv(EV_SIG, bar.t);
-            HollowArrow(time[i], low[i], 1, InpBuyColor, false);
+            if(ArmIdea(1, bar, false))
+              {
+               BuyBuf[i] = low[i];
+               lastBuyTime = bar.t;
+               gCntBuy++; AddEv(EV_SIG, bar.t);
+               HollowArrow(time[i], low[i], 1, InpBuyColor, false);
+              }
            }
          else if(free && trigS && allowS && coolS)
            {
-            SellBuf[i] = high[i];
-            lastSellTime = bar.t;
-            ArmIdea(-1, bar, false);
-            gCntSell++; AddEv(EV_SIG, bar.t);
-            HollowArrow(time[i], high[i], -1, InpSellColor, false);
+            if(ArmIdea(-1, bar, false))
+              {
+               SellBuf[i] = high[i];
+               lastSellTime = bar.t;
+               gCntSell++; AddEv(EV_SIG, bar.t);
+               HollowArrow(time[i], high[i], -1, InpSellColor, false);
+              }
            }
         }
      }
@@ -1326,14 +1417,14 @@ void FireAlert(const string side, const datetime barTime, const double barClose)
                            DoubleToString(idea.tp1, _Digits),
                            DoubleToString(idea.tp2, _Digits));
 
-   string msg = StringFormat("Lukes MTF %s %s | %s | close %s | %s%s",
+   string msg = StringFormat("St.Lukes %s %s | %s | close %s | %s%s",
                              side, _Symbol, tf, DoubleToString(barClose, _Digits),
                              TimeToString(barTime, TIME_DATE|TIME_MINUTES), extra);
 
    if(InpAlertPopup) Alert(msg);
    if(InpAlertSound) PlaySound(InpSoundFile);
    if(InpAlertPush)  SendNotification(msg);
-   if(InpAlertEmail) SendMail("Lukes MTF " + side + " " + _Symbol, msg);
+   if(InpAlertEmail) SendMail("St.Lukes " + side + " " + _Symbol, msg);
   }
 
 void CheckAlerts(const datetime barTime, const double barClose)

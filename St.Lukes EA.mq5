@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
-//| Lukes MTF EA                                                     |
-//| Trades the signals of the Lukes MTF Ind indicator.               |
+//| St.Lukes EA                                                      |
+//| Trades the signals of the St.Lukes Ind indicator.                |
 //| Rules: see EA_SPEC.md                                            |
 //+------------------------------------------------------------------+
-#property copyright "Lukes MTF EA"
+#property copyright "St.Lukes EA"
 #property link      ""
-#property version   "1.20"
+#property version   "1.21"
 
 #include <Trade/Trade.mqh>
 
@@ -42,7 +42,7 @@ input int             InpHybridMarketPct = 50;          // HYBRID: % of the lot 
 input ENUM_HYBRID_FALLBACK InpHybridFallback = HYB_ALL_PENDING; // HYBRID: lot too small to split -> put it all in as
 input bool            InpHybridSplitSingle = false;     // HYBRID in Single trades: split into market + pending (false = ONE market trade)
 input long            InpMagic       = 26092501;
-input string          InpComment     = "LukesEA";
+input string          InpComment     = "StLukesEA";
 input int             InpSlippagePts = 30;       // max slippage (points)
 
 enum ENUM_SLBUF_MODE
@@ -83,6 +83,13 @@ input bool           InpPendingUseRange = true;  // use max(points, range*retrac
 input int            InpPendingExpire   = 12;    // cancel pending after N closed bars
 input int            InpMinSLGapPts     = 15;    // keep pending entry this far from SL
 
+input group "=== Stop Loss (structure) ==="
+input bool   InpSLStructOn     = true;  // SL beyond the lowest low (buy) / highest high (sell) of the last N bars
+input int    InpSLStructBars   = 15;    // structure lookback in bars (signal bar included)
+input double InpSLMinATR       = 1.2;   // SL never closer than this x ATR to the entry (0 = off)
+input double InpSLMaxATR       = 4.0;   // SL never farther than this x ATR from the entry (0 = off)
+input int    InpSLATRPeriod    = 14;    // ATR period for the distance limits (signal timeframe)
+
 input group "=== Re-entry after SL ==="
 input bool   InpReentryOn      = true;
 input int    InpSLBufferPts    = 20;    // minimum SL buffer (points)
@@ -99,7 +106,7 @@ input int    InpReentryCool    = 3;
 
 input group "=== Single Trades ==="
 input double InpSingleLot       = 0.01;    // lot of every signal trade (also the first trade of a grid basket)
-input double InpSLExpandPct     = 50.0;    // Single trades: widen the SL distance by this % (0 = signal SL). TP unchanged
+input double InpSLExpandPct     = 0.0;     // Single trades: widen the SL distance by this % (0 = signal SL; the structure stop replaces the old 50%). TP unchanged
 input bool   InpTPFromFill      = false;   // market entry: TP1 from fill price (same R) instead of indicator TP1
 input bool   InpCloseOnOpposite = true;    // opposite signal closes the trade and reverses
 input bool   InpTrailOn         = false;   // trailing stop
@@ -157,14 +164,14 @@ input int    InpPanelRowH    = 15;
 input ENUM_TIMEFRAMES InpTrendTF = PERIOD_H1;   // timeframe for the EMA trend line on the panel
 input int    InpTrendFast    = 50;
 input int    InpTrendSlow    = 200;
-input bool   InpLogToFile    = true;       // MQL5/Files/LukesEA_log.csv
+input bool   InpLogToFile    = true;       // MQL5/Files/StLukesEA_log.csv
 input color  InpBuyColor     = clrAqua;
 input color  InpSellColor    = clrMagenta;
 input color  InpReBuyColor   = clrGold;
 input color  InpReSellColor  = clrYellow;
 
 #define EAPRE   "LEA_"
-#define LOGFILE "LukesEA_log.csv"
+#define LOGFILE "StLukesEA_log.csv"
 
 CTrade   trade;
 
@@ -208,7 +215,7 @@ struct Bias
   };
 
 //+------------------------------------------------------------------+
-//| Signal engine – copied from Lukes MTF Ind. Keep in sync.         |
+//| Signal engine – copied from St.Lukes Ind. Keep in sync.          |
 //+------------------------------------------------------------------+
 void ResetCounts()
   {
@@ -239,17 +246,47 @@ double Pt()
    return _Point;
   }
 
-// average true range of the N bars ending at bar time t (signal timeframe)
-double ATRAt(const datetime t)
+// average true range of the `period` bars ending at bar time t (signal timeframe)
+double ATRAtN(const datetime t, const int period)
   {
    MqlRates r[];
    ArraySetAsSeries(r, false);
-   int n = CopyRates(_Symbol, _Period, t, InpSLBufATRPeriod + 1, r);
+   int n = CopyRates(_Symbol, _Period, t, (int)MathMax(1, period) + 1, r);
    if(n < 2) return 0.0;
    double sum = 0;
    for(int i = 1; i < n; i++)
       sum += MathMax(r[i].high, r[i - 1].close) - MathMin(r[i].low, r[i - 1].close);
    return sum / (n - 1);
+  }
+
+double ATRAt(const datetime t) { return ATRAtN(t, InpSLBufATRPeriod); }
+
+// lowest low (dir > 0) / highest high (dir < 0) of the InpSLStructBars bars ending at
+// bar time t; `fallback` (the signal candle's own low / high) is always included
+double StructExtreme(const int dir, const datetime t, const double fallback)
+  {
+   double x = fallback;
+   if(!InpSLStructOn || InpSLStructBars <= 1) return x;
+   MqlRates r[];
+   int n = CopyRates(_Symbol, _Period, t, InpSLStructBars, r);
+   for(int i = 0; i < n; i++)
+     {
+      if(dir > 0 && r[i].low  < x) x = r[i].low;
+      if(dir < 0 && r[i].high > x) x = r[i].high;
+     }
+   return x;
+  }
+
+// keep the SL between InpSLMinATR and InpSLMaxATR x ATR from the entry
+double ClampSLDist(const int dir, const double entry, const double sl, const datetime t)
+  {
+   if(InpSLMinATR <= 0 && InpSLMaxATR <= 0) return sl;
+   double atr = ATRAtN(t, InpSLATRPeriod);
+   if(atr <= 0) return sl;
+   double dist = (dir > 0 ? entry - sl : sl - entry);
+   if(InpSLMaxATR > 0 && dist > InpSLMaxATR * atr) dist = InpSLMaxATR * atr;
+   if(InpSLMinATR > 0 && dist < InpSLMinATR * atr) dist = InpSLMinATR * atr;   // the minimum wins
+   return (dir > 0 ? entry - dist : entry + dist);
   }
 
 // SL buffer for a signal on bar time t: fixed points, or ATR-scaled, plus spread
@@ -305,7 +342,8 @@ bool BuildPendingPrices(const int dir, const Candle &bar, double &entry, double 
 
    if(dir > 0)
      {
-      sl = bar.l - PointBuf(bar.t);
+      // structure stop: beyond the lowest low of the last N bars (not just the signal candle)
+      sl = StructExtreme(1, bar.t, bar.l) - PointBuf(bar.t);
       if(InpPendingOn)
         {
          if(InpPendingType == PEND_LIMIT)
@@ -317,11 +355,13 @@ bool BuildPendingPrices(const int dir, const Candle &bar, double &entry, double 
         }
       else
          entry = bar.c;
+      sl = ClampSLDist(1, entry, sl, bar.t);
       if(entry <= sl) return false;
      }
    else
      {
-      sl = bar.h + PointBuf(bar.t);
+      // structure stop: beyond the highest high of the last N bars
+      sl = StructExtreme(-1, bar.t, bar.h) + PointBuf(bar.t);
       if(InpPendingOn)
         {
          if(InpPendingType == PEND_LIMIT)
@@ -333,18 +373,19 @@ bool BuildPendingPrices(const int dir, const Candle &bar, double &entry, double 
         }
       else
          entry = bar.c;
+      sl = ClampSLDist(-1, entry, sl, bar.t);
       if(entry >= sl) return false;
      }
    return true;
   }
 
-void ArmIdea(const int dir, const Candle &bar, const bool re)
+bool ArmIdea(const int dir, const Candle &bar, const bool re)
   {
    double entry = 0, sl = 0;
    if(!BuildPendingPrices(dir, bar, entry, sl))
      {
       EndIdea(idea.state == IDEA_SL_WAIT ? " [SL HIT]" : " [CANCELLED]", bar.t);
-      return;
+      return false;
      }
    idea.signalTime = bar.t;
    idea.slTime = 0;
@@ -357,6 +398,7 @@ void ArmIdea(const int dir, const Candle &bar, const bool re)
    idea.state = (InpPendingOn ? IDEA_PENDING : IDEA_LIVE);
    if(idea.state == IDEA_LIVE)
       idea.fillTime = bar.t;
+   return true;
   }
 
 bool TouchedLevel(const Candle &bar, const double price)
@@ -562,9 +604,23 @@ Bias TFBiasNow(ENUM_TIMEFRAMES tf)
 
 Bias TFBiasAt(ENUM_TIMEFRAMES tf, const datetime t)
   {
+   Bias none; none.dir = 0; none.strong = false;
    int sh = ClosedShiftAt(tf, t);
-   if(sh < 0) return TFBiasNow(tf);
+   if(sh < 0) return none;   // (before: the CURRENT bias was used for an old bar)
    return BiasFromTwo(CandleAtShift(tf, sh), CandleAtShift(tf, sh + 1));
+  }
+
+// all higher timeframes have history loaded and synchronized
+bool HTFReady()
+  {
+   ENUM_TIMEFRAMES tfs[4];
+   tfs[0] = InpTF_D; tfs[1] = InpTF_H4; tfs[2] = InpTF_H1; tfs[3] = InpTF_M5;
+   for(int i = 0; i < 4; i++)
+     {
+      if(iTime(_Symbol, tfs[i], 1) == 0) return false;
+      if(!(bool)SeriesInfoInteger(_Symbol, tfs[i], SERIES_SYNCHRONIZED)) return false;
+     }
+   return true;
   }
 
 bool QualityBullTrigger(const Candle &k, const double prevHigh)
@@ -655,7 +711,7 @@ int ProcessBar(const int i)
       if(idea.dir > 0 && trigB && allowB)
         {
          int rc = idea.reCount + 1;
-         ArmIdea(1, bar, true);
+         if(!ArmIdea(1, bar, true)) return 0;
          idea.reCount = rc;
          lastBuyTime = bar.t;
          gCntBuy++;
@@ -664,7 +720,7 @@ int ProcessBar(const int i)
       else if(idea.dir < 0 && trigS && allowS)
         {
          int rc = idea.reCount + 1;
-         ArmIdea(-1, bar, true);
+         if(!ArmIdea(-1, bar, true)) return 0;
          idea.reCount = rc;
          lastSellTime = bar.t;
          gCntSell++;
@@ -678,15 +734,15 @@ int ProcessBar(const int i)
 
    if(free && trigB && allowB && coolB)
      {
+      if(!ArmIdea(1, bar, false)) return 0;
       lastBuyTime = bar.t;
-      ArmIdea(1, bar, false);
       gCntBuy++;
       return 1;
      }
    if(free && trigS && allowS && coolS)
      {
+      if(!ArmIdea(-1, bar, false)) return 0;
       lastSellTime = bar.t;
-      ArmIdea(-1, bar, false);
       gCntSell++;
       return -1;
      }
@@ -725,7 +781,7 @@ string Px(const double p) { return DoubleToString(p, _Digits); }
 void Log(const string event, const string details)
   {
    gLastEvent = TimeToString(TimeCurrent(), TIME_DATE|TIME_MINUTES) + "  " + event + "  " + details;
-   Print("LukesEA ", event, " | ", details);
+   Print("StLukesEA ", event, " | ", details);
    if(!InpLogToFile) return;
    int h = FileOpen(LOGFILE, FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ|FILE_SHARE_WRITE, ',');
    if(h == INVALID_HANDLE) return;
@@ -738,7 +794,7 @@ void Log(const string event, const string details)
 
 void Notify(const string msg)
   {
-   string full = "Lukes MTF EA " + _Symbol + " | " + msg;
+   string full = "St.Lukes EA " + _Symbol + " | " + msg;
    if(InpAlertPopup) Alert(full);
    if(InpAlertSound) PlaySound(InpSoundFile);
    if(InpAlertPush)  SendNotification(full);
@@ -883,6 +939,7 @@ void DeleteOrders(const string why)
   }
 
 // grid "close at TP1" level survives restarts in a terminal global variable
+// (key keeps the old "LukesEA_" name so running baskets carry over after the rename)
 string TP1Key() { return "LukesEA_" + _Symbol + "_" + IntegerToString(InpMagic) + "_TP1"; }
 void   SaveTP1(const double p) { GlobalVariableSet(TP1Key(), p); }
 double LoadTP1() { return (GlobalVariableCheck(TP1Key()) ? GlobalVariableGet(TP1Key()) : 0.0); }
@@ -979,6 +1036,9 @@ bool OpenEntryAs(const int dir, const double lotIn, const bool withStops, const 
       Log("SKIP", StringFormat("%s: price %s already beyond SL %s", tag, Px(price), Px(sl)));
       return false;
      }
+   // market entry: the price is not the signal Entry, so re-apply the ATR distance limits to it
+   if(!pending)
+      sl = NormalizeDouble(ClampSLDist(dir, price, sl, idea.signalTime), _Digits);
    double tp1 = (pending ? NormalizeDouble(idea.tp1, _Digits) : MarketTP1(dir, price, sl));
    double risk = MathAbs(price - sl);
    if(!pending && tpFromFill)
@@ -1559,9 +1619,7 @@ bool WarmUp()
   {
    int total = Bars(_Symbol, _Period);
    if(total < 40) return false;
-   if(iTime(_Symbol, InpTF_D, 1) == 0 || iTime(_Symbol, InpTF_H4, 1) == 0 ||
-      iTime(_Symbol, InpTF_H1, 1) == 0 || iTime(_Symbol, InpTF_M5, 1) == 0)
-      return false;   // higher timeframe history still loading
+   if(!HTFReady()) return false;   // higher timeframe history still loading
 
    ResetIdea();
    ResetCounts();
@@ -1584,17 +1642,30 @@ void OnNewBars()
    if(sh > 1) from = sh - 1;
 
    int sig = 0;
+   datetime sigBar = 0;
    for(int i = from; i >= 1; i--)
      {
-      sig = ProcessBar(i);
-      if(sig != 0) { DrawSignal(i, sig); AddSignalTime(iTime(_Symbol, _Period, i)); }
+      int s = ProcessBar(i);
+      if(s != 0)
+        {
+         sig = s;
+         sigBar = iTime(_Symbol, _Period, i);
+         DrawSignal(i, s);
+         AddSignalTime(sigBar);
+        }
      }
    gLastProcessed = iTime(_Symbol, _Period, 1);
 
    if(InpMode != MODE_SIGNALS) SyncOrders();
    if(sig == 0) return;
 
-   gLastSignal = SigName(sig) + " " + TimeToString(gLastProcessed, TIME_DATE|TIME_MINUTES);
+   gLastSignal = SigName(sig) + " " + TimeToString(sigBar, TIME_DATE|TIME_MINUTES);
+   // several bars processed at once (missed ticks): the signal may have finished already
+   if(idea.signalTime != sigBar || (idea.state != IDEA_PENDING && idea.state != IDEA_LIVE))
+     {
+      Log("SKIP", SigName(sig) + ": signal of " + TimeToString(sigBar, TIME_DATE|TIME_MINUTES) + " already finished");
+      return;
+     }
    string lv = StringFormat("%s  Entry %s  SL %s  TP1 %s  TP2 %s", SigName(sig),
                             Px(idea.entry), Px(idea.sl), Px(idea.tp1), Px(idea.tp2));
    Log("SIGNAL", lv);
@@ -1706,7 +1777,7 @@ int SignalsToday()
 // same direction are one trade (a grid basket closing together counts once).
 string gTodayKeys[];   // signal keys entered today (for the "pending order" row)
 
-// signal key from an entry comment "LukesEA|<signal time>" ("" for grid levels)
+// signal key from an entry comment "<InpComment>|<signal time>" ("" for grid levels)
 string SigKey(const string cmt)
   {
    if(StringFind(cmt, "|grid") >= 0) return "";
@@ -1749,7 +1820,7 @@ void TodayStats(int &trades, int &wins, int &losses, double &pl,
       long entry = HistoryDealGetInteger(tk, DEAL_ENTRY);
       if(entry == DEAL_ENTRY_IN)
         {
-         // first trade(s) of a signal: comment "LukesEA|<signal time>"; grid levels: "LukesEA|gridN"
+         // first trade(s) of a signal: comment "<InpComment>|<signal time>"; grid levels: "<InpComment>|gridN"
          string cmt = HistoryDealGetString(tk, DEAL_COMMENT);
          string k   = SigKey(cmt);
          if(StringFind(cmt, "|grid") >= 0) gridAdds++;
@@ -1900,8 +1971,8 @@ void UpdatePanel(const bool force = false)
    else if(blk != "")               { st = "NOT TRADING";  sc = C_DN; }
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
-   PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.20  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T1", gPX + 10, gPY + 6, "ST.LUKES EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.21  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -1953,6 +2024,8 @@ void UpdatePanel(const bool force = false)
    PSection("EA");
    PRow("Mode", ModeName(), (InpMode == MODE_SIGNALS ? C_INFO : C_TXT));
    PRow("Entry", EntryName(), C_TXT);
+   PRow("Stop loss", (InpSLStructOn ? StringFormat("structure %d bars", InpSLStructBars) : "signal candle")
+                     + StringFormat("  %.1f-%.1f ATR", InpSLMinATR, InpSLMaxATR), C_TXT);
    if(InpMode == MODE_SINGLE && InpSLExpandPct > 0)
       PRow("SL widened", StringFormat("+%.0f%%", InpSLExpandPct), C_WARN);
    PRow("Trading", (blk == "" ? "ENABLED" : "OFF"), (blk == "" ? C_UP : C_DN));
@@ -2117,7 +2190,7 @@ int OnInit()
    trade.LogLevel(LOG_LEVEL_ERRORS);
 
    if(_Period != PERIOD_M5)
-      Print("LukesEA: built for M5, running on ", EnumToString(_Period));
+      Print("StLukesEA: built for M5, running on ", EnumToString(_Period));
 
    gWarm = false;
    gClosing = false;
