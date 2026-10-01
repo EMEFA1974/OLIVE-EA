@@ -1,9 +1,9 @@
 //+------------------------------------------------------------------+
-//| LukesPro MTF EA                                                  |
-//| Trades the signals of the LukesPro MTF Ind indicator.            |
+//| LukesMax MTF EA                                                  |
+//| Trades the signals of the LukesMax MTF Ind indicator.            |
 //| Rules: see EA_SPEC.md                                            |
 //+------------------------------------------------------------------+
-#property copyright "LukesPro MTF EA"
+#property copyright "LukesMax MTF EA"
 #property link      ""
 #property version   "1.99"
 
@@ -1060,7 +1060,7 @@ string Px(const double p) { return DoubleToString(p, _Digits); }
 void Log(const string event, const string details)
   {
    gLastEvent = TimeToString(TimeCurrent(), TIME_DATE|TIME_MINUTES) + "  " + event + "  " + details;
-   Print("LukesPro EA ", event, " | ", details);
+   Print("LukesMax EA ", event, " | ", details);
    if(!InpLogToFile) return;
    int h = FileOpen(LOGFILE, FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ|FILE_SHARE_WRITE, ',');
    if(h == INVALID_HANDLE) return;
@@ -1073,7 +1073,7 @@ void Log(const string event, const string details)
 
 void Notify(const string msg)
   {
-   string full = "LukesPro MTF EA " + _Symbol + " | " + msg;
+   string full = "LukesMax MTF EA " + _Symbol + " | " + msg;
    if(InpAlertPopup) Alert(full);
    if(InpAlertSound) PlaySound(InpSoundFile);
    if(InpAlertPush)  SendNotification(full);
@@ -2334,7 +2334,7 @@ void UpdatePanel(const bool force = false)
    else if(blk != "")               { st = "NOT TRADING";  sc = C_DN; }
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
-   PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKESPRO MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
+   PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKESMAX MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
    PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.99  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
@@ -2562,11 +2562,11 @@ int OnInit()
    gEmaSlow = iMA(_Symbol, InpTrendTF, InpTrendSlow, 0, MODE_EMA, PRICE_CLOSE);
    if(!FiltersInit())
      {
-      Print("LukesPro EA: could not create the filter indicators (EMA / ATR / ADX)");
+      Print("LukesMax EA: could not create the filter indicators (EMA / ATR / ADX)");
       return(INIT_FAILED);
      }
    if(!gTFOk)
-      Print("LukesPro EA: chart ", EnumToString(_Period), " is not allowed by InpChartTF (", ChartTFName(),
+      Print("LukesMax EA: chart ", EnumToString(_Period), " is not allowed by InpChartTF (", ChartTFName(),
             "): no signals and no new trades, open trades are still managed");
    CleanPDKeys();
    ArrayResize(gSigTimes, 0);
