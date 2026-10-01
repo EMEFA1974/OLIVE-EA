@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Lukes MTF EA"
 #property link      ""
-#property version   "1.20"
+#property version   "1.21"
 
 #include <Trade/Trade.mqh>
 
@@ -37,13 +37,19 @@ enum ENUM_BASKET_TP
 
 input group "=== EA Mode ==="
 input ENUM_EA_MODE    InpMode        = MODE_GRID;
-input ENUM_ENTRY_TYPE InpEntryType   = ENTRY_HYBRID;    // Entry type: MARKET / PENDING / HYBRID
+input ENUM_ENTRY_TYPE InpEntryType   = ENTRY_PENDING;    // Entry type: MARKET / PENDING / HYBRID
 input int             InpHybridMarketPct = 50;          // HYBRID: % of the lot opened at market
 input ENUM_HYBRID_FALLBACK InpHybridFallback = HYB_ALL_PENDING; // HYBRID: lot too small to split -> put it all in as
 input bool            InpHybridSplitSingle = false;     // HYBRID in Single trades: split into market + pending (false = ONE market trade)
 input long            InpMagic       = 26092501;
 input string          InpComment     = "LukesEA";
 input int             InpSlippagePts = 30;       // max slippage (points)
+
+enum ENUM_SL_MODE
+  {
+   SLMODE_CANDLE = 0,   // Signal candle low/high
+   SLMODE_SWING  = 1    // Swing low/high of the last N candles
+  };
 
 enum ENUM_SLBUF_MODE
   {
@@ -78,9 +84,9 @@ input group "=== Pending Entry ==="
 input bool           InpPendingOn       = true;
 input ENUM_PEND_TYPE InpPendingType     = PEND_LIMIT;
 input int            InpPendingPts      = 40;    // minimum distance in points
-input double         InpPendingRetrace  = 0.40;  // fraction of signal candle range
+input double         InpPendingRetrace  = 0.65;  // fraction of signal candle range (deeper = enter on the pullback)
 input bool           InpPendingUseRange = true;  // use max(points, range*retrace)
-input int            InpPendingExpire   = 12;    // cancel pending after N closed bars
+input int            InpPendingExpire   = 24;    // cancel pending after N closed bars
 input int            InpMinSLGapPts     = 15;    // keep pending entry this far from SL
 
 input group "=== Re-entry after SL ==="
@@ -91,6 +97,14 @@ input double InpSLBufATRMult   = 0.15;  // ATR mode: buffer = max(min points, AT
 input int    InpSLBufATRPeriod = 14;    // ATR period (signal timeframe)
 input bool   InpSLBufAddSpread = true;  // add the signal bar's spread to the buffer
 input bool   InpSpreadAware    = true;  // check sell SL/TP and buy entries at the ASK (bar price + bar spread), like the broker
+input ENUM_SL_MODE InpSLMode    = SLMODE_SWING;  // SL behind: the signal candle, or the swing of the last N candles
+input int    InpSLSwingBars    = 6;     // SWING mode: lowest low / highest high of the last N candles (incl. signal candle)
+
+input group "=== Filters / Confirmation ==="
+input bool   InpNoTradeOn      = true;    // no NEW signals inside the time window below (server time)
+input string InpNoTradeStart   = "23:00"; // window start HH:MM (rollover: wide spread, choppy)
+input string InpNoTradeEnd     = "01:30"; // window end HH:MM (may cross midnight)
+input bool   InpReclaimOn      = false;   // wait for price to pull back to Entry AND a candle to close back in the signal direction, then enter at that close
 input double InpRR1            = 1.0;   // TP1 R-multiple
 input double InpRR2            = 2.0;   // TP2 R-multiple
 input int    InpMaxReentry     = 2;
@@ -99,7 +113,7 @@ input int    InpReentryCool    = 3;
 
 input group "=== Single Trades ==="
 input double InpSingleLot       = 0.01;    // lot of every signal trade (also the first trade of a grid basket)
-input double InpSLExpandPct     = 50.0;    // Single trades: widen the SL distance by this % (0 = signal SL). TP unchanged
+input double InpSLExpandPct     = 0.0;     // Single trades: widen the SL distance by this % (0 = signal SL). TP unchanged
 input bool   InpTPFromFill      = false;   // market entry: TP1 from fill price (same R) instead of indicator TP1
 input bool   InpCloseOnOpposite = true;    // opposite signal closes the trade and reverses
 input bool   InpTrailOn         = false;   // trailing stop
@@ -191,6 +205,7 @@ struct Idea
    int       reCount, slBarAge, pendAge;
    bool      tp1Done;
    bool      re;
+   bool      zoneHit;     // reclaim mode: price has pulled back to the Entry
   };
 Idea idea;
 
@@ -224,6 +239,7 @@ void ResetIdea()
    idea.reCount = idea.slBarAge = idea.pendAge = 0;
    idea.tp1Done = false;
    idea.re = false;
+   idea.zoneHit = false;
   }
 
 // the indicator uses EndIdea to keep its chart zone; the EA only needs the reset
@@ -297,6 +313,43 @@ void ApplyLevels(const int dir, const double entry, const double sl)
      }
   }
 
+// price the SL is placed behind: the signal candle's low/high, or the swing
+// low/high of the last InpSLSwingBars candles ending with the signal candle
+double SLAnchor(const int dir, const Candle &bar)
+  {
+   double a = (dir > 0 ? bar.l : bar.h);
+   if(InpSLMode != SLMODE_SWING || InpSLSwingBars <= 1) return a;
+   MqlRates r[];
+   int n = CopyRates(_Symbol, _Period, bar.t, InpSLSwingBars, r);
+   for(int i = 0; i < n; i++)
+     {
+      if(dir > 0 && r[i].low  < a) a = r[i].low;
+      if(dir < 0 && r[i].high > a) a = r[i].high;
+     }
+   return a;
+  }
+
+// minutes after midnight from "HH:MM"
+int HHMM(const string s)
+  {
+   string parts[];
+   if(StringSplit(s, ':', parts) < 2) return -1;
+   return (int)StringToInteger(parts[0]) * 60 + (int)StringToInteger(parts[1]);
+  }
+
+// signal candle inside the no-trade window (server time; window may cross midnight)
+bool InNoTradeWindow(const datetime t)
+  {
+   if(!InpNoTradeOn) return false;
+   int a = HHMM(InpNoTradeStart), b = HHMM(InpNoTradeEnd);
+   if(a < 0 || b < 0 || a == b) return false;
+   MqlDateTime m; TimeToStruct(t, m);
+   int x = m.hour * 60 + m.min;
+   return (a < b ? (x >= a && x < b) : (x >= a || x < b));
+  }
+
+datetime gReclaimT = 0;   // bar time of the last reclaim entry (reclaim mode)
+
 bool BuildPendingPrices(const int dir, const Candle &bar, double &entry, double &sl)
   {
    double gap = (double)InpMinSLGapPts * Pt();
@@ -305,7 +358,7 @@ bool BuildPendingPrices(const int dir, const Candle &bar, double &entry, double 
 
    if(dir > 0)
      {
-      sl = bar.l - PointBuf(bar.t);
+      sl = SLAnchor(1, bar) - PointBuf(bar.t);
       if(InpPendingOn)
         {
          if(InpPendingType == PEND_LIMIT)
@@ -321,7 +374,7 @@ bool BuildPendingPrices(const int dir, const Candle &bar, double &entry, double 
      }
    else
      {
-      sl = bar.h + PointBuf(bar.t);
+      sl = SLAnchor(-1, bar) + PointBuf(bar.t);
       if(InpPendingOn)
         {
          if(InpPendingType == PEND_LIMIT)
@@ -353,6 +406,7 @@ void ArmIdea(const int dir, const Candle &bar, const bool re)
    idea.pendAge = 0;
    idea.tp1Done = false;
    idea.re = re;
+   idea.zoneHit = false;
    ApplyLevels(dir, entry, sl);
    idea.state = (InpPendingOn ? IDEA_PENDING : IDEA_LIVE);
    if(idea.state == IDEA_LIVE)
@@ -398,6 +452,23 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
 
       bool touched = (idea.dir > 0 ? (aL <= idea.entry && aH >= idea.entry)      // buy fills at the ask
                                    : TouchedLevel(bar, idea.entry));             // sell fills at the bid
+      if(InpReclaimOn)
+        {
+         // 1) wait for the pullback to the Entry  2) a candle closes back in the signal
+         //    direction beyond the Entry -> enter at that close (same SL, TP from new entry)
+         if(touched) idea.zoneHit = true;
+         if(!idea.zoneHit) return;
+         if(idea.dir > 0 ? (bar.l <= idea.sl) : (aH >= idea.sl)) { EndIdea(" [CANCELLED]", bar.t); return; }
+         bool reclaim = (idea.dir > 0 ? (bar.c > bar.o && bar.c > idea.entry)
+                                      : (bar.c < bar.o && bar.c < idea.entry));
+         if(!reclaim) return;
+         ApplyLevels(idea.dir, (idea.dir > 0 ? aC : bar.c), idea.sl);
+         idea.state = IDEA_LIVE;
+         idea.fillTime = bar.t;
+         idea.slBarAge = 0;
+         gReclaimT = bar.t;
+         return;            // entered at the close: SL / TP are checked from the next candle
+        }
       if(!touched) return;
       idea.state = IDEA_LIVE;
       idea.fillTime = bar.t;
@@ -638,6 +709,7 @@ int ProcessBar(const int i)
    double prevL = RecentSwingLow(i);
    bool trigB = QualityBullTrigger(bar, prevH);
    bool trigS = QualityBearTrigger(bar, prevL);
+   if(InNoTradeWindow(bar.t)) { trigB = false; trigS = false; }   // rollover / no-trade window
 
    if(InpUseM5Trigger && PeriodSeconds(_Period) <= PeriodSeconds(PERIOD_M15))
      {
@@ -933,6 +1005,7 @@ double MarketTP1(const int dir, const double price, const double sl)
 // kind: ENTRY_MARKET / ENTRY_PENDING for this order. tpFromFill: TP1 measured from the
 // market fill price with the same R multiple (hybrid market part).
 double gLastOpenTP1 = 0;   // TP1 of the last order opened by OpenEntryAs
+bool   gReclaimEntry = false;   // true while entering on a confirmed reclaim
 
 // Single trades: SL distance from the entry widened by InpSLExpandPct %.
 // Only the real order's SL moves; TP1 and the signal engine keep the signal's risk.
@@ -1084,6 +1157,12 @@ void OpenHybrid(const int dir, const double lotIn, const bool withStops, const s
 
 void EnterSignal(const int dir, const double lot, const bool withStops, const string tag)
   {
+   if(gReclaimEntry)
+     {
+      // reclaim confirmed: enter now at market with the engine's levels (TP1 from the reclaim close)
+      OpenEntryAs(dir, lot, withStops, tag + " [reclaim]", ENTRY_MARKET, false);
+      return;
+     }
    if(InpEntryType == ENTRY_HYBRID && (InpMode == MODE_GRID || !InpHybridSplitSingle))
      {
       // No split: the whole lot opens at market as ONE trade (SL = signal SL, TP1 from
@@ -1104,6 +1183,7 @@ void EnterSignal(const int dir, const double lot, const bool withStops, const st
 
 string EntryName()
   {
+   if(InpReclaimOn)                  return "Reclaim (market)";
    if(InpEntryType == ENTRY_MARKET)  return "Market";
    if(InpEntryType == ENTRY_PENDING) return "Pending";
    if(InpMode == MODE_GRID || !InpHybridSplitSingle) return "Hybrid (1 market trade)";
@@ -1123,6 +1203,11 @@ void ActOnSignal(const int sig)
    if(idea.state == IDEA_IDLE || idea.signalTime == 0)
      {
       Log("SKIP", tag + ": signal has no valid levels");
+      return;
+     }
+   if(InpReclaimOn && !gReclaimEntry)
+     {
+      Log("WAIT", tag + ": reclaim mode - waiting for the pullback to " + Px(idea.entry) + " and a reclaim candle");
       return;
      }
 
@@ -1592,6 +1677,24 @@ void OnNewBars()
    gLastProcessed = iTime(_Symbol, _Period, 1);
 
    if(InpMode != MODE_SIGNALS) SyncOrders();
+
+   // reclaim mode: the engine confirmed the pullback + reclaim on the bar that just closed
+   if(InpReclaimOn && sig == 0 && gReclaimT != 0 && gReclaimT == gLastProcessed && idea.state == IDEA_LIVE)
+     {
+      int rs = (idea.dir > 0 ? (idea.re ? 2 : 1) : (idea.re ? -2 : -1));
+      string lv2 = StringFormat("%s RECLAIM  Entry %s  SL %s  TP1 %s", SigName(rs), Px(idea.entry), Px(idea.sl), Px(idea.tp1));
+      Log("RECLAIM", lv2);
+      if(InpAlertSignals) Notify("RECLAIM " + lv2);
+      string rb = TradeBlocker();
+      if(rb != "" && InpMode != MODE_SIGNALS) { Log("SKIP", SigName(rs) + " reclaim: " + rb); return; }
+      if(InpMode != MODE_SIGNALS && !gClosing)
+        {
+         gReclaimEntry = true;
+         ActOnSignal(rs);
+         gReclaimEntry = false;
+        }
+      return;
+     }
    if(sig == 0) return;
 
    gLastSignal = SigName(sig) + " " + TimeToString(gLastProcessed, TIME_DATE|TIME_MINUTES);
@@ -1901,7 +2004,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "LUKES MTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.20  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.21  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
