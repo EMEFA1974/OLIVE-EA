@@ -1,7 +1,7 @@
 //+------------------------------------------------------------------+
-//|                                                    OliveCore.mqh |
-//|  Shared signal engine for the Olive Trend Pullback indicator     |
-//|  and the Olive EA. Both programs use this exact code, so what    |
+//|                                                    MtZionCore.mqh |
+//|  Shared signal engine for the Mt.Zion Ind indicator     |
+//|  and the Mt.Zion EA. Both programs use this exact code, so what    |
 //|  the indicator shows is what the EA trades.                      |
 //|                                                                  |
 //|  Strategy (all evaluated on CLOSED bars only - no repainting):   |
@@ -15,16 +15,16 @@
 //|   5. Risk   : SL beyond pullback swing + ATR buffer, bounded by  |
 //|               min/max ATR multiples; TP at fixed reward:risk.    |
 //+------------------------------------------------------------------+
-#ifndef OLIVE_CORE_MQH
-#define OLIVE_CORE_MQH
+#ifndef MTZION_CORE_MQH
+#define MTZION_CORE_MQH
 
-enum ENUM_OLIVE_SL_MODE
+enum ENUM_MTZION_SL_MODE
   {
-   OLIVE_SL_ATR=0,     // ATR-based (beyond pullback swing)
-   OLIVE_SL_FIXED=1    // Fixed distance in points
+   MTZION_SL_ATR=0,     // ATR-based (beyond pullback swing)
+   MTZION_SL_FIXED=1    // Fixed distance in points
   };
 
-struct OliveSettings
+struct MtZionSettings
   {
    ENUM_TIMEFRAMES   htf;            // higher timeframe for bias
    int               htfEmaPeriod;   // HTF EMA period
@@ -42,11 +42,11 @@ struct OliveSettings
    double            minSlAtr;       // minimum SL distance in ATR
    double            maxSlAtr;       // skip trade if SL wider than this (ATR)
    double            rewardRisk;     // TP = SL distance * rewardRisk
-   ENUM_OLIVE_SL_MODE slMode;        // ATR or fixed-points stop
+   ENUM_MTZION_SL_MODE slMode;        // ATR or fixed-points stop
    int               fixedSlPoints;  // stop distance when slMode = fixed
   };
 
-struct OliveSignal
+struct MtZionSignal
   {
    int               direction;      // 1 buy, -1 sell, 0 none
    datetime          barTime;        // signal bar open time
@@ -59,12 +59,12 @@ struct OliveSignal
 //+------------------------------------------------------------------+
 //| Signal engine                                                    |
 //+------------------------------------------------------------------+
-class COliveEngine
+class CMtZionEngine
   {
 private:
    string            m_symbol;
    ENUM_TIMEFRAMES   m_tf;
-   OliveSettings     m_s;
+   MtZionSettings     m_s;
    int               h_htfEma;
    int               h_fast;
    int               h_slow;
@@ -84,7 +84,7 @@ private:
    //--- final stop distance; false = setup too wide to trade (ATR mode)
    bool              StopDistance(const double swingDist,const double atr,double &dist)
      {
-      if(m_s.slMode==OLIVE_SL_FIXED)
+      if(m_s.slMode==MTZION_SL_FIXED)
         {
          dist=m_s.fixedSlPoints*SymbolInfoDouble(m_symbol,SYMBOL_POINT);
          return (dist>0);
@@ -94,13 +94,13 @@ private:
      }
 
 public:
-                     COliveEngine(void) : h_htfEma(INVALID_HANDLE),h_fast(INVALID_HANDLE),
+                     CMtZionEngine(void) : h_htfEma(INVALID_HANDLE),h_fast(INVALID_HANDLE),
                      h_slow(INVALID_HANDLE),h_rsi(INVALID_HANDLE),
                      h_adx(INVALID_HANDLE),h_atr(INVALID_HANDLE) {}
-                    ~COliveEngine(void) { Release(); }
+                    ~CMtZionEngine(void) { Release(); }
 
    //--- create indicator handles; returns false on bad settings or handle failure
-   bool              Init(const string symbol,const ENUM_TIMEFRAMES tf,const OliveSettings &s)
+   bool              Init(const string symbol,const ENUM_TIMEFRAMES tf,const MtZionSettings &s)
      {
       m_symbol=symbol;
       m_tf=(tf==PERIOD_CURRENT) ? (ENUM_TIMEFRAMES)Period() : tf;
@@ -108,7 +108,7 @@ public:
       if(m_s.htf==PERIOD_CURRENT || PeriodSeconds(m_s.htf)<PeriodSeconds(m_tf))
         {
          if(m_s.htf!=PERIOD_CURRENT)
-            PrintFormat("Olive: bias timeframe is lower than chart timeframe - using %s instead",EnumToString(m_tf));
+            PrintFormat("Mt.Zion: bias timeframe is lower than chart timeframe - using %s instead",EnumToString(m_tf));
          m_s.htf=m_tf;
         }
       if(m_s.htfSlopeBars<1)
@@ -118,9 +118,9 @@ public:
       if(m_s.fastEma<1 || m_s.slowEma<=m_s.fastEma || m_s.htfEmaPeriod<1 ||
          m_s.rsiPeriod<1 || m_s.atrPeriod<1 || m_s.adxPeriod<1 ||
          m_s.rewardRisk<=0 || m_s.minSlAtr<=0 || m_s.maxSlAtr<m_s.minSlAtr ||
-         m_s.rsiMin>=m_s.rsiMax || (m_s.slMode==OLIVE_SL_FIXED && m_s.fixedSlPoints<=0))
+         m_s.rsiMin>=m_s.rsiMax || (m_s.slMode==MTZION_SL_FIXED && m_s.fixedSlPoints<=0))
         {
-         Print("Olive: invalid strategy settings");
+         Print("Mt.Zion: invalid strategy settings");
          return false;
         }
 
@@ -133,7 +133,7 @@ public:
       if(h_htfEma==INVALID_HANDLE || h_fast==INVALID_HANDLE || h_slow==INVALID_HANDLE ||
          h_rsi==INVALID_HANDLE || h_adx==INVALID_HANDLE || h_atr==INVALID_HANDLE)
         {
-         PrintFormat("Olive: failed to create indicator handles (error %d)",GetLastError());
+         PrintFormat("Mt.Zion: failed to create indicator handles (error %d)",GetLastError());
          return false;
         }
       return true;
@@ -199,7 +199,7 @@ public:
 
    //--- evaluate the closed bar at 'shift' (>=1). Returns false only when
    //--- data is unavailable; sig.direction holds the result.
-   bool              Evaluate(const int shift,OliveSignal &sig)
+   bool              Evaluate(const int shift,MtZionSignal &sig)
      {
       ZeroMemory(sig);
       sig.barTime=iTime(m_symbol,m_tf,shift);
@@ -301,13 +301,13 @@ public:
 
    //--- like Evaluate, but suppresses a signal that merely repeats the
    //--- previous bar's signal in the same direction
-   bool              EvaluateFresh(const int shift,OliveSignal &sig)
+   bool              EvaluateFresh(const int shift,MtZionSignal &sig)
      {
       if(!Evaluate(shift,sig))
          return false;
       if(sig.direction!=0)
         {
-         OliveSignal prev;
+         MtZionSignal prev;
          if(Evaluate(shift+1,prev) && prev.direction==sig.direction)
             sig.direction=0;
         }
@@ -319,7 +319,7 @@ public:
 //| Position size so that a stop-out loses at most riskMoney.        |
 //| Returns 0 when even the minimum lot would exceed the risk.       |
 //+------------------------------------------------------------------+
-double OliveLotsForRisk(const string symbol,const ENUM_ORDER_TYPE type,
+double MtZionLotsForRisk(const string symbol,const ENUM_ORDER_TYPE type,
                         const double entry,const double sl,const double riskMoney)
   {
    if(riskMoney<=0 || entry<=0 || sl<=0 || entry==sl)
@@ -345,5 +345,5 @@ double OliveLotsForRisk(const string symbol,const ENUM_ORDER_TYPE type,
    return NormalizeDouble(lots,digits);
   }
 
-#endif // OLIVE_CORE_MQH
+#endif // MTZION_CORE_MQH
 //+------------------------------------------------------------------+

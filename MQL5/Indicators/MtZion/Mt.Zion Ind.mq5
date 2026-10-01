@@ -1,9 +1,9 @@
 //+------------------------------------------------------------------+
-//|                                           OliveTrendPullback.mq5 |
+//|                                           Mt.Zion Ind.mq5 |
 //|  Trend-pullback signal indicator. Non-repainting: signals are    |
-//|  only printed on closed bars. Uses the same engine as Olive EA.  |
+//|  only printed on closed bars. Uses the same engine as Mt.Zion EA.  |
 //+------------------------------------------------------------------+
-#property copyright "Olive"
+#property copyright "Mt.Zion"
 #property version   "1.00"
 #property description "Higher-timeframe trend + pullback entries with ATR stop, target and risk-based lot size."
 #property indicator_chart_window
@@ -30,7 +30,7 @@
 #property indicator_color4  clrTomato
 #property indicator_width4  2
 
-#include <Olive/OliveCore.mqh>
+#include <MtZion/MtZionCore.mqh>
 
 input group "Strategy (keep identical to the EA)"
 input ENUM_TIMEFRAMES InpHTF          = PERIOD_H1; // Bias timeframe
@@ -48,7 +48,7 @@ input int             InpPullbackBars = 5;         // Pullback lookback (bars)
 input double          InpSlAtrBuffer  = 0.3;       // SL buffer beyond swing (ATR)
 input double          InpMinSlAtr     = 1.0;       // Min SL distance (ATR)
 input double          InpMaxSlAtr     = 3.0;       // Max SL distance (ATR) - wider = skip
-input ENUM_OLIVE_SL_MODE InpSlMode   = OLIVE_SL_ATR; // Stop-loss mode
+input ENUM_MTZION_SL_MODE InpSlMode   = MTZION_SL_ATR; // Stop-loss mode
 input int             InpFixedSlPoints = 500;      // Fixed SL in points (500 = $5.00 on 2-digit gold)
 input double          InpRewardRisk   = 1.5;       // Reward : Risk
 
@@ -62,9 +62,9 @@ input bool            InpAlertPopup   = true;      // Popup alert on new signal
 input bool            InpAlertPush    = false;     // Push notification on new signal
 
 double g_fast[],g_fastClr[],g_slow[],g_buy[],g_sell[],g_raw[];
-COliveEngine g_engine;
+CMtZionEngine g_engine;
 datetime     g_lastAlert=0;
-const string OBJ_PREFIX="OliveTP_";
+const string OBJ_PREFIX="MtZionInd_";
 
 //+------------------------------------------------------------------+
 int OnInit()
@@ -86,7 +86,7 @@ int OnInit()
    PlotIndexSetInteger(2,PLOT_ARROW,233);
    PlotIndexSetInteger(3,PLOT_ARROW,234);
 
-   OliveSettings s;
+   MtZionSettings s;
    s.htf=InpHTF;
    s.htfEmaPeriod=InpHtfEma;
    s.htfSlopeBars=InpHtfSlopeBars;
@@ -108,7 +108,7 @@ int OnInit()
    if(!g_engine.Init(_Symbol,_Period,s))
       return INIT_PARAMETERS_INCORRECT;
 
-   IndicatorSetString(INDICATOR_SHORTNAME,"Olive Trend Pullback");
+   IndicatorSetString(INDICATOR_SHORTNAME,"Mt.Zion Ind");
    IndicatorSetInteger(INDICATOR_DIGITS,_Digits);
    return INIT_SUCCEEDED;
   }
@@ -176,7 +176,7 @@ int OnCalculate(const int rates_total,
       if(s==0)
          continue;                       // never signal on the forming bar
 
-      OliveSignal sig;
+      MtZionSignal sig;
       if(!g_engine.Evaluate(s,sig))
         {
          if(s<=2)
@@ -197,7 +197,7 @@ int OnCalculate(const int rates_total,
       (g_buy[1]!=EMPTY_VALUE || g_sell[1]!=EMPTY_VALUE))
      {
       g_lastAlert=time[1];
-      string msg=StringFormat("Olive: %s signal on %s %s",
+      string msg=StringFormat("Mt.Zion: %s signal on %s %s",
                               g_buy[1]!=EMPTY_VALUE ? "BUY" : "SELL",
                               _Symbol,EnumToString((ENUM_TIMEFRAMES)_Period));
       if(InpAlertPopup)
@@ -251,14 +251,14 @@ void UpdateLevelsAndPanel(const datetime &time[])
          break;
         }
 
-   OliveSignal sig;
+   MtZionSignal sig;
    ZeroMemory(sig);
    bool have=(lastShift>0 && g_engine.Evaluate(lastShift,sig) && sig.direction!=0);
    double lots=0;
    if(have)
      {
       double riskMoney=MathMin(AccountInfoDouble(ACCOUNT_BALANCE),AccountInfoDouble(ACCOUNT_EQUITY))*InpRiskPercent/100.0;
-      lots=OliveLotsForRisk(_Symbol,sig.direction>0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL,sig.entry,sig.sl,riskMoney);
+      lots=MtZionLotsForRisk(_Symbol,sig.direction>0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL,sig.entry,sig.sl,riskMoney);
      }
 
    if(InpShowLevels && have)
@@ -276,7 +276,7 @@ void UpdateLevelsAndPanel(const datetime &time[])
       return;
    int bias=0;
    g_engine.Bias(0,bias);
-   string txt="Olive Trend Pullback\n";
+   string txt="Mt.Zion Ind\n";
    txt+=StringFormat("Bias (%s): %s\n",EnumToString(InpHTF),bias>0 ? "BULLISH - buys only" : (bias<0 ? "BEARISH - sells only" : "NEUTRAL - stand aside"));
    if(have)
      {

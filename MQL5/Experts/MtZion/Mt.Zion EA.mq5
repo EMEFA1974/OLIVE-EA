@@ -1,21 +1,21 @@
 //+------------------------------------------------------------------+
-//|                                                      OliveEA.mq5 |
+//|                                                      Mt.Zion EA.mq5 |
 //|  Trend-pullback EA, tuned for XAUUSD M5 (H1 bias). One position  |
 //|  per symbol, stop loss on every trade, fixed-lot or risk-% size. |
 //|  No martingale, no grid, no averaging down.                      |
 //+------------------------------------------------------------------+
-#property copyright "Olive"
+#property copyright "Mt.Zion"
 #property version   "1.00"
 #property description "Trend-pullback EA: HTF bias, EMA pullback entries, ATR or fixed stops, fixed or risk-% lots,"
 #property description "daily-loss and max-drawdown guards, session, weekend and news filters."
 
 #include <Trade/Trade.mqh>
-#include <Olive/OliveCore.mqh>
+#include <MtZion/MtZionCore.mqh>
 
-enum ENUM_OLIVE_LOT_MODE
+enum ENUM_MTZION_LOT_MODE
   {
-   OLIVE_LOT_FIXED=0,  // Fixed lot
-   OLIVE_LOT_RISK=1    // Risk % of balance (lot from stop distance)
+   MTZION_LOT_FIXED=0,  // Fixed lot
+   MTZION_LOT_RISK=1    // Risk % of balance (lot from stop distance)
   };
 
 input group "Strategy (keep identical to the indicator)"
@@ -34,12 +34,12 @@ input int             InpPullbackBars = 5;         // Pullback lookback (bars)
 input double          InpSlAtrBuffer  = 0.3;       // SL buffer beyond swing (ATR)
 input double          InpMinSlAtr     = 1.0;       // Min SL distance (ATR)
 input double          InpMaxSlAtr     = 3.0;       // Max SL distance (ATR) - wider = skip
-input ENUM_OLIVE_SL_MODE InpSlMode   = OLIVE_SL_ATR; // Stop-loss mode
+input ENUM_MTZION_SL_MODE InpSlMode   = MTZION_SL_ATR; // Stop-loss mode
 input int             InpFixedSlPoints = 500;      // Fixed SL in points (500 = $5.00 on 2-digit gold)
 input double          InpRewardRisk   = 1.5;       // Reward : Risk
 
 input group "Position size"
-input ENUM_OLIVE_LOT_MODE InpLotMode     = OLIVE_LOT_RISK; // Lot mode
+input ENUM_MTZION_LOT_MODE InpLotMode     = MTZION_LOT_RISK; // Lot mode
 input double          InpFixedLot        = 0.01;   // Fixed lot (Lot mode = fixed)
 input double          InpRiskPercent     = 0.5;    // Risk per trade % (Lot mode = risk)
 
@@ -72,12 +72,12 @@ input int             InpNewsMinsAfter   = 30;     // Minutes after news
 
 input group "General"
 input long            InpMagic           = 20261001; // Magic number
-input string          InpComment         = "OliveEA";// Order comment
+input string          InpComment         = "MtZionEA";// Order comment
 input int             InpSlippagePoints  = 20;     // Max slippage (points)
 input bool            InpShowPanel       = true;   // Show status panel
 
 CTrade       g_trade;
-COliveEngine g_engine;
+CMtZionEngine g_engine;
 datetime     g_lastBar=0;
 double       g_dailyLossPct=0;
 double       g_ddPct=0;
@@ -89,11 +89,11 @@ string       g_status="";
 //+------------------------------------------------------------------+
 string AcctKey(const string name)
   {
-   return "OliveEA_"+IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))+"_"+name;
+   return "MtZionEA_"+IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))+"_"+name;
   }
 string TicketKey(const string kind,const ulong ticket)
   {
-   return "OliveEA_"+kind+"_"+IntegerToString((long)ticket);
+   return "MtZionEA_"+kind+"_"+IntegerToString((long)ticket);
   }
 double GVGet(const string key,const double def)
   {
@@ -124,23 +124,23 @@ double NormPrice(const double price)
 //+------------------------------------------------------------------+
 int OnInit()
   {
-   if(InpLotMode==OLIVE_LOT_RISK && (InpRiskPercent<=0 || InpRiskPercent>5))
+   if(InpLotMode==MTZION_LOT_RISK && (InpRiskPercent<=0 || InpRiskPercent>5))
      {
-      Print("OliveEA: risk per trade must be between 0 and 5%");
+      Print("Mt.Zion EA: risk per trade must be between 0 and 5%");
       return INIT_PARAMETERS_INCORRECT;
      }
-   if(InpLotMode==OLIVE_LOT_FIXED && InpFixedLot<=0)
+   if(InpLotMode==MTZION_LOT_FIXED && InpFixedLot<=0)
      {
-      Print("OliveEA: fixed lot must be greater than 0");
+      Print("Mt.Zion EA: fixed lot must be greater than 0");
       return INIT_PARAMETERS_INCORRECT;
      }
    if(InpPartialPct<=0 || InpPartialPct>=100 || InpTrailAtrMult<=0)
      {
-      Print("OliveEA: invalid trade management settings");
+      Print("Mt.Zion EA: invalid trade management settings");
       return INIT_PARAMETERS_INCORRECT;
      }
 
-   OliveSettings s;
+   MtZionSettings s;
    s.htf=InpHTF;
    s.htfEmaPeriod=InpHtfEma;
    s.htfSlopeBars=InpHtfSlopeBars;
@@ -171,7 +171,7 @@ int OnInit()
      {
       GlobalVariableDel(AcctKey("peak"));
       GlobalVariableDel(AcctKey("halted"));
-      Print("OliveEA: drawdown guard reset");
+      Print("Mt.Zion EA: drawdown guard reset");
      }
    PruneTicketVariables();
    g_lastBar=iTime(_Symbol,_Period,0);   // wait for the next fresh bar
@@ -223,7 +223,7 @@ void UpdateGuards()
    if(InpMaxDailyLossPct>0 && g_dailyLossPct>=InpMaxDailyLossPct && GVGet(AcctKey("dayBlocked"),0)==0)
      {
       GlobalVariableSet(AcctKey("dayBlocked"),1);
-      PrintFormat("OliveEA: daily loss limit hit (%.2f%%) - closing trades, no new entries today",g_dailyLossPct);
+      PrintFormat("Mt.Zion EA: daily loss limit hit (%.2f%%) - closing trades, no new entries today",g_dailyLossPct);
      }
 
    double peak=MathMax(GVGet(AcctKey("peak"),eq),eq);
@@ -232,7 +232,7 @@ void UpdateGuards()
    if(InpMaxDrawdownPct>0 && g_ddPct>=InpMaxDrawdownPct && GVGet(AcctKey("halted"),0)==0)
      {
       GlobalVariableSet(AcctKey("halted"),1);
-      PrintFormat("OliveEA: max drawdown hit (%.2f%%) - EA HALTED. Review, then restart with 'Reset drawdown halt' = true",g_ddPct);
+      PrintFormat("Mt.Zion EA: max drawdown hit (%.2f%%) - EA HALTED. Review, then restart with 'Reset drawdown halt' = true",g_ddPct);
      }
 
    if(DailyBlocked() || Halted())
@@ -258,9 +258,9 @@ void CloseAll(const string reason)
       if(ticket==0 || !IsOurs(ticket))
          continue;
       if(g_trade.PositionClose(ticket))
-         PrintFormat("OliveEA: closed #%I64u (%s)",ticket,reason);
+         PrintFormat("Mt.Zion EA: closed #%I64u (%s)",ticket,reason);
       else
-         PrintFormat("OliveEA: close #%I64u failed: %d %s",ticket,g_trade.ResultRetcode(),g_trade.ResultRetcodeDescription());
+         PrintFormat("Mt.Zion EA: close #%I64u failed: %d %s",ticket,g_trade.ResultRetcode(),g_trade.ResultRetcodeDescription());
      }
   }
 
@@ -357,7 +357,7 @@ void TryEntry()
    if(InpMaxTradesPerDay>0 && g_tradesToday>=InpMaxTradesPerDay)
      { g_status="Daily trade limit reached"; return; }
 
-   OliveSignal sig;
+   MtZionSignal sig;
    if(!g_engine.EvaluateFresh(1,sig))
      {
       g_lastBar=0;                       // data not ready - retry on next tick
@@ -370,7 +370,7 @@ void TryEntry()
    if(NewsBlocked(news))
      {
       g_status="Signal skipped - news: "+news;
-      Print("OliveEA: ",g_status);
+      Print("Mt.Zion EA: ",g_status);
       return;
      }
 
@@ -383,7 +383,7 @@ void TryEntry()
    double risk=buy ? entry-sl : sl-entry;
    if(risk<=0)
      {
-      Print("OliveEA: price already beyond stop level - signal skipped");
+      Print("Mt.Zion EA: price already beyond stop level - signal skipped");
       return;
      }
    double tp=NormPrice(buy ? entry+risk*InpRewardRisk : entry-risk*InpRewardRisk);
@@ -392,12 +392,12 @@ void TryEntry()
    double spread=tick.ask-tick.bid;
    if(InpMaxSpreadPoints>0 && spread>InpMaxSpreadPoints*_Point)
      {
-      PrintFormat("OliveEA: spread %.0f pts too high - signal skipped",spread/_Point);
+      PrintFormat("Mt.Zion EA: spread %.0f pts too high - signal skipped",spread/_Point);
       return;
      }
    if(InpMaxSpreadSlPct>0 && spread>risk*InpMaxSpreadSlPct/100.0)
      {
-      Print("OliveEA: spread too large relative to stop - signal skipped");
+      Print("Mt.Zion EA: spread too large relative to stop - signal skipped");
       return;
      }
 
@@ -406,7 +406,7 @@ void TryEntry()
    double minDist=lvl*_Point;
    if(risk<=minDist || MathAbs(tp-entry)<=minDist)
      {
-      Print("OliveEA: stop/target inside broker minimum distance - signal skipped");
+      Print("Mt.Zion EA: stop/target inside broker minimum distance - signal skipped");
       return;
      }
 
@@ -414,14 +414,14 @@ void TryEntry()
    double riskMoney=MathMin(AccountInfoDouble(ACCOUNT_BALANCE),AccountInfoDouble(ACCOUNT_EQUITY))*InpRiskPercent/100.0;
    ENUM_ORDER_TYPE type=buy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
    double lots;
-   if(InpLotMode==OLIVE_LOT_FIXED)
+   if(InpLotMode==MTZION_LOT_FIXED)
       lots=NormalizeLots(InpFixedLot);
    else
      {
-      lots=OliveLotsForRisk(_Symbol,type,entry,sl,riskMoney);
+      lots=MtZionLotsForRisk(_Symbol,type,entry,sl,riskMoney);
       if(lots<=0)
         {
-         PrintFormat("OliveEA: minimum lot would risk more than %.2f%% - signal skipped",InpRiskPercent);
+         PrintFormat("Mt.Zion EA: minimum lot would risk more than %.2f%% - signal skipped",InpRiskPercent);
          return;
         }
      }
@@ -431,7 +431,7 @@ void TryEntry()
    double margin=0;
    if(!OrderCalcMargin(type,_Symbol,lots,entry,margin) || margin>AccountInfoDouble(ACCOUNT_MARGIN_FREE)*0.9)
      {
-      Print("OliveEA: insufficient free margin - signal skipped");
+      Print("Mt.Zion EA: insufficient free margin - signal skipped");
       return;
      }
 
@@ -440,12 +440,12 @@ void TryEntry()
    if(ok && (g_trade.ResultRetcode()==TRADE_RETCODE_DONE || g_trade.ResultRetcode()==TRADE_RETCODE_PLACED))
      {
       g_status=StringFormat("Opened %s %.2f lots",buy ? "BUY" : "SELL",lots);
-      PrintFormat("OliveEA: %s %.2f @ %s SL %s TP %s (risk %.2f %s)",buy ? "BUY" : "SELL",lots,
+      PrintFormat("Mt.Zion EA: %s %.2f @ %s SL %s TP %s (risk %.2f %s)",buy ? "BUY" : "SELL",lots,
                   DoubleToString(entry,_Digits),DoubleToString(sl,_Digits),DoubleToString(tp,_Digits),
                   riskMoney,AccountInfoString(ACCOUNT_CURRENCY));
      }
    else
-      PrintFormat("OliveEA: order failed: %d %s",g_trade.ResultRetcode(),g_trade.ResultRetcodeDescription());
+      PrintFormat("Mt.Zion EA: order failed: %d %s",g_trade.ResultRetcode(),g_trade.ResultRetcodeDescription());
   }
 
 //+------------------------------------------------------------------+
@@ -500,7 +500,7 @@ void ManagePositions()
          if(bars>=InpMaxBarsInTrade)
            {
             if(g_trade.PositionClose(ticket))
-               PrintFormat("OliveEA: closed #%I64u after %d bars",ticket,bars);
+               PrintFormat("Mt.Zion EA: closed #%I64u after %d bars",ticket,bars);
             continue;
            }
         }
@@ -517,7 +517,7 @@ void ManagePositions()
             if(g_trade.PositionClosePartial(ticket,part))
               {
                GlobalVariableSet(pKey,1);
-               PrintFormat("OliveEA: partial close %.2f of #%I64u at +%.2fR",part,ticket,profitR);
+               PrintFormat("Mt.Zion EA: partial close %.2f of #%I64u at +%.2fR",part,ticket,profitR);
               }
            }
          else
@@ -556,7 +556,7 @@ void ManagePositions()
       if(newSL>0 && improves && legal)
         {
          if(!g_trade.PositionModify(ticket,newSL,tp))
-            PrintFormat("OliveEA: modify #%I64u failed: %d %s",ticket,g_trade.ResultRetcode(),g_trade.ResultRetcodeDescription());
+            PrintFormat("Mt.Zion EA: modify #%I64u failed: %d %s",ticket,g_trade.ResultRetcode(),g_trade.ResultRetcodeDescription());
         }
      }
   }
@@ -567,9 +567,9 @@ void PruneTicketVariables()
    for(int i=GlobalVariablesTotal()-1; i>=0; i--)
      {
       string name=GlobalVariableName(i);
-      if(StringFind(name,"OliveEA_R_")!=0 && StringFind(name,"OliveEA_P_")!=0)
+      if(StringFind(name,"MtZionEA_R_")!=0 && StringFind(name,"MtZionEA_P_")!=0)
          continue;
-      ulong ticket=(ulong)StringToInteger(StringSubstr(name,10));
+      ulong ticket=(ulong)StringToInteger(StringSubstr(name,11));
       if(ticket>0 && !PositionSelectByTicket(ticket))
          GlobalVariableDel(name);
      }
@@ -586,11 +586,11 @@ void ShowPanel()
 
    int bias=0;
    g_engine.Bias(0,bias);
-   string txt="Olive EA  |  "+_Symbol+" "+EnumToString((ENUM_TIMEFRAMES)_Period)+"\n";
+   string txt="Mt.Zion EA  |  "+_Symbol+" "+EnumToString((ENUM_TIMEFRAMES)_Period)+"\n";
    txt+=StringFormat("Bias: %s\n",bias>0 ? "BULLISH" : (bias<0 ? "BEARISH" : "NEUTRAL"));
-   txt+=(InpLotMode==OLIVE_LOT_FIXED) ? StringFormat("Lot: fixed %.2f   RR: 1:%.1f\n",InpFixedLot,InpRewardRisk)
+   txt+=(InpLotMode==MTZION_LOT_FIXED) ? StringFormat("Lot: fixed %.2f   RR: 1:%.1f\n",InpFixedLot,InpRewardRisk)
                                       : StringFormat("Risk/trade: %.2f%%   RR: 1:%.1f\n",InpRiskPercent,InpRewardRisk);
-   txt+=StringFormat("Stop: %s   Trades today: %d\n",InpSlMode==OLIVE_SL_ATR ? "ATR" : StringFormat("fixed %d pts",InpFixedSlPoints),g_tradesToday);
+   txt+=StringFormat("Stop: %s   Trades today: %d\n",InpSlMode==MTZION_SL_ATR ? "ATR" : StringFormat("fixed %d pts",InpFixedSlPoints),g_tradesToday);
    txt+=StringFormat("Today P/L vs start: %.2f%%  (limit -%.1f%%)\n",-g_dailyLossPct,InpMaxDailyLossPct);
    txt+=StringFormat("Drawdown from peak: %.2f%%  (limit %.1f%%)\n",g_ddPct,InpMaxDrawdownPct);
    txt+="Status: "+(Halted() ? "HALTED - max drawdown" : (DailyBlocked() ? "Stopped for today" : g_status))+"\n";
