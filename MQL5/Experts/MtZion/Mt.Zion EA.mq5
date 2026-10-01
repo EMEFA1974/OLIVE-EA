@@ -36,7 +36,8 @@ input double          InpMinSlAtr     = 1.0;       // Min SL distance (ATR)
 input double          InpMaxSlAtr     = 3.0;       // Max SL distance (ATR) - wider = skip
 input ENUM_MTZION_SL_MODE InpSlMode   = MTZION_SL_ATR; // Stop-loss mode
 input int             InpFixedSlPoints = 500;      // Fixed SL in points (500 = $5.00 on 2-digit gold)
-input double          InpRewardRisk   = 1.5;       // Reward : Risk
+input double          InpTp1R         = 1.0;       // TP1 (R multiple)
+input double          InpRewardRisk   = 2.0;       // TP2 / final target (R multiple)
 
 input group "Position size"
 input ENUM_MTZION_LOT_MODE InpLotMode     = MTZION_LOT_RISK; // Lot mode
@@ -54,9 +55,9 @@ input bool            InpResetGuards     = false;  // Reset drawdown halt / equi
 input group "Trade management"
 input double          InpBreakEvenR      = 1.0;    // Move SL to break-even at +R (0 = off)
 input double          InpBreakEvenLockR  = 0.1;    // Profit locked at break-even (R)
-input double          InpPartialR        = 0.0;    // Partial close at +R (0 = off)
-input double          InpPartialPct      = 50.0;   // Partial close volume %
-input double          InpTrailStartR     = 1.0;    // Start ATR trailing at +R (0 = off)
+input bool            InpPartialAtTp1    = true;   // Close part of the trade at TP1
+input double          InpPartialPct      = 50.0;   // Partial close volume % at TP1
+input double          InpTrailStartR     = 1.5;    // Start ATR trailing at +R (0 = off)
 input double          InpTrailAtrMult    = 1.5;    // Trailing distance (ATR)
 input int             InpMaxBarsInTrade  = 0;      // Close trade after N bars (0 = off)
 
@@ -76,6 +77,12 @@ input string          InpComment         = "MtZionEA";// Order comment
 input int             InpSlippagePoints  = 20;     // Max slippage (points)
 input bool            InpShowPanel       = true;   // Show status panel
 
+input group "Chart display"
+input bool            InpDrawDots        = true;   // Dots on confirmation candles
+input int             InpDotsHistory     = 500;    // Bars of history to mark with dots
+input bool            InpDrawZones       = true;   // Zone boxes & levels for trades
+input int             InpZoneBars        = 20;     // Zone box width (bars)
+
 CTrade       g_trade;
 CMtZionEngine g_engine;
 datetime     g_lastBar=0;
@@ -83,6 +90,9 @@ double       g_dailyLossPct=0;
 double       g_ddPct=0;
 int          g_tradesToday=0;
 string       g_status="";
+bool         g_draw=false;
+bool         g_historyDrawn=false;
+const string OBJ_PREFIX="MtZionEA_obj_";
 
 //+------------------------------------------------------------------+
 //| Global-variable helpers (state survives restarts)                |
@@ -134,6 +144,11 @@ int OnInit()
       Print("Mt.Zion EA: fixed lot must be greater than 0");
       return INIT_PARAMETERS_INCORRECT;
      }
+   if(InpTp1R<=0 || InpTp1R>=InpRewardRisk)
+     {
+      Print("Mt.Zion EA: TP1 must be greater than 0 and smaller than TP2");
+      return INIT_PARAMETERS_INCORRECT;
+     }
    if(InpPartialPct<=0 || InpPartialPct>=100 || InpTrailAtrMult<=0)
      {
       Print("Mt.Zion EA: invalid trade management settings");
@@ -175,12 +190,16 @@ int OnInit()
      }
    PruneTicketVariables();
    g_lastBar=iTime(_Symbol,_Period,0);   // wait for the next fresh bar
+   g_draw=!MQLInfoInteger(MQL_OPTIMIZATION) &&
+          (!MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_VISUAL_MODE));
+   g_historyDrawn=false;
    return INIT_SUCCEEDED;
   }
 
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
+   ObjectsDeleteAll(0,OBJ_PREFIX);
    if(InpShowPanel)
       Comment("");
    g_engine.Release();
@@ -192,11 +211,22 @@ void OnTick()
    UpdateGuards();
    ManagePositions();
 
+   if(g_draw && !g_historyDrawn && g_engine.Ready())
+      DrawHistory();
+
    datetime bar=iTime(_Symbol,_Period,0);
    if(bar!=0 && bar!=g_lastBar && g_engine.Ready())
      {
       g_lastBar=bar;
-      TryEntry();
+      MtZionSignal sig;
+      if(!g_engine.EvaluateFresh(1,sig))
+         g_lastBar=0;                    // data not ready - retry on next tick
+      else
+        {
+         if(sig.direction!=0)
+            DrawDot(1,sig.direction);
+         TryEntry(sig);
+        }
      }
    if(InpShowPanel && !MQLInfoInteger(MQL_OPTIMIZATION))
       ShowPanel();
@@ -347,7 +377,7 @@ bool NewsBlocked(string &eventName)
 //+------------------------------------------------------------------+
 //| Entry on the close of the signal bar                             |
 //+------------------------------------------------------------------+
-void TryEntry()
+void TryEntry(const MtZionSignal &sig)
   {
    g_tradesToday=TradesToday();
    if(Halted())        { g_status="Halted: max drawdown reached"; return; }
@@ -357,12 +387,6 @@ void TryEntry()
    if(InpMaxTradesPerDay>0 && g_tradesToday>=InpMaxTradesPerDay)
      { g_status="Daily trade limit reached"; return; }
 
-   MtZionSignal sig;
-   if(!g_engine.EvaluateFresh(1,sig))
-     {
-      g_lastBar=0;                       // data not ready - retry on next tick
-      return;
-     }
    if(sig.direction==0)
      { g_status="Waiting for setup"; return; }
 
@@ -440,6 +464,8 @@ void TryEntry()
    if(ok && (g_trade.ResultRetcode()==TRADE_RETCODE_DONE || g_trade.ResultRetcode()==TRADE_RETCODE_PLACED))
      {
       g_status=StringFormat("Opened %s %.2f lots",buy ? "BUY" : "SELL",lots);
+      double fill=g_trade.ResultPrice()>0 ? g_trade.ResultPrice() : entry;
+      DrawTradeZone(sig.direction,iTime(_Symbol,_Period,1),fill,sl,tp);
       PrintFormat("Mt.Zion EA: %s %.2f @ %s SL %s TP %s (risk %.2f %s)",buy ? "BUY" : "SELL",lots,
                   DoubleToString(entry,_Digits),DoubleToString(sl,_Digits),DoubleToString(tp,_Digits),
                   riskMoney,AccountInfoString(ACCOUNT_CURRENCY));
@@ -507,7 +533,7 @@ void ManagePositions()
 
       //--- partial close
       string pKey=TicketKey("P",ticket);
-      if(InpPartialR>0 && profitR>=InpPartialR && !GlobalVariableCheck(pKey))
+      if(InpPartialAtTp1 && profitR>=InpTp1R && !GlobalVariableCheck(pKey))
         {
          double step=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
          double vmin=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
@@ -588,12 +614,72 @@ void ShowPanel()
    g_engine.Bias(0,bias);
    string txt="Mt.Zion EA  |  "+_Symbol+" "+EnumToString((ENUM_TIMEFRAMES)_Period)+"\n";
    txt+=StringFormat("Bias: %s\n",bias>0 ? "BULLISH" : (bias<0 ? "BEARISH" : "NEUTRAL"));
-   txt+=(InpLotMode==MTZION_LOT_FIXED) ? StringFormat("Lot: fixed %.2f   RR: 1:%.1f\n",InpFixedLot,InpRewardRisk)
-                                      : StringFormat("Risk/trade: %.2f%%   RR: 1:%.1f\n",InpRiskPercent,InpRewardRisk);
+   txt+=(InpLotMode==MTZION_LOT_FIXED) ? StringFormat("Lot: fixed %.2f   TP1 %.1fR / TP2 %.1fR\n",InpFixedLot,InpTp1R,InpRewardRisk)
+                                      : StringFormat("Risk/trade: %.2f%%   TP1 %.1fR / TP2 %.1fR\n",InpRiskPercent,InpTp1R,InpRewardRisk);
    txt+=StringFormat("Stop: %s   Trades today: %d\n",InpSlMode==MTZION_SL_ATR ? "ATR" : StringFormat("fixed %d pts",InpFixedSlPoints),g_tradesToday);
    txt+=StringFormat("Today P/L vs start: %.2f%%  (limit -%.1f%%)\n",-g_dailyLossPct,InpMaxDailyLossPct);
    txt+=StringFormat("Drawdown from peak: %.2f%%  (limit %.1f%%)\n",g_ddPct,InpMaxDrawdownPct);
    txt+="Status: "+(Halted() ? "HALTED - max drawdown" : (DailyBlocked() ? "Stopped for today" : g_status))+"\n";
    Comment(txt);
+  }
+//+------------------------------------------------------------------+
+
+//+------------------------------------------------------------------+
+//| Chart drawing: confirmation dots and trade zones                 |
+//+------------------------------------------------------------------+
+void DrawDot(const int shift,const int dir)
+  {
+   if(!g_draw || !InpDrawDots)
+      return;
+   double atr=0;
+   g_engine.Atr(shift,atr);
+   datetime t=iTime(_Symbol,_Period,shift);
+   double price=(dir>0) ? iLow(_Symbol,_Period,shift)-atr*0.15
+                        : iHigh(_Symbol,_Period,shift)+atr*0.15;
+   MtZionDot(OBJ_PREFIX+"dot_"+IntegerToString((long)t),dir,t,price);
+  }
+
+void DrawTradeZone(const int dir,const datetime t1,const double entry,const double sl,const double tp2)
+  {
+   if(!g_draw || !InpDrawZones)
+      return;
+   ObjectsDeleteAll(0,OBJ_PREFIX+"zone_");
+   double tp1=entry+(entry-sl)*InpTp1R;     // works for both directions
+   MtZionDrawZones(OBJ_PREFIX+"zone_",dir,t1,entry,sl,tp1,tp2,InpZoneBars);
+  }
+
+//--- mark past confirmation candles and redraw the zone of an open trade
+void DrawHistory()
+  {
+   g_historyDrawn=true;
+   int bars=MathMin(InpDotsHistory,Bars(_Symbol,_Period)-g_engine.MinBars()-2);
+   for(int sh=bars; sh>=1 && InpDrawDots; sh--)
+     {
+      MtZionSignal sig;
+      if(g_engine.EvaluateFresh(sh,sig) && sig.direction!=0)
+         DrawDot(sh,sig.direction);
+     }
+   for(int i=PositionsTotal()-1; i>=0; i--)
+     {
+      ulong ticket=PositionGetTicket(i);
+      if(ticket==0 || !IsOurs(ticket))
+         continue;
+      bool   buy =(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY);
+      double open=PositionGetDouble(POSITION_PRICE_OPEN);
+      double R   =GVGet(TicketKey("R",ticket),0);
+      double sl  =PositionGetDouble(POSITION_SL);
+      if(R>0)
+         sl=buy ? open-R : open+R;           // original stop, not the trailed one
+      if(sl<=0)
+         continue;
+      double risk=MathAbs(open-sl);
+      double tp=PositionGetDouble(POSITION_TP);
+      if(tp<=0)
+         tp=buy ? open+risk*InpRewardRisk : open-risk*InpRewardRisk;
+      datetime t=(datetime)PositionGetInteger(POSITION_TIME);
+      DrawTradeZone(buy ? 1 : -1,iTime(_Symbol,_Period,iBarShift(_Symbol,_Period,t,false)),open,sl,tp);
+      break;
+     }
+   ChartRedraw();
   }
 //+------------------------------------------------------------------+

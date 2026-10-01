@@ -5,14 +5,14 @@
 //+------------------------------------------------------------------+
 #property copyright "Mt.Zion"
 #property version   "1.00"
-#property description "Higher-timeframe trend + pullback entries with ATR stop, target and risk-based lot size."
+#property description "Higher-timeframe trend + pullback entries with SL / TP1 / TP2 zones and risk-based lot size."
 #property indicator_chart_window
 #property indicator_buffers 6
 #property indicator_plots   4
 
 #property indicator_label1  "Fast EMA (bias colored)"
 #property indicator_type1   DRAW_COLOR_LINE
-#property indicator_color1  clrSilver,clrLimeGreen,clrTomato
+#property indicator_color1  clrSilver,clrAqua,clrMagenta
 #property indicator_width1  2
 
 #property indicator_label2  "Slow EMA"
@@ -22,13 +22,13 @@
 
 #property indicator_label3  "Buy signal"
 #property indicator_type3   DRAW_ARROW
-#property indicator_color3  clrLimeGreen
-#property indicator_width3  2
+#property indicator_color3  clrAqua
+#property indicator_width3  1
 
 #property indicator_label4  "Sell signal"
 #property indicator_type4   DRAW_ARROW
-#property indicator_color4  clrTomato
-#property indicator_width4  2
+#property indicator_color4  clrMagenta
+#property indicator_width4  1
 
 #include <MtZion/MtZionCore.mqh>
 
@@ -50,12 +50,14 @@ input double          InpMinSlAtr     = 1.0;       // Min SL distance (ATR)
 input double          InpMaxSlAtr     = 3.0;       // Max SL distance (ATR) - wider = skip
 input ENUM_MTZION_SL_MODE InpSlMode   = MTZION_SL_ATR; // Stop-loss mode
 input int             InpFixedSlPoints = 500;      // Fixed SL in points (500 = $5.00 on 2-digit gold)
-input double          InpRewardRisk   = 1.5;       // Reward : Risk
+input double          InpTp1R         = 1.0;       // TP1 (R multiple)
+input double          InpRewardRisk   = 2.0;       // TP2 / final target (R multiple)
 
 input group "Display & alerts"
 input int             InpHistoryBars  = 3000;      // Bars to calculate (0 = all)
-input bool            InpShowLevels   = true;      // Draw entry / SL / TP of last signal
-input int             InpLevelsLookback = 30;      // Show levels if signal within N bars
+input bool            InpShowLevels   = true;      // Draw zone boxes & levels of last signal
+input int             InpLevelsLookback = 30;      // Show zones if signal within N bars
+input int             InpZoneBars     = 20;        // Zone box width (bars)
 input double          InpRiskPercent  = 0.5;       // Risk % for lot-size display
 input bool            InpShowPanel    = true;      // Show info panel
 input bool            InpAlertPopup   = true;      // Popup alert on new signal
@@ -64,6 +66,7 @@ input bool            InpAlertPush    = false;     // Push notification on new s
 double g_fast[],g_fastClr[],g_slow[],g_buy[],g_sell[],g_raw[];
 CMtZionEngine g_engine;
 datetime     g_lastAlert=0;
+datetime     g_zoneTime=0;
 const string OBJ_PREFIX="MtZionInd_";
 
 //+------------------------------------------------------------------+
@@ -83,8 +86,8 @@ int OnInit()
    ArraySetAsSeries(g_raw,true);
    for(int p=0; p<4; p++)
       PlotIndexSetDouble(p,PLOT_EMPTY_VALUE,EMPTY_VALUE);
-   PlotIndexSetInteger(2,PLOT_ARROW,233);
-   PlotIndexSetInteger(3,PLOT_ARROW,234);
+   PlotIndexSetInteger(2,PLOT_ARROW,241);   // hollow up arrow
+   PlotIndexSetInteger(3,PLOT_ARROW,242);   // hollow down arrow
 
    MtZionSettings s;
    s.htf=InpHTF;
@@ -105,6 +108,11 @@ int OnInit()
    s.rewardRisk=InpRewardRisk;
    s.slMode=InpSlMode;
    s.fixedSlPoints=InpFixedSlPoints;
+   if(InpTp1R<=0 || InpTp1R>=InpRewardRisk)
+     {
+      Print("Mt.Zion: TP1 must be greater than 0 and smaller than TP2");
+      return INIT_PARAMETERS_INCORRECT;
+     }
    if(!g_engine.Init(_Symbol,_Period,s))
       return INIT_PARAMETERS_INCORRECT;
 
@@ -211,35 +219,6 @@ int OnCalculate(const int rates_total,
   }
 
 //+------------------------------------------------------------------+
-void DrawLevel(const string name,const datetime t1,const datetime t2,const double price,
-               const color clr,const ENUM_LINE_STYLE style,const string text)
-  {
-   string obj=OBJ_PREFIX+name;
-   if(ObjectFind(0,obj)<0)
-      ObjectCreate(0,obj,OBJ_TREND,0,t1,price,t2,price);
-   ObjectSetInteger(0,obj,OBJPROP_TIME,0,t1);
-   ObjectSetDouble(0,obj,OBJPROP_PRICE,0,price);
-   ObjectSetInteger(0,obj,OBJPROP_TIME,1,t2);
-   ObjectSetDouble(0,obj,OBJPROP_PRICE,1,price);
-   ObjectSetInteger(0,obj,OBJPROP_COLOR,clr);
-   ObjectSetInteger(0,obj,OBJPROP_STYLE,style);
-   ObjectSetInteger(0,obj,OBJPROP_RAY_RIGHT,false);
-   ObjectSetInteger(0,obj,OBJPROP_SELECTABLE,false);
-   ObjectSetString(0,obj,OBJPROP_TOOLTIP,text);
-
-   string lbl=obj+"_lbl";
-   if(ObjectFind(0,lbl)<0)
-      ObjectCreate(0,lbl,OBJ_TEXT,0,t2,price);
-   ObjectSetInteger(0,lbl,OBJPROP_TIME,0,t2);
-   ObjectSetDouble(0,lbl,OBJPROP_PRICE,0,price);
-   ObjectSetString(0,lbl,OBJPROP_TEXT," "+text);
-   ObjectSetInteger(0,lbl,OBJPROP_COLOR,clr);
-   ObjectSetInteger(0,lbl,OBJPROP_FONTSIZE,8);
-   ObjectSetInteger(0,lbl,OBJPROP_ANCHOR,ANCHOR_LEFT);
-   ObjectSetInteger(0,lbl,OBJPROP_SELECTABLE,false);
-  }
-
-//+------------------------------------------------------------------+
 void UpdateLevelsAndPanel(const datetime &time[])
   {
    int lastShift=-1;
@@ -261,16 +240,21 @@ void UpdateLevelsAndPanel(const datetime &time[])
       lots=MtZionLotsForRisk(_Symbol,sig.direction>0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL,sig.entry,sig.sl,riskMoney);
      }
 
+   double tp1=sig.entry+(sig.entry-sig.sl)*InpTp1R;   // works for both directions
    if(InpShowLevels && have)
      {
-      datetime t1=time[lastShift];
-      datetime t2=time[0]+PeriodSeconds()*5;
-      DrawLevel("entry",t1,t2,sig.entry,clrSilver,STYLE_DOT,StringFormat("Entry %s",DoubleToString(sig.entry,_Digits)));
-      DrawLevel("sl",t1,t2,sig.sl,clrTomato,STYLE_DASH,StringFormat("SL %s",DoubleToString(sig.sl,_Digits)));
-      DrawLevel("tp",t1,t2,sig.tp,clrLimeGreen,STYLE_DASH,StringFormat("TP %s (%.1fR)",DoubleToString(sig.tp,_Digits),InpRewardRisk));
+      if(time[lastShift]!=g_zoneTime)
+        {
+         ObjectsDeleteAll(0,OBJ_PREFIX);
+         g_zoneTime=time[lastShift];
+        }
+      MtZionDrawZones(OBJ_PREFIX,sig.direction,time[lastShift],sig.entry,sig.sl,tp1,sig.tp,InpZoneBars);
      }
    else
+     {
       ObjectsDeleteAll(0,OBJ_PREFIX);
+      g_zoneTime=0;
+     }
 
    if(!InpShowPanel)
       return;
@@ -281,8 +265,8 @@ void UpdateLevelsAndPanel(const datetime &time[])
    if(have)
      {
       txt+=StringFormat("Last signal: %s %d bar(s) ago\n",sig.direction>0 ? "BUY" : "SELL",lastShift);
-      txt+=StringFormat("Entry %s | SL %s | TP %s\n",DoubleToString(sig.entry,_Digits),
-                        DoubleToString(sig.sl,_Digits),DoubleToString(sig.tp,_Digits));
+      txt+=StringFormat("Entry %s | SL %s | TP1 %s | TP2 %s\n",DoubleToString(sig.entry,_Digits),
+                        DoubleToString(sig.sl,_Digits),DoubleToString(tp1,_Digits),DoubleToString(sig.tp,_Digits));
       txt+=(lots>0) ? StringFormat("Lot size @ %.2f%% risk: %.2f\n",InpRiskPercent,lots)
                     : StringFormat("Min lot exceeds %.2f%% risk - skip\n",InpRiskPercent);
      }

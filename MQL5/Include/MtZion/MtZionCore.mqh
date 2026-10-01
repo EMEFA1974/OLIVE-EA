@@ -345,5 +345,103 @@ double MtZionLotsForRisk(const string symbol,const ENUM_ORDER_TYPE type,
    return NormalizeDouble(lots,digits);
   }
 
+//+------------------------------------------------------------------+
+//| Chart drawing shared by the indicator and the EA                 |
+//+------------------------------------------------------------------+
+#define MTZION_BUY_CLR    clrAqua
+#define MTZION_SELL_CLR   clrMagenta
+#define MTZION_SL_BOX     C'150,30,30'
+#define MTZION_TP1_BOX    C'20,120,40'
+#define MTZION_TP2_BOX    C'20,40,170'
+
+void MtZionRect(const string name,const datetime t1,const double p1,
+                const datetime t2,const double p2,const color clr)
+  {
+   if(ObjectFind(0,name)<0)
+      ObjectCreate(0,name,OBJ_RECTANGLE,0,t1,p1,t2,p2);
+   ObjectSetInteger(0,name,OBJPROP_TIME,0,t1);
+   ObjectSetDouble(0,name,OBJPROP_PRICE,0,p1);
+   ObjectSetInteger(0,name,OBJPROP_TIME,1,t2);
+   ObjectSetDouble(0,name,OBJPROP_PRICE,1,p2);
+   ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
+   ObjectSetInteger(0,name,OBJPROP_FILL,true);
+   ObjectSetInteger(0,name,OBJPROP_BACK,true);
+   ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
+  }
+
+void MtZionLevel(const string name,const datetime t1,const datetime t2,const double price,
+                 const color clr,const ENUM_LINE_STYLE style,const string text,const datetime tText)
+  {
+   if(ObjectFind(0,name)<0)
+      ObjectCreate(0,name,OBJ_TREND,0,t1,price,t2,price);
+   ObjectSetInteger(0,name,OBJPROP_TIME,0,t1);
+   ObjectSetDouble(0,name,OBJPROP_PRICE,0,price);
+   ObjectSetInteger(0,name,OBJPROP_TIME,1,t2);
+   ObjectSetDouble(0,name,OBJPROP_PRICE,1,price);
+   ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
+   ObjectSetInteger(0,name,OBJPROP_STYLE,style);
+   ObjectSetInteger(0,name,OBJPROP_WIDTH,1);
+   ObjectSetInteger(0,name,OBJPROP_RAY_RIGHT,false);
+   ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
+   ObjectSetString(0,name,OBJPROP_TOOLTIP,text);
+
+   string lbl=name+"_lbl";
+   if(ObjectFind(0,lbl)<0)
+      ObjectCreate(0,lbl,OBJ_TEXT,0,tText,price);
+   ObjectSetInteger(0,lbl,OBJPROP_TIME,0,tText);
+   ObjectSetDouble(0,lbl,OBJPROP_PRICE,0,price);
+   ObjectSetString(0,lbl,OBJPROP_TEXT,text);
+   ObjectSetString(0,lbl,OBJPROP_FONT,"Arial Bold");
+   ObjectSetInteger(0,lbl,OBJPROP_FONTSIZE,9);
+   ObjectSetInteger(0,lbl,OBJPROP_COLOR,clr);
+   ObjectSetInteger(0,lbl,OBJPROP_ANCHOR,ANCHOR_LEFT_LOWER);
+   ObjectSetInteger(0,lbl,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,lbl,OBJPROP_HIDDEN,true);
+  }
+
+//--- SL zone (red), entry->TP1 zone (green), TP1->TP2 zone (blue),
+//--- dotted level lines with price labels, as one trade "card".
+void MtZionDrawZones(const string prefix,const int dir,const datetime t1,
+                     const double entry,const double sl,const double tp1,const double tp2,
+                     const int boxBars)
+  {
+   int    digits=(int)SymbolInfoInteger(_Symbol,SYMBOL_DIGITS);
+   int    ps=PeriodSeconds();
+   datetime tBox =t1+(datetime)(MathMax(boxBars,1)*ps);
+   datetime tLine=tBox+(datetime)(MathMax(boxBars/2,6)*ps);
+   string side=(dir>0) ? "BUY" : "SELL";
+
+   MtZionRect(prefix+"box_sl", t1,entry,tBox,sl, MTZION_SL_BOX);
+   MtZionRect(prefix+"box_tp1",t1,entry,tBox,tp1,MTZION_TP1_BOX);
+   MtZionRect(prefix+"box_tp2",t1,tp1,  tBox,tp2,MTZION_TP2_BOX);
+
+   MtZionLevel(prefix+"lvl_tp2",t1,tLine,tp2,clrDeepSkyBlue,STYLE_DOT,
+               "TP2  "+DoubleToString(tp2,digits),tBox);
+   MtZionLevel(prefix+"lvl_tp1",t1,tLine,tp1,clrAquamarine,STYLE_DOT,
+               "TP1  "+DoubleToString(tp1,digits),tBox);
+   MtZionLevel(prefix+"lvl_entry",t1,tLine,entry,clrGold,STYLE_DASH,
+               "Entry  "+DoubleToString(entry,digits)+"  "+side,tBox);
+   MtZionLevel(prefix+"lvl_sl",t1,tLine,sl,clrTomato,STYLE_DOT,
+               "SL  "+DoubleToString(sl,digits),tBox);
+  }
+
+//--- confirmation dot: under the candle for buys, above it for sells
+void MtZionDot(const string name,const int dir,const datetime t,const double price)
+  {
+   if(ObjectFind(0,name)<0)
+      ObjectCreate(0,name,OBJ_ARROW,0,t,price);
+   ObjectSetInteger(0,name,OBJPROP_TIME,0,t);
+   ObjectSetDouble(0,name,OBJPROP_PRICE,0,price);
+   ObjectSetInteger(0,name,OBJPROP_ARROWCODE,108);
+   ObjectSetInteger(0,name,OBJPROP_COLOR,dir>0 ? MTZION_BUY_CLR : MTZION_SELL_CLR);
+   ObjectSetInteger(0,name,OBJPROP_WIDTH,2);
+   ObjectSetInteger(0,name,OBJPROP_ANCHOR,dir>0 ? ANCHOR_TOP : ANCHOR_BOTTOM);
+   ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
+   ObjectSetString(0,name,OBJPROP_TOOLTIP,dir>0 ? "Buy confirmation" : "Sell confirmation");
+  }
+
 #endif // MTZION_CORE_MQH
 //+------------------------------------------------------------------+

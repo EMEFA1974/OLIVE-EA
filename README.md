@@ -22,7 +22,13 @@ Open each `.mq5` in MetaEditor and press **F7 (Compile)**. The include file must
 3. **Pullback:** within the last 5 bars, price touched EMA 20 without closing beyond EMA 50.
 4. **Trigger:** the signal candle closes in the trend direction, beyond the previous candle's high (buys) or low (sells). RSI must be in the momentum zone (50–70 for buys, 30–50 for sells) and ADX ≥ 18.
 5. **Stop:** either ATR mode (beyond the pullback swing plus a 0.3 ATR buffer, minimum 1 ATR, and the trade is skipped if the stop would be wider than 3 ATR) or fixed-points mode (default 500 points = $5.00 on 2-digit gold).
-6. **Target:** 1.5 × the stop distance. Break-even (+0.1R locked) at +1R, then an ATR trailing stop.
+6. **Targets:** TP1 at 1R and TP2 (final target) at 2R. At TP1 the EA closes 50% of the trade and moves the stop to break-even (+0.1R locked). From +1.5R an ATR trailing stop follows price.
+
+## Chart display
+
+- **Mt.Zion Ind:** hollow arrows on signal candles (**Aqua = buy**, **Magenta = sell**). The fast EMA is coloured by trend: Aqua for bullish, Magenta for bearish, grey for neutral. The latest signal gets zone boxes and labelled levels.
+- **Mt.Zion EA:** dots on confirmation candles instead of arrows (Aqua dot under the candle = buy, Magenta dot above the candle = sell). Each trade it opens gets zone boxes and labelled levels.
+- **Zone boxes:** red = Entry → SL, green = Entry → TP1, blue = TP1 → TP2, with dotted level lines and labels (`TP2`, `TP1`, `Entry … BUY/SELL`, `SL`).
 
 ## Key settings
 
