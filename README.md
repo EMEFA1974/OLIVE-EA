@@ -1,7 +1,7 @@
 # Mt.Zion Ind + Mt.Zion EA (MT5)
 
 A rule-based trend-pullback system for MetaTrader 5, tuned by default for **XAUUSD on M5** with an **H1 trend filter**.
-The indicator and the EA share one signal engine (`MtZionCore.mqh`), so the arrows on the chart are exactly the trades the EA takes.
+The indicator and the EA contain the same embedded signal engine, so the arrows on the chart are exactly the trades the EA takes. Each `.mq5` is self-contained: there is no separate include file to install.
 
 **No martingale, no grid, no averaging down.** Every trade has a stop loss from the moment it opens.
 
@@ -9,11 +9,10 @@ The indicator and the EA share one signal engine (`MtZionCore.mqh`), so the arro
 
 | File | Copy to (MT5 → File → Open Data Folder) |
 |---|---|
-| `MQL5/Include/MtZion/MtZionCore.mqh` | `MQL5/Include/MtZion/` |
 | `MQL5/Indicators/MtZion/Mt.Zion Ind.mq5` | `MQL5/Indicators/` |
 | `MQL5/Experts/MtZion/Mt.Zion EA.mq5` | `MQL5/Experts/` |
 
-Open each `.mq5` in MetaEditor and press **F7 (Compile)**. The include file must be in place first.
+Open each `.mq5` in MetaEditor and press **F7 (Compile)**.
 
 ## Strategy logic (closed bars only, no repainting)
 
