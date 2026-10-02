@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "St.LukesMTF Max EA"
 #property link      ""
-#property version   "1.23"
+#property version   "1.24"
 
 #include <Trade/Trade.mqh>
 
@@ -101,7 +101,7 @@ input int    InpReentryCool    = 3;
 
 input group "=== Pullback Add (after TP1) ==="
 input bool   InpAddOn       = true;    // after TP1: limit order back in the signal direction in the pullback (TP = TP2, SL = SL). Keep same in Ind + EA
-input double InpAddDepth    = 0.50;    // add level: 0 = Entry, 0.5 = halfway, 1.0 = signal SL (previous high/low); capped before the widened SL
+input double InpAddDepth    = 0.80;    // add level as part of the way from Entry to the SL line: 0 = Entry, 0.5 = halfway, 0.8 = close to SL (kept 'min SL gap' away)
 input int    InpAddExpire   = 24;      // cancel the add after N closed bars without a fill
 input double InpAddLot      = 0.01;    // EA: lot of the pullback add trade (0 = do not trade the add)
 
@@ -208,7 +208,7 @@ struct Idea
    int       addState, addAge;   // pullback add: ADD_NONE / ADD_ARMED / ADD_FILLED / ADD_DONE
    double    addPx;              // pullback add price
    datetime  addTime, tp1Time;   // add fill bar / TP1 bar
-   double    pbMax;              // deepest pullback after TP1 (0 = Entry, 1 = signal SL)
+   double    pbMax;              // deepest pullback after TP1 (0 = Entry, 1 = SL line)
   };
 Idea idea;
 
@@ -411,7 +411,7 @@ double BarSpreadPx(const datetime t)
 //| Pullback add after TP1 + pullback statistics                     |
 //| After TP1 a limit order is armed back in the signal direction in |
 //| the pullback zone: TP = TP2, SL = the signal's (widened) SL.      |
-//| Depth unit R = signal risk: 0 = Entry, 1 = signal SL.             |
+//| Depth = part of the way from Entry to the SL line: 0 .. 1.        |
 //+------------------------------------------------------------------+
 #define ADD_NONE   0
 #define ADD_ARMED  1
@@ -419,8 +419,8 @@ double BarSpreadPx(const datetime t)
 #define ADD_DONE   3
 
 int    gPbTP2 = 0, gPbSL = 0;                    // after TP1: went on to TP2 / hit the SL
-double gPbSum = 0, gPbMax = 0;                   // pullback depth of the TP2 winners (R)
-int    gPbE = 0, gPbHalf = 0, gPbFull = 0;       // TP2 winners whose pullback reached Entry / 0.5R / 1R
+double gPbSum = 0, gPbMax = 0;                   // pullback depth of the TP2 winners (part of the way to the SL)
+int    gPbE = 0, gPbHalf = 0, gPbFull = 0;       // TP2 winners whose pullback reached Entry / 50% / 80% of the way to the SL
 int    gAddWin = 0, gAddLoss = 0;
 double gAddR = 0;                                // net result of the add trades in R
 
@@ -430,15 +430,16 @@ void ResetPbStats()
    gPbSum = gPbMax = gAddR = 0;
   }
 
-double SignalRisk()
+// Entry -> SL line distance (the SL drawn / used for the orders)
+double SLDist()
   {
-   double r = MathAbs(idea.entry - idea.sl0);
+   double r = MathAbs(idea.entry - idea.sl);
    return (r > 0 ? r : Pt() * 10);
   }
 
 double AddPrice()
   {
-   double px  = idea.entry - idea.dir * InpAddDepth * SignalRisk();
+   double px  = idea.entry - idea.dir * MathMax(0.0, InpAddDepth) * SLDist();
    double gap = MathMax((double)InpMinSLGapPts * Pt(), 5.0 * Pt());
    if(idea.dir > 0 && px < idea.sl + gap) px = idea.sl + gap;
    if(idea.dir < 0 && px > idea.sl - gap) px = idea.sl - gap;
@@ -449,7 +450,7 @@ double AddPrice()
 void StartAfterTP1(const datetime t, const bool arm)
   {
    idea.tp1Time = t;
-   idea.pbMax   = -InpRR1;       // TP1 itself: no pullback yet
+   idea.pbMax   = -MathAbs(idea.tp1 - idea.entry) / SLDist();   // TP1 itself: no pullback yet
    if(!arm || !InpAddOn) return;
    idea.addPx    = AddPrice();
    idea.addState = ADD_ARMED;
@@ -467,7 +468,7 @@ void CloseAfterTP1(const bool win, const bool addFillBar, const bool beyondTP2)
       if(gPbTP2 == 1 || idea.pbMax > gPbMax) gPbMax = idea.pbMax;
       if(idea.pbMax >= 0.0) gPbE++;
       if(idea.pbMax >= 0.5) gPbHalf++;
-      if(idea.pbMax >= 1.0) gPbFull++;
+      if(idea.pbMax >= 0.8) gPbFull++;
      }
    else
       gPbSL++;
@@ -585,7 +586,7 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
    bool beyondTP2  = (idea.dir > 0 ? bar.c >= idea.tp2 : aC <= idea.tp2);
    if(idea.state == IDEA_LIVE && idea.tp1Done)
      {
-      double pb = (idea.dir > 0 ? (idea.entry - bar.l) : (aH - idea.entry)) / SignalRisk();
+      double pb = (idea.dir > 0 ? (idea.entry - bar.l) : (aH - idea.entry)) / SLDist();
       if(pb > idea.pbMax) idea.pbMax = pb;
       if(idea.addState == ADD_ARMED)
         {
@@ -2248,7 +2249,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "St.LukesMTF Max EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.23  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.24  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -2306,7 +2307,7 @@ void UpdatePanel(const bool force = false)
      {
       PRow("Runner (TP2)", (InpRunnerLot > 0 ? StringFormat("%.2f lots%s", InpRunnerLot, (InpRunnerBEOn ? StringFormat("  BE at %d%%", InpRunnerBEPct) : "")) : "OFF"),
            (InpRunnerLot > 0 ? C_TXT : C_MUTE));
-      PRow("Pullback add", (InpAddOn && InpAddLot > 0 ? StringFormat("%.2f lots @ %.2fR", InpAddLot, InpAddDepth) : "OFF"),
+      PRow("Pullback add", (InpAddOn && InpAddLot > 0 ? StringFormat("%.2f lots @ %.0f%% to SL", InpAddLot, InpAddDepth * 100.0) : "OFF"),
            (InpAddOn && InpAddLot > 0 ? C_TXT : C_MUTE));
      }
    PRow("Trading", (blk == "" ? "ENABLED" : "OFF"), (blk == "" ? C_UP : C_DN));
