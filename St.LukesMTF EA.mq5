@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "St.LukesMTF EA"
 #property link      ""
-#property version   "1.21"
+#property version   "1.22"
 
 #include <Trade/Trade.mqh>
 
@@ -98,8 +98,18 @@ input int    InpMaxReentry     = 2;
 input int    InpReentryWindow  = 24;
 input int    InpReentryCool    = 3;
 
+input group "=== Pullback Add (after TP1) ==="
+input bool   InpAddOn       = true;    // after TP1: limit order back in the signal direction in the pullback (TP = TP2, SL = SL). Keep same in Ind + EA
+input double InpAddDepth    = 0.50;    // add level: 0 = Entry, 0.5 = halfway, 1.0 = signal SL (previous high/low); capped before the widened SL
+input int    InpAddExpire   = 24;      // cancel the add after N closed bars without a fill
+input double InpAddLot      = 0.01;    // EA: lot of the pullback add trade (0 = do not trade the add)
+
 input group "=== Single Trades ==="
-input double InpSingleLot       = 0.01;    // lot of every signal trade (also the first trade of a grid basket)
+input double InpSingleLot       = 0.01;    // lot of every signal trade, TP1 (also the first trade of a grid basket)
+input double InpRunnerLot       = 0.01;    // Single trades: extra trade per signal with TP = TP2 (0 = off)
+input bool   InpRunnerBEOn      = false;   // runner + pullback add: move SL to break-even ...
+input int    InpRunnerBEPct     = 75;      // ... once price has covered this % of the way from the open to the TP
+input int    InpRunnerBELockPts = 10;      // break-even SL = open price + this (points)
 input bool   InpTPFromFill      = false;   // market entry: TP1 from fill price (same R) instead of indicator TP1
 input bool   InpCloseOnOpposite = true;    // opposite signal closes the trade and reverses
 input bool   InpTrailOn         = false;   // trailing stop
@@ -179,6 +189,8 @@ datetime gNextGridTry   = 0;
 int      gNoMarginLevel = 0;       // grid level already alerted for missing margin
 string   gLastEvent     = "";
 string   gLastSignal    = "none";
+datetime gEnteredSig    = 0;       // last signal the EA entered (single trades)
+datetime gAddSent       = 0;       // signal whose pullback add was already sent
 
 enum IdeaState { IDEA_IDLE = 0, IDEA_PENDING, IDEA_LIVE, IDEA_SL_WAIT };
 
@@ -191,6 +203,10 @@ struct Idea
    int       reCount, slBarAge, pendAge;
    bool      tp1Done;
    bool      re;
+   int       addState, addAge;   // pullback add: ADD_NONE / ADD_ARMED / ADD_FILLED / ADD_DONE
+   double    addPx;              // pullback add price
+   datetime  addTime, tp1Time;   // add fill bar / TP1 bar
+   double    pbMax;              // deepest pullback after TP1 (0 = Entry, 1 = signal SL)
   };
 Idea idea;
 
@@ -212,6 +228,7 @@ struct Bias
 //+------------------------------------------------------------------+
 void ResetCounts()
   {
+   ResetPbStats();
    gCntBuy = gCntSell = gCntTP1 = gCntTP2 = gCntSL = 0;
   }
 
@@ -224,6 +241,9 @@ void ResetIdea()
    idea.reCount = idea.slBarAge = idea.pendAge = 0;
    idea.tp1Done = false;
    idea.re = false;
+   idea.addState = idea.addAge = 0;
+   idea.addPx = idea.pbMax = 0;
+   idea.addTime = idea.tp1Time = 0;
   }
 
 // the indicator uses EndIdea to keep its chart zone; the EA only needs the reset
@@ -355,6 +375,9 @@ void ArmIdea(const int dir, const Candle &bar, const bool re)
    idea.pendAge = 0;
    idea.tp1Done = false;
    idea.re = re;
+   idea.addState = idea.addAge = 0;
+   idea.addPx = idea.pbMax = 0;
+   idea.addTime = idea.tp1Time = 0;
    ApplyLevels(dir, entry, sl);
    idea.state = (InpPendingOn ? IDEA_PENDING : IDEA_LIVE);
    if(idea.state == IDEA_LIVE)
@@ -381,6 +404,91 @@ double BarSpreadPx(const datetime t)
    if(CopySpread(_Symbol, _Period, t, 1, sp) == 1 && sp[0] > 0) return sp[0] * _Point;
    return 0.0;
   }
+
+//+------------------------------------------------------------------+
+//| Pullback add after TP1 + pullback statistics                     |
+//| After TP1 a limit order is armed back in the signal direction in |
+//| the pullback zone: TP = TP2, SL = the signal's (widened) SL.      |
+//| Depth unit R = signal risk: 0 = Entry, 1 = signal SL.             |
+//+------------------------------------------------------------------+
+#define ADD_NONE   0
+#define ADD_ARMED  1
+#define ADD_FILLED 2
+#define ADD_DONE   3
+
+int    gPbTP2 = 0, gPbSL = 0;                    // after TP1: went on to TP2 / hit the SL
+double gPbSum = 0, gPbMax = 0;                   // pullback depth of the TP2 winners (R)
+int    gPbE = 0, gPbHalf = 0, gPbFull = 0;       // TP2 winners whose pullback reached Entry / 0.5R / 1R
+int    gAddWin = 0, gAddLoss = 0;
+double gAddR = 0;                                // net result of the add trades in R
+
+void ResetPbStats()
+  {
+   gPbTP2 = gPbSL = gPbE = gPbHalf = gPbFull = gAddWin = gAddLoss = 0;
+   gPbSum = gPbMax = gAddR = 0;
+  }
+
+double SignalRisk()
+  {
+   double r = MathAbs(idea.entry - idea.sl0);
+   return (r > 0 ? r : Pt() * 10);
+  }
+
+double AddPrice()
+  {
+   double px  = idea.entry - idea.dir * InpAddDepth * SignalRisk();
+   double gap = MathMax((double)InpMinSLGapPts * Pt(), 5.0 * Pt());
+   if(idea.dir > 0 && px < idea.sl + gap) px = idea.sl + gap;
+   if(idea.dir < 0 && px > idea.sl - gap) px = idea.sl - gap;
+   return NormalizeDouble(px, _Digits);
+  }
+
+// TP1 reached on bar t: start measuring the pullback, arm the add
+void StartAfterTP1(const datetime t, const bool arm)
+  {
+   idea.tp1Time = t;
+   idea.pbMax   = -InpRR1;       // TP1 itself: no pullback yet
+   if(!arm || !InpAddOn) return;
+   idea.addPx    = AddPrice();
+   idea.addState = ADD_ARMED;
+   idea.addAge   = 0;
+  }
+
+// the idea finishes after TP1: at TP2 (win) or at the SL
+void CloseAfterTP1(const bool win, const bool addFillBar, const bool beyondTP2)
+  {
+   if(!idea.tp1Done) return;
+   if(win)
+     {
+      gPbTP2++;
+      gPbSum += idea.pbMax;
+      if(gPbTP2 == 1 || idea.pbMax > gPbMax) gPbMax = idea.pbMax;
+      if(idea.pbMax >= 0.0) gPbE++;
+      if(idea.pbMax >= 0.5) gPbHalf++;
+      if(idea.pbMax >= 1.0) gPbFull++;
+     }
+   else
+      gPbSL++;
+
+   if(idea.addState == ADD_FILLED)
+     {
+      // add filled on the TP2 bar: order unknown, counts only if the bar closed beyond TP2
+      if(win && (!addFillBar || beyondTP2))
+        {
+         gAddWin++;
+         double risk = MathAbs(idea.addPx - idea.sl);
+         if(risk > 0) gAddR += MathAbs(idea.tp2 - idea.addPx) / risk;
+        }
+      else if(!win)
+        {
+         gAddLoss++;
+         gAddR -= 1.0;
+        }
+     }
+   idea.addState = ADD_DONE;
+  }
+
+void OnAddFilled() { }
 
 void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
   {
@@ -429,12 +537,36 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
       if(hitTP2 && !(idea.dir > 0 ? bar.c >= idea.tp2 : aC <= idea.tp2)) hitTP2 = false;
      }
 
+   // after TP1: track the pullback and the add order (armed on the bar after TP1).
+   // buy limit fills at the ask, sell limit at the bid
+   bool addFillBar = false;
+   bool beyondTP2  = (idea.dir > 0 ? bar.c >= idea.tp2 : aC <= idea.tp2);
+   if(idea.state == IDEA_LIVE && idea.tp1Done)
+     {
+      double pb = (idea.dir > 0 ? (idea.entry - bar.l) : (aH - idea.entry)) / SignalRisk();
+      if(pb > idea.pbMax) idea.pbMax = pb;
+      if(idea.addState == ADD_ARMED)
+        {
+         idea.addAge++;
+         if(idea.dir > 0 ? (aL <= idea.addPx) : (bar.h >= idea.addPx))
+           {
+            idea.addState = ADD_FILLED;
+            idea.addTime  = bar.t;
+            addFillBar    = true;
+            OnAddFilled();
+           }
+         else if(idea.addAge > InpAddExpire)
+            idea.addState = ADD_DONE;
+        }
+     }
+
    if(idea.state == IDEA_LIVE && hitSL && hitTP1)
      {
       bool closeFav = (idea.dir > 0 ? (bar.c > idea.entry) : (bar.c < idea.entry));
       if(!closeFav)
         {
          gCntSL++;
+         CloseAfterTP1(false, addFillBar, beyondTP2);
          idea.state = IDEA_SL_WAIT;
          idea.slTime = bar.t;
          idea.slBarAge = 0;
@@ -444,8 +576,9 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
 
    if(idea.state == IDEA_LIVE && hitTP2)
      {
-      if(!idea.tp1Done) { gCntTP1++; idea.tp1Done = true; }
+      if(!idea.tp1Done) { gCntTP1++; idea.tp1Done = true; StartAfterTP1(bar.t, false); }
       gCntTP2++;
+      CloseAfterTP1(true, addFillBar, beyondTP2);
       EndIdea(" [TP2 HIT]", bar.t);
       return;
      }
@@ -454,11 +587,13 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
      {
       gCntTP1++;
       idea.tp1Done = true;
+      StartAfterTP1(bar.t, true);
      }
 
    if(idea.state == IDEA_LIVE && hitSL)
      {
       gCntSL++;
+      CloseAfterTP1(false, addFillBar, beyondTP2);
       idea.state = IDEA_SL_WAIT;
       idea.slTime = bar.t;
       idea.slBarAge = 0;
@@ -936,6 +1071,27 @@ double MarketTP1(const int dir, const double price, const double sl)
 // market fill price with the same R multiple (hybrid market part).
 double gLastOpenTP1 = 0;   // TP1 of the last order opened by OpenEntryAs
 
+// signal time from a comment "LukesEA|<signal time>[|B|ADD]" (0 for none / grid levels)
+datetime CmtSigTime(const string cmt)
+  {
+   int p = StringFind(cmt, "|");
+   if(p < 0) return 0;
+   string v = StringSubstr(cmt, p + 1);
+   int q = StringFind(v, "|");
+   if(q >= 0) v = StringSubstr(v, 0, q);
+   return (datetime)StringToInteger(v);
+  }
+
+// TP2 for a market runner: indicator TP2, or from the fill price with the same R if it is no longer valid
+double RunnerTP(const int dir, const double price, const double sl)
+  {
+   double tp = idea.tp2;
+   double ms = MinStop();
+   if(dir > 0 ? tp > price + ms : tp < price - ms) return NormalizeDouble(tp, _Digits);
+   double risk = MathAbs(price - sl);
+   return NormalizeDouble(dir > 0 ? price + risk * InpRR2 : price - risk * InpRR2, _Digits);
+  }
+
 // Single trades: SL distance from the entry widened by InpSLExpandPct % (pending = same level
 // as the signal engine / indicator SL). TP1 keeps the signal's risk.
 double ExpandSL(const int dir, const double base, const double sl)
@@ -946,14 +1102,15 @@ double ExpandSL(const int dir, const double base, const double sl)
   }
 
 bool OpenEntryAs(const int dir, const double lotIn, const bool withStops, const string tag,
-                 const ENUM_ENTRY_TYPE kind, const bool tpFromFill)
+                 const ENUM_ENTRY_TYPE kind, const bool tpFromFill, const int target = 1)
   {
    double lot = NormLot(lotIn);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ms  = MinStop();
    double sl  = NormalizeDouble(idea.sl0, _Digits);   // signal SL; ExpandSL widens it for the order
-   string cmt = InpComment + "|" + IntegerToString((long)idea.signalTime);
+   string cmt = InpComment + "|" + IntegerToString((long)idea.signalTime) + (target == 2 ? "|B" : "");
+   double rr  = (target == 2 ? InpRR2 : InpRR1);
 
    bool pending = (kind == ENTRY_PENDING);
    double entry = NormalizeDouble(idea.entry, _Digits);
@@ -981,10 +1138,11 @@ bool OpenEntryAs(const int dir, const double lotIn, const bool withStops, const 
       Log("SKIP", StringFormat("%s: price %s already beyond SL %s", tag, Px(price), Px(sl)));
       return false;
      }
-   double tp1 = (pending ? NormalizeDouble(idea.tp1, _Digits) : MarketTP1(dir, price, sl));
+   double tp1 = (target == 2 ? (pending ? NormalizeDouble(idea.tp2, _Digits) : RunnerTP(dir, price, sl))
+                             : (pending ? NormalizeDouble(idea.tp1, _Digits) : MarketTP1(dir, price, sl)));
    double risk = MathAbs(price - sl);
    if(!pending && tpFromFill)
-      tp1 = NormalizeDouble(dir > 0 ? price + risk * InpRR1 : price - risk * InpRR1, _Digits);
+      tp1 = NormalizeDouble(dir > 0 ? price + risk * rr : price - risk * rr, _Digits);
 
    double slx = ExpandSL(dir, (pending ? entry : price), sl);
    double oSL = (withStops ? slx : 0.0);
@@ -1013,7 +1171,7 @@ bool OpenEntryAs(const int dir, const double lotIn, const bool withStops, const 
       if(fill > 0)
         {
          double frisk = MathAbs(fill - sl);
-         double ftp1  = NormalizeDouble(dir > 0 ? fill + frisk * InpRR1 : fill - frisk * InpRR1, _Digits);
+         double ftp1  = NormalizeDouble(dir > 0 ? fill + frisk * rr : fill - frisk * rr, _Digits);
          double fslx  = ExpandSL(dir, fill, sl);
          if(MathAbs(ftp1 - tp1) >= _Point || MathAbs(fslx - slx) >= _Point)
            {
@@ -1031,7 +1189,7 @@ bool OpenEntryAs(const int dir, const double lotIn, const bool withStops, const 
      }
 
    gLastOpenTP1 = tp1;
-   if(InpMode == MODE_GRID) { SaveTP1(tp1); SaveBStop(0); }
+   if(InpMode == MODE_GRID && target == 1) { SaveTP1(tp1); SaveBStop(0); }
    string what = StringFormat("%s %s lot %.2f @ %s  SL %s  TP %s", tag,
                               (pending ? EnumToString(otype) : (dir > 0 ? "BUY market" : "SELL market")),
                               lot, Px(pending ? entry : trade.ResultPrice()),
@@ -1084,7 +1242,18 @@ void OpenHybrid(const int dir, const double lotIn, const bool withStops, const s
    if(mOk && InpMode == MODE_GRID) SaveTP1(mTP1);
   }
 
+void EnterMain(const int dir, const double lot, const bool withStops, const string tag);
+
+// main trade (TP1) + optional runner (TP2, single trades)
 void EnterSignal(const int dir, const double lot, const bool withStops, const string tag)
+  {
+   EnterMain(dir, lot, withStops, tag);
+   if(InpMode == MODE_SINGLE && InpRunnerLot > 0)
+      OpenEntryAs(dir, InpRunnerLot, withStops, tag + " [runner TP2]",
+                  (InpEntryType == ENTRY_PENDING ? ENTRY_PENDING : ENTRY_MARKET), false, 2);
+  }
+
+void EnterMain(const int dir, const double lot, const bool withStops, const string tag)
   {
    if(InpEntryType == ENTRY_HYBRID && (InpMode == MODE_GRID || !InpHybridSplitSingle))
      {
@@ -1140,6 +1309,7 @@ void ActOnSignal(const int sig)
         }
       if(CountOrders() > 0) DeleteOrders("replaced by " + tag);
       RememberSigRe(idea.signalTime, idea.reCount);
+      gEnteredSig = idea.signalTime;
       EnterSignal(dir, InpSingleLot, true, tag);
       return;
      }
@@ -1166,13 +1336,17 @@ void SyncOrders()
       ulong tk = OrderGetTicket(i);
       if(tk == 0 || !OurOrder()) continue;
       string cmt = OrderGetString(ORDER_COMMENT);
-      int p = StringFind(cmt, "|");
-      datetime sigT = 0;
-      if(p >= 0) sigT = (datetime)StringToInteger(StringSubstr(cmt, p + 1));
+      datetime sigT = CmtSigTime(cmt);
       datetime setup = (datetime)OrderGetInteger(ORDER_TIME_SETUP);
 
       string why = "";
-      if(sigT == 0 || sigT != idea.signalTime || (idea.state != IDEA_PENDING && idea.state != IDEA_LIVE))
+      if(StringFind(cmt, "|ADD") >= 0)
+        {
+         // pullback add lives while the engine still waits for its fill
+         if(sigT == 0 || sigT != idea.signalTime || idea.state != IDEA_LIVE || idea.addState != ADD_ARMED)
+            why = "pullback add no longer valid";
+        }
+      else if(sigT == 0 || sigT != idea.signalTime || (idea.state != IDEA_PENDING && idea.state != IDEA_LIVE))
          why = "indicator idea ended";
       else if(TimeCurrent() >= setup + (datetime)(InpPendingExpire + 1) * PeriodSeconds(_Period))
          why = "expired";
@@ -1463,6 +1637,7 @@ void ManageTrades()
      }
 
    if(InpMode == MODE_SINGLE && InpTrailOn) Trail();
+   if(InpMode == MODE_SINGLE && InpRunnerBEOn) RunnerBE();
    if(InpMode == MODE_GRID) ManageGrid(b);
   }
 
@@ -1532,9 +1707,8 @@ void SyncReentryFromDeals()
          ulong dt = HistoryDealGetTicket(j);
          if(dt > 0 && HistoryDealGetInteger(dt, DEAL_ENTRY) == DEAL_ENTRY_IN)
            {
-            string cmt = HistoryDealGetString(dt, DEAL_COMMENT);
-            int p = StringFind(cmt, "|");
-            if(p >= 0) sigT = (datetime)StringToInteger(StringSubstr(cmt, p + 1));
+            datetime ct = CmtSigTime(HistoryDealGetString(dt, DEAL_COMMENT));
+            if(ct != 0) sigT = ct;
            }
         }
       if(sigT == 0) continue;
@@ -1579,6 +1753,104 @@ bool WarmUp()
    return true;
   }
 
+//+------------------------------------------------------------------+
+//| Pullback add after TP1 (single trades)                           |
+//+------------------------------------------------------------------+
+// open position / pending order of signal sigT? add = only pullback add ones
+bool HaveFor(const datetime sigT, const bool add)
+  {
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0 || !Ours()) continue;
+      string c = PositionGetString(POSITION_COMMENT);
+      if(CmtSigTime(c) == sigT && (!add || StringFind(c, "|ADD") >= 0)) return true;
+     }
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      ulong tk = OrderGetTicket(i);
+      if(tk == 0 || !OurOrder()) continue;
+      string c = OrderGetString(ORDER_COMMENT);
+      if(CmtSigTime(c) == sigT && (!add || StringFind(c, "|ADD") >= 0)) return true;
+     }
+   return false;
+  }
+
+// TP1 hit: limit order back in the signal direction at the add level, TP = TP2, SL = signal SL.
+// Price already past the add level (deeper pullback) -> at market, a better price.
+void PlaceAddOrder()
+  {
+   if(InpMode != MODE_SINGLE || !InpAddOn || InpAddLot <= 0) return;
+   if(idea.state != IDEA_LIVE || idea.addState != ADD_ARMED || idea.signalTime == 0) return;
+   if(gAddSent == idea.signalTime || gClosing || TradeBlocker() != "") return;
+   if(idea.signalTime != gEnteredSig && !HaveFor(idea.signalTime, false)) return;   // EA did not trade this signal
+   gAddSent = idea.signalTime;
+   if(HaveFor(idea.signalTime, true)) return;                                       // already there (restart)
+
+   int    dir = idea.dir;
+   double lot = NormLot(InpAddLot);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ms  = MinStop();
+   double px  = NormalizeDouble(idea.addPx, _Digits);
+   double sl  = NormalizeDouble(idea.sl, _Digits);
+   double tp  = NormalizeDouble(idea.tp2, _Digits);
+   string cmt = InpComment + "|" + IntegerToString((long)idea.signalTime) + "|ADD";
+   string tag = (dir > 0 ? "BUY" : "SELL");
+   tag += " pullback add";
+
+   bool   limit = (dir > 0 ? px < ask - ms : px > bid + ms);
+   double price = (limit ? px : (dir > 0 ? ask : bid));
+   if(dir > 0 ? (sl >= price - ms || tp <= price + ms) : (sl <= price + ms || tp >= price - ms))
+     {
+      Log("SKIP", StringFormat("%s: price %s outside SL %s / TP2 %s", tag, Px(price), Px(sl), Px(tp)));
+      return;
+     }
+   bool ok;
+   if(limit)        ok = trade.OrderOpen(_Symbol, (dir > 0 ? ORDER_TYPE_BUY_LIMIT : ORDER_TYPE_SELL_LIMIT), lot, 0, px, sl, tp, ORDER_TIME_GTC, 0, cmt);
+   else if(dir > 0) ok = trade.Buy(lot, _Symbol, 0, sl, tp, cmt);
+   else             ok = trade.Sell(lot, _Symbol, 0, sl, tp, cmt);
+
+   uint rc = trade.ResultRetcode();
+   if(!ok || (rc != TRADE_RETCODE_DONE && rc != TRADE_RETCODE_PLACED && rc != TRADE_RETCODE_DONE_PARTIAL))
+     {
+      Log("OPEN_FAIL", StringFormat("%s lot %.2f retcode %u %s", tag, lot, rc, trade.ResultRetcodeDescription()));
+      return;
+     }
+   string what = StringFormat("%s %s lot %.2f @ %s  SL %s  TP2 %s", tag, (limit ? "LIMIT" : "market"), lot,
+                              Px(limit ? px : trade.ResultPrice()), Px(sl), Px(tp));
+   Log("OPEN", what);
+   if(InpAlertTrades) Notify("OPEN " + what);
+  }
+
+// runner (TP2) and pullback add: SL to break-even once price covered InpRunnerBEPct % of the way to the TP
+void RunnerBE()
+  {
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double ms  = MinStop();
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0 || !Ours()) continue;
+      string c = PositionGetString(POSITION_COMMENT);
+      if(StringFind(c, "|B") < 0 && StringFind(c, "|ADD") < 0) continue;
+      bool   buy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+      double op  = PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl  = PositionGetDouble(POSITION_SL);
+      double tp  = PositionGetDouble(POSITION_TP);
+      if(tp == 0) continue;
+      double lock = InpRunnerBELockPts * Pt();
+      double nsl  = NormalizeDouble(buy ? op + lock : op - lock, _Digits);
+      if(buy ? (sl >= nsl - _Point / 2) : (sl != 0 && sl <= nsl + _Point / 2)) continue;   // already at break-even
+      double need = MathAbs(tp - op) * InpRunnerBEPct / 100.0;
+      double cur  = (buy ? bid - op : op - ask);
+      if(cur < need) continue;
+      if(buy ? nsl > bid - ms : nsl < ask + ms) continue;
+      if(trade.PositionModify(tk, nsl, tp)) Log("RUNNER_BE", StringFormat("ticket %I64u SL -> %s", tk, Px(nsl)));
+     }
+  }
+
 void OnNewBars()
   {
    int from = 1;
@@ -1593,7 +1865,7 @@ void OnNewBars()
      }
    gLastProcessed = iTime(_Symbol, _Period, 1);
 
-   if(InpMode != MODE_SIGNALS) SyncOrders();
+   if(InpMode != MODE_SIGNALS) { SyncOrders(); PlaceAddOrder(); }
    if(sig == 0) return;
 
    gLastSignal = SigName(sig) + " " + TimeToString(gLastProcessed, TIME_DATE|TIME_MINUTES);
@@ -1712,8 +1984,8 @@ string gTodayKeys[];   // signal keys entered today (for the "pending order" row
 string SigKey(const string cmt)
   {
    if(StringFind(cmt, "|grid") >= 0) return "";
-   int p = StringFind(cmt, "|");
-   return (p >= 0 ? StringSubstr(cmt, p + 1) : "");
+   datetime t = CmtSigTime(cmt);
+   return (t > 0 ? IntegerToString((long)t) : "");
   }
 
 bool KeyIn(const string &arr[], const string k)
@@ -1903,7 +2175,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "St.LukesMTF EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.20  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.22  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -1957,6 +2229,13 @@ void UpdatePanel(const bool force = false)
    PRow("Entry", EntryName(), C_TXT);
    if(InpMode == MODE_SINGLE && InpSLExpandPct > 0)
       PRow("SL widened", StringFormat("+%.0f%%", InpSLExpandPct), C_WARN);
+   if(InpMode == MODE_SINGLE)
+     {
+      PRow("Runner (TP2)", (InpRunnerLot > 0 ? StringFormat("%.2f lots%s", InpRunnerLot, (InpRunnerBEOn ? StringFormat("  BE at %d%%", InpRunnerBEPct) : "")) : "OFF"),
+           (InpRunnerLot > 0 ? C_TXT : C_MUTE));
+      PRow("Pullback add", (InpAddOn && InpAddLot > 0 ? StringFormat("%.2f lots @ %.2fR", InpAddLot, InpAddDepth) : "OFF"),
+           (InpAddOn && InpAddLot > 0 ? C_TXT : C_MUTE));
+     }
    PRow("Trading", (blk == "" ? "ENABLED" : "OFF"), (blk == "" ? C_UP : C_DN));
    if(InpEquityProtOn)
       PRow("Equity protector", StringFormat("-%.1f%%  (%.0f)", InpEquityProtPct, -AccountInfoDouble(ACCOUNT_BALANCE) * InpEquityProtPct / 100.0), C_WARN);
@@ -1970,6 +2249,8 @@ void UpdatePanel(const bool force = false)
      {
       PRow("Entry / SL", Px(idea.entry) + " / " + Px(idea.sl), C_TXT);
       PRow("TP1 / TP2", Px(idea.tp1) + " / " + Px(idea.tp2), C_TXT);
+      if(idea.addState == ADD_ARMED)  PRow("Add order", "LIMIT @ " + Px(idea.addPx), C_WARN);
+      if(idea.addState == ADD_FILLED) PRow("Add order", "FILLED @ " + Px(idea.addPx), C_WARN);
      }
    PRow("Last signal", gLastSignal, C_LBL);
    if(b.count > 0)

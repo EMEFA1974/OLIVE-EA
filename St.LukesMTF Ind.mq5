@@ -1,6 +1,6 @@
 #property copyright "St.LukesMTF Ind"
 #property link      ""
-#property version   "1.86"
+#property version   "1.87"
 #property indicator_chart_window
 #property indicator_buffers 4
 #property indicator_plots   4
@@ -78,6 +78,12 @@ input int    InpMaxReentry     = 2;
 input int    InpReentryWindow  = 24;
 input int    InpReentryCool    = 3;
 
+input group "=== Pullback Add (after TP1) ==="
+input bool   InpAddOn       = true;    // after TP1: limit order back in the signal direction in the pullback (TP = TP2, SL = SL). Keep same in Ind + EA
+input double InpAddDepth    = 0.50;    // add level: 0 = Entry, 0.5 = halfway, 1.0 = signal SL (previous high/low); capped before the widened SL
+input int    InpAddExpire   = 24;      // cancel the add after N closed bars without a fill
+input color  InpAddColor    = clrOrange; // add level line, label and fill arrow
+
 input group "=== Alerts ==="
 input bool   InpAlertPopup   = true;
 input bool   InpAlertSound   = true;
@@ -86,7 +92,7 @@ input bool   InpAlertEmail   = false;
 input string InpSoundFile    = "alert.wav";
 input bool   InpAlertOnLoad  = false;
 input bool   InpAlertReentry = true;
-input bool   InpAlertFill    = true;    // alert when pending is filled
+input bool   InpAlertFill    = true;    // alert when pending is filled, at TP1 (with the add level) and when the add fills
 
 input group "=== Visuals ==="
 input bool   InpShowPanel    = true;
@@ -136,6 +142,8 @@ datetime lastBuyTime   = 0;
 datetime lastSellTime  = 0;
 datetime lastAlertBar  = 0;
 datetime lastFillAlert = 0;
+datetime lastTP1Alert  = 0;
+datetime lastAddAlert  = 0;
 bool     allowAlerts   = false;
 datetime gLastBar      = 0;      // last closed bar fed to the signal engine
 
@@ -175,6 +183,10 @@ struct Idea
    int       reCount, slBarAge, pendAge;
    bool      tp1Done;
    bool      re;
+   int       addState, addAge;   // pullback add: ADD_NONE / ADD_ARMED / ADD_FILLED / ADD_DONE
+   double    addPx;              // pullback add price
+   datetime  addTime, tp1Time;   // add fill bar / TP1 bar
+   double    pbMax;              // deepest pullback after TP1 (0 = Entry, 1 = signal SL)
   };
 Idea idea;
 
@@ -280,6 +292,7 @@ void ClearZones()
 
 void ResetCounts()
   {
+   ResetPbStats();
    gCntBuy = gCntSell = gCntTP1 = gCntTP2 = gCntSL = gCntLoss = 0;
    ArrayResize(gEvT, 0);
    ArrayResize(gEvK, 0);
@@ -294,6 +307,9 @@ void ResetIdea()
    idea.reCount = idea.slBarAge = idea.pendAge = 0;
    idea.tp1Done = false;
    idea.re = false;
+   idea.addState = idea.addAge = 0;
+   idea.addPx = idea.pbMax = 0;
+   idea.addTime = idea.tp1Time = 0;
   }
 
 // finish the running idea but keep its levels as the current zone
@@ -438,6 +454,9 @@ void ArmIdea(const int dir, const Candle &bar, const bool re)
    idea.pendAge = 0;
    idea.tp1Done = false;
    idea.re = re;
+   idea.addState = idea.addAge = 0;
+   idea.addPx = idea.pbMax = 0;
+   idea.addTime = idea.tp1Time = 0;
    ApplyLevels(dir, entry, sl);
    idea.state = (InpPendingOn ? IDEA_PENDING : IDEA_LIVE);
    if(idea.state == IDEA_LIVE)
@@ -463,6 +482,108 @@ double BarSpreadPx(const datetime t)
    int sp[];
    if(CopySpread(_Symbol, _Period, t, 1, sp) == 1 && sp[0] > 0) return sp[0] * _Point;
    return 0.0;
+  }
+
+//+------------------------------------------------------------------+
+//| Pullback add after TP1 + pullback statistics                     |
+//| After TP1 a limit order is armed back in the signal direction in |
+//| the pullback zone: TP = TP2, SL = the signal's (widened) SL.      |
+//| Depth unit R = signal risk: 0 = Entry, 1 = signal SL.             |
+//+------------------------------------------------------------------+
+#define ADD_NONE   0
+#define ADD_ARMED  1
+#define ADD_FILLED 2
+#define ADD_DONE   3
+
+int    gPbTP2 = 0, gPbSL = 0;                    // after TP1: went on to TP2 / hit the SL
+double gPbSum = 0, gPbMax = 0;                   // pullback depth of the TP2 winners (R)
+int    gPbE = 0, gPbHalf = 0, gPbFull = 0;       // TP2 winners whose pullback reached Entry / 0.5R / 1R
+int    gAddWin = 0, gAddLoss = 0;
+double gAddR = 0;                                // net result of the add trades in R
+
+void ResetPbStats()
+  {
+   gPbTP2 = gPbSL = gPbE = gPbHalf = gPbFull = gAddWin = gAddLoss = 0;
+   gPbSum = gPbMax = gAddR = 0;
+  }
+
+double SignalRisk()
+  {
+   double r = MathAbs(idea.entry - idea.sl0);
+   return (r > 0 ? r : Pt() * 10);
+  }
+
+double AddPrice()
+  {
+   double px  = idea.entry - idea.dir * InpAddDepth * SignalRisk();
+   double gap = MathMax((double)InpMinSLGapPts * Pt(), 5.0 * Pt());
+   if(idea.dir > 0 && px < idea.sl + gap) px = idea.sl + gap;
+   if(idea.dir < 0 && px > idea.sl - gap) px = idea.sl - gap;
+   return NormalizeDouble(px, _Digits);
+  }
+
+// TP1 reached on bar t: start measuring the pullback, arm the add
+void StartAfterTP1(const datetime t, const bool arm)
+  {
+   idea.tp1Time = t;
+   idea.pbMax   = -InpRR1;       // TP1 itself: no pullback yet
+   if(!arm || !InpAddOn) return;
+   idea.addPx    = AddPrice();
+   idea.addState = ADD_ARMED;
+   idea.addAge   = 0;
+  }
+
+// the idea finishes after TP1: at TP2 (win) or at the SL
+void CloseAfterTP1(const bool win, const bool addFillBar, const bool beyondTP2)
+  {
+   if(!idea.tp1Done) return;
+   if(win)
+     {
+      gPbTP2++;
+      gPbSum += idea.pbMax;
+      if(gPbTP2 == 1 || idea.pbMax > gPbMax) gPbMax = idea.pbMax;
+      if(idea.pbMax >= 0.0) gPbE++;
+      if(idea.pbMax >= 0.5) gPbHalf++;
+      if(idea.pbMax >= 1.0) gPbFull++;
+     }
+   else
+      gPbSL++;
+
+   if(idea.addState == ADD_FILLED)
+     {
+      // add filled on the TP2 bar: order unknown, counts only if the bar closed beyond TP2
+      if(win && (!addFillBar || beyondTP2))
+        {
+         gAddWin++;
+         double risk = MathAbs(idea.addPx - idea.sl);
+         if(risk > 0) gAddR += MathAbs(idea.tp2 - idea.addPx) / risk;
+        }
+      else if(!win)
+        {
+         gAddLoss++;
+         gAddR -= 1.0;
+        }
+     }
+   idea.addState = ADD_DONE;
+  }
+
+// indicator: orange arrow where the pullback add filled (kept as history)
+void OnAddFilled()
+  {
+   if(idea.addTime == 0) return;
+   string name = ARPRE + TimeToString(idea.addTime, TIME_DATE|TIME_MINUTES) + "_ADD";
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_ARROW, 0, idea.addTime, idea.addPx);
+   ObjectSetInteger(0, name, OBJPROP_TIME, idea.addTime);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, idea.addPx);
+   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, idea.dir > 0 ? 233 : 234);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, InpAddColor);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, idea.dir > 0 ? ANCHOR_TOP : ANCHOR_BOTTOM);
+   ObjectSetString(0, name, OBJPROP_TOOLTIP, (idea.dir > 0 ? "Pullback add BUY @ " : "Pullback add SELL @ ") + DoubleToString(idea.addPx, _Digits));
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
   }
 
 void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
@@ -512,6 +633,29 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
       if(hitTP2 && !(idea.dir > 0 ? bar.c >= idea.tp2 : aC <= idea.tp2)) hitTP2 = false;
      }
 
+   // after TP1: track the pullback and the add order (armed on the bar after TP1).
+   // buy limit fills at the ask, sell limit at the bid
+   bool addFillBar = false;
+   bool beyondTP2  = (idea.dir > 0 ? bar.c >= idea.tp2 : aC <= idea.tp2);
+   if(idea.state == IDEA_LIVE && idea.tp1Done)
+     {
+      double pb = (idea.dir > 0 ? (idea.entry - bar.l) : (aH - idea.entry)) / SignalRisk();
+      if(pb > idea.pbMax) idea.pbMax = pb;
+      if(idea.addState == ADD_ARMED)
+        {
+         idea.addAge++;
+         if(idea.dir > 0 ? (aL <= idea.addPx) : (bar.h >= idea.addPx))
+           {
+            idea.addState = ADD_FILLED;
+            idea.addTime  = bar.t;
+            addFillBar    = true;
+            OnAddFilled();
+           }
+         else if(idea.addAge > InpAddExpire)
+            idea.addState = ADD_DONE;
+        }
+     }
+
    if(idea.state == IDEA_LIVE && hitSL && hitTP1)
      {
       bool closeFav = (idea.dir > 0 ? (bar.c > idea.entry) : (bar.c < idea.entry));
@@ -519,6 +663,7 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
         {
          gCntSL++; AddEv(EV_SL, bar.t);
          if(!idea.tp1Done) { gCntLoss++; AddEv(EV_LOSS, bar.t); }
+         CloseAfterTP1(false, addFillBar, beyondTP2);
          idea.state = IDEA_SL_WAIT;
          idea.slTime = bar.t;
          idea.slBarAge = 0;
@@ -528,8 +673,9 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
 
    if(idea.state == IDEA_LIVE && hitTP2)
      {
-      if(!idea.tp1Done) { gCntTP1++; AddEv(EV_TP1, bar.t); idea.tp1Done = true; }
+      if(!idea.tp1Done) { gCntTP1++; AddEv(EV_TP1, bar.t); idea.tp1Done = true; StartAfterTP1(bar.t, false); }
       gCntTP2++; AddEv(EV_TP2, bar.t);
+      CloseAfterTP1(true, addFillBar, beyondTP2);
       EndIdea(" [TP2 HIT]", bar.t);
       return;
      }
@@ -538,12 +684,14 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
      {
       gCntTP1++; AddEv(EV_TP1, bar.t);
       idea.tp1Done = true;
+      StartAfterTP1(bar.t, true);
      }
 
    if(idea.state == IDEA_LIVE && hitSL)
      {
       gCntSL++; AddEv(EV_SL, bar.t);
       if(!idea.tp1Done) { gCntLoss++; AddEv(EV_LOSS, bar.t); }
+      CloseAfterTP1(false, addFillBar, beyondTP2);
       idea.state = IDEA_SL_WAIT;
       idea.slTime = bar.t;
       idea.slBarAge = 0;
@@ -797,12 +945,16 @@ void DrawLiveZone()
       gz.status = "";
       if(idea.state == IDEA_PENDING) gz.status = (InpPendingType == PEND_LIMIT ? " [LIMIT]" : " [STOP]");
       if(idea.state == IDEA_LIVE)    gz.status = (idea.tp1Done ? " [TP1 HIT]" : " [FILLED]");
+      if(idea.state == IDEA_LIVE && idea.addState == ADD_ARMED)  gz.status = " [TP1 HIT, ADD WAIT]";
+      if(idea.state == IDEA_LIVE && idea.addState == ADD_FILLED) gz.status = " [TP1 HIT, ADD FILLED]";
       if(idea.state == IDEA_SL_WAIT) gz.status = " [SL HIT]";
      }
 
    // mitigated = SL hit, TP1 hit (or TP2 when InpHideAtTP1 is off), cancelled or expired
+   // a running pullback add keeps the zone on the chart
+   bool addShow = (idea.state == IDEA_LIVE && (idea.addState == ADD_ARMED || idea.addState == ADD_FILLED));
    bool mitigated = (idea.state == IDEA_SL_WAIT)
-                    || (idea.state == IDEA_LIVE && idea.tp1Done && InpHideAtTP1)
+                    || (idea.state == IDEA_LIVE && idea.tp1Done && InpHideAtTP1 && !addShow)
                     || (idea.state == IDEA_IDLE);
    bool show = InpShowZones && gz.valid && gz.t1 != 0
                && (!mitigated || InpKeepLastZone);
@@ -840,6 +992,17 @@ void DrawLiveZone()
    PutLabel(ZPRE+"NSL0", tl, gz.sl,    "SL  "    + DoubleToString(gz.sl,    _Digits), InpLineSL);
    PutLabel(ZPRE+"NT10", tl, gz.tp1,   "TP1  "   + DoubleToString(gz.tp1,   _Digits), InpLineTP1);
    PutLabel(ZPRE+"NT20", tl, gz.tp2,   "TP2  "   + DoubleToString(gz.tp2,   _Digits), InpLineTP2);
+   if(addShow)
+     {
+      datetime ta = (idea.tp1Time > t1 ? idea.tp1Time : t1);
+      PutLine(ZPRE+"LAD0", ta, t3, idea.addPx, Faint(InpAddColor, InpLineOpacity));
+      PutLabel(ZPRE+"NAD0", tl, idea.addPx, (idea.addState == ADD_ARMED ? "ADD  " : "ADD FILLED  ") + DoubleToString(idea.addPx, _Digits), InpAddColor);
+     }
+   else
+     {
+      ObjectDelete(0, ZPRE+"LAD0");
+      ObjectDelete(0, ZPRE+"NAD0");
+     }
    ChartRedraw(0);
   }
 
@@ -1014,7 +1177,7 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "St.LukesMTF Ind", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.85  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.87  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -1048,6 +1211,18 @@ void DrawPanel(const bool force = false)
    PRow("TP1 / TP2 / SL", StringFormat("%d / %d / %d", gCntTP1, gCntTP2, gCntSL), C_TXT);
    v = WinRate(gCntTP1, gCntLoss, c); PRow("Win rate", v, c);
 
+   PSection("AFTER TP1 (CHART HISTORY)");
+   PRow("Then TP2 / SL", StringFormat("%d / %d", gPbTP2, gPbSL), C_TXT);
+   if(gPbTP2 > 0)
+     {
+      PRow("Pullback avg / max", StringFormat("%.2f / %.2f R", gPbSum / gPbTP2, gPbMax), C_TXT);
+      PRow("Reached Entry/0.5R/1R", StringFormat("%.0f%% / %.0f%% / %.0f%%", 100.0 * gPbE / gPbTP2,
+           100.0 * gPbHalf / gPbTP2, 100.0 * gPbFull / gPbTP2), C_TXT);
+     }
+   if(InpAddOn)
+      PRow(StringFormat("Add @ %.2fR  W / L", InpAddDepth), StringFormat("%d / %d  %+.1fR", gAddWin, gAddLoss, gAddR),
+           (gAddWin + gAddLoss == 0 ? C_MUTE : (gAddR >= 0 ? C_UP : C_DN)));
+
    PSection("CURRENT SIGNAL");
    if(idea.state == IDEA_IDLE)
       PRow("Status", "no active signal", C_MUTE);
@@ -1058,6 +1233,8 @@ void DrawPanel(const bool force = false)
       PRow("Entry", Px(idea.entry), C_TXT);
       PRow("SL", Px(idea.sl), InpLineSL);
       PRow("TP1 / TP2", Px(idea.tp1) + " / " + Px(idea.tp2), InpLineTP1);
+      if(idea.addState == ADD_ARMED)  PRow("Add order", "LIMIT @ " + Px(idea.addPx), InpAddColor);
+      if(idea.addState == ADD_FILLED) PRow("Add order", "FILLED @ " + Px(idea.addPx), InpAddColor);
      }
    PRow("Re-entry", (InpReentryOn ? StringFormat("ON  %d / %d", idea.reCount, InpMaxReentry) : "OFF"), (InpReentryOn ? C_UP : C_MUTE));
 
@@ -1347,6 +1524,19 @@ void CheckAlerts(const datetime barTime, const double barClose)
      {
       lastFillAlert = barTime;
       FireAlert(idea.dir > 0 ? "PENDING FILLED BUY" : "PENDING FILLED SELL", barTime, barClose);
+     }
+
+   if(InpAlertFill && idea.state == IDEA_LIVE && idea.tp1Time == barTime && lastTP1Alert != barTime)
+     {
+      lastTP1Alert = barTime;
+      string what = (idea.dir > 0 ? "TP1 HIT BUY" : "TP1 HIT SELL");
+      if(idea.addState == ADD_ARMED) what += " | ADD LIMIT @ " + DoubleToString(idea.addPx, _Digits);
+      FireAlert(what, barTime, barClose);
+     }
+   if(InpAlertFill && idea.state == IDEA_LIVE && idea.addState == ADD_FILLED && idea.addTime == barTime && lastAddAlert != barTime)
+     {
+      lastAddAlert = barTime;
+      FireAlert(idea.dir > 0 ? "PULLBACK ADD FILLED BUY" : "PULLBACK ADD FILLED SELL", barTime, barClose);
      }
 
    if(barTime == lastAlertBar) return;
