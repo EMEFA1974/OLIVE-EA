@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "St.LukesMTF Max EA"
 #property link      ""
-#property version   "1.22"
+#property version   "1.23"
 
 #include <Trade/Trade.mqh>
 
@@ -72,6 +72,7 @@ input int    InpCooldown     = 8;
 input bool   InpRequireD     = false;
 input bool   InpRequireH4    = true;
 input bool   InpUseM5Trigger = false;
+input int    InpReplayDays   = 5;      // signal history replayed from 00:00 (server) this many days back. Keep same in Ind + EA
 input bool   InpAutoDigits   = true;   // 3/5-digit brokers: point inputs are scaled x10 (same $ distances on 2- and 3-digit XAUUSD)
 
 input group "=== Pending Entry ==="
@@ -106,6 +107,7 @@ input double InpAddLot      = 0.01;    // EA: lot of the pullback add trade (0 =
 
 input group "=== Single Trades ==="
 input double InpSingleLot       = 0.01;    // lot of every signal trade, TP1 (also the first trade of a grid basket)
+input bool   InpTakePendingOnStart = true; // EA start: place the pending order of a signal that is still waiting for its Entry
 input double InpRunnerLot       = 0.01;    // Single trades: extra trade per signal with TP = TP2 (0 = off)
 input bool   InpRunnerBEOn      = false;   // runner + pullback add: move SL to break-even ...
 input int    InpRunnerBEPct     = 75;      // ... once price has covered this % of the way from the open to the TP
@@ -489,6 +491,46 @@ void CloseAfterTP1(const bool win, const bool addFillBar, const bool beyondTP2)
   }
 
 void OnAddFilled() { }
+
+//+------------------------------------------------------------------+
+//| Replay anchor: indicator and EA rebuild the signal state from the |
+//| same bar (00:00 server time, InpReplayDays back), whenever each   |
+//| was loaded, and both re-anchor at every new day.                 |
+//+------------------------------------------------------------------+
+datetime gAnchor = 0;
+
+datetime ReplayAnchor()
+  {
+   datetime t = iTime(_Symbol, _Period, 0);
+   if(t == 0) t = TimeCurrent();
+   return t - (t % 86400) - (datetime)MathMax(1, InpReplayDays) * 86400;
+  }
+
+// index of the first bar at or after the anchor (clamped to the history)
+int AnchorShift(const datetime anchor, const int total)
+  {
+   int sh = iBarShift(_Symbol, _Period, anchor, false);
+   if(sh < 0) sh = total - 5;
+   else if(iTime(_Symbol, _Period, sh) < anchor) sh--;
+   sh = (int)MathMin(sh, total - 5);
+   return (int)MathMax(sh, 1);
+  }
+
+bool HTFReady()
+  {
+   return (iTime(_Symbol, InpTF_D, 1) != 0 && iTime(_Symbol, InpTF_H4, 1) != 0 &&
+           iTime(_Symbol, InpTF_H1, 1) != 0 && iTime(_Symbol, InpTF_M5, 1) != 0);
+  }
+
+// one line per engine state change, printed by both: compare them in the Experts tab
+string gLastEngineKey = "";
+string EngineKey()
+  {
+   if(idea.state == IDEA_IDLE || idea.signalTime == 0) return "IDLE";
+   string st = (idea.state == IDEA_PENDING ? "PENDING" : (idea.state == IDEA_LIVE ? "LIVE" : "SL WAIT"));
+   return StringFormat("%s %s  signal %s", st, (idea.dir > 0 ? "BUY" : "SELL"),
+                       TimeToString(idea.signalTime, TIME_DATE|TIME_MINUTES));
+  }
 
 void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
   {
@@ -1731,26 +1773,55 @@ void SyncReentryFromDeals()
 //+------------------------------------------------------------------+
 //| Engine driver                                                    |
 //+------------------------------------------------------------------+
-bool WarmUp()
+// Replays the engine from the anchor bar down to bar 'last' (1 at start-up; 2 on a
+// new-day re-anchor, so the just-closed bar 1 goes through OnNewBars and can be traded).
+bool WarmUp(const int last = 1)
   {
    int total = Bars(_Symbol, _Period);
    if(total < 40) return false;
-   if(iTime(_Symbol, InpTF_D, 1) == 0 || iTime(_Symbol, InpTF_H4, 1) == 0 ||
-      iTime(_Symbol, InpTF_H1, 1) == 0 || iTime(_Symbol, InpTF_M5, 1) == 0)
-      return false;   // higher timeframe history still loading
+   if(!HTFReady()) return false;   // higher timeframe history still loading
 
+   datetime anc = ReplayAnchor();
    ResetIdea();
    ResetCounts();
    lastBuyTime = lastSellTime = 0;
-   int start = (int)MathMin(total - 5, 800);
-   if(start < 1) start = 1;
-   for(int i = start; i >= 1; i--)
+   ClearSignalTimes();   // rebuilt by the replay (no duplicates after a re-anchor)
+   int start = AnchorShift(anc, total);
+   for(int i = start; i >= last; i--)
      {
       int s = ProcessBar(i);
       if(s != 0) { DrawSignal(i, s); AddSignalTime(iTime(_Symbol, _Period, i)); gLastSignal = SigName(s) + " " + TimeToString(iTime(_Symbol, _Period, i), TIME_DATE|TIME_MINUTES); }
      }
-   gLastProcessed = iTime(_Symbol, _Period, 1);
+   gLastProcessed = iTime(_Symbol, _Period, last);
+   gAnchor = anc;
    return true;
+  }
+
+void LogEngineState()
+  {
+   string ek = EngineKey();
+   if(ek == gLastEngineKey) return;
+   gLastEngineKey = ek;
+   Log("ENGINE", ek);
+  }
+
+// EA start: a signal that is still PENDING (price has not reached its Entry) gets its
+// pending order(s) now. Running (filled) signals are not entered late.
+void TakePendingOnStart()
+  {
+   if(!InpTakePendingOnStart || InpMode != MODE_SINGLE || !InpPendingOn) return;
+   if(idea.state != IDEA_PENDING || idea.signalTime == 0) return;
+   if(HaveFor(idea.signalTime, false) || GetBasket().count > 0) return;
+   string blk = TradeBlocker();
+   if(blk != "") { Log("SKIP", "start-up pending signal: " + blk); return; }
+   string tag = (idea.dir > 0 ? "BUY" : "SELL");
+   tag += " (signal " + TimeToString(idea.signalTime, TIME_DATE|TIME_MINUTES) + ", taken at start)";
+   Log("CATCH_UP", tag + ": placing pending order at the Entry " + Px(idea.entry));
+   RememberSigRe(idea.signalTime, idea.reCount);
+   gEnteredSig = idea.signalTime;
+   OpenEntryAs(idea.dir, InpSingleLot, true, tag, ENTRY_PENDING, false);
+   if(InpRunnerLot > 0)
+      OpenEntryAs(idea.dir, InpRunnerLot, true, tag + " [runner TP2]", ENTRY_PENDING, false, 2);
   }
 
 //+------------------------------------------------------------------+
@@ -1956,6 +2027,8 @@ int    gRow = 0, gMaxRow = 0;
 int    gEmaFast = INVALID_HANDLE, gEmaSlow = INVALID_HANDLE;
 datetime gSigTimes[];
 uint   gLastPanelMs = 0;
+
+void ClearSignalTimes() { ArrayResize(gSigTimes, 0); }
 
 void AddSignalTime(const datetime t)
   {
@@ -2175,7 +2248,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "St.LukesMTF Max EA", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.22  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.23  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -2247,6 +2320,7 @@ void UpdatePanel(const bool force = false)
    PRow("Signal", sigState, (idea.state == IDEA_IDLE ? C_MUTE : (idea.dir > 0 ? InpBuyColor : InpSellColor)));
    if(idea.state != IDEA_IDLE)
      {
+      PRow("Signal bar", TimeToString(idea.signalTime, TIME_DATE|TIME_MINUTES), C_TXT);
       PRow("Entry / SL", Px(idea.entry) + " / " + Px(idea.sl), C_TXT);
       PRow("TP1 / TP2", Px(idea.tp1) + " / " + Px(idea.tp2), C_TXT);
       if(idea.addState == ADD_ARMED)  PRow("Add order", "LIMIT @ " + Px(idea.addPx), C_WARN);
@@ -2433,8 +2507,10 @@ bool EnsureWarm()
    gWarm = WarmUp();
    if(!gWarm) return false;
    Basket b = GetBasket();
-   Log("READY", StringFormat("engine replayed history, state %s; found %d EA trades, %d pending orders",
-                             StateText(), b.count, CountOrders()));
+   Log("READY", StringFormat("engine replayed history from %s, state %s; found %d EA trades, %d pending orders",
+                             TimeToString(gAnchor, TIME_DATE|TIME_MINUTES), StateText(), b.count, CountOrders()));
+   LogEngineState();
+   TakePendingOnStart();
    return true;
   }
 
@@ -2450,8 +2526,15 @@ void OnTick()
    CheckBlocker();
    SyncReentryFromDeals();
 
+   // new day: re-anchor the replay (the indicator does the same), then handle bar 1 as usual
+   if(ReplayAnchor() != gAnchor && WarmUp(2))
+      Log("REANCHOR", StringFormat("engine replayed from %s, state %s", TimeToString(gAnchor, TIME_DATE|TIME_MINUTES), StateText()));
+
    if(iTime(_Symbol, _Period, 1) > gLastProcessed)
+     {
       OnNewBars();
+      LogEngineState();
+     }
 
    if(InpMode != MODE_SIGNALS || GetBasket().count > 0)
       ManageTrades();

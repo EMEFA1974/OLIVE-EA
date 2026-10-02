@@ -1,6 +1,6 @@
 #property copyright "St.LukesMTF Max Ind"
 #property link      ""
-#property version   "1.87"
+#property version   "1.88"
 #property indicator_chart_window
 #property indicator_buffers 4
 #property indicator_plots   4
@@ -52,6 +52,7 @@ input int    InpCooldown     = 8;
 input bool   InpRequireD     = false;
 input bool   InpRequireH4    = true;
 input bool   InpUseM5Trigger = false;
+input int    InpReplayDays   = 5;      // signal history replayed from 00:00 (server) this many days back. Keep same in Ind + EA
 input bool   InpAutoDigits   = true;   // 3/5-digit brokers: point inputs are scaled x10 (same $ distances on 2- and 3-digit XAUUSD)
 
 input group "=== Pending Entry ==="
@@ -584,6 +585,46 @@ void OnAddFilled()
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
    ObjectSetInteger(0, name, OBJPROP_BACK, false);
+  }
+
+//+------------------------------------------------------------------+
+//| Replay anchor: indicator and EA rebuild the signal state from the |
+//| same bar (00:00 server time, InpReplayDays back), whenever each   |
+//| was loaded, and both re-anchor at every new day.                 |
+//+------------------------------------------------------------------+
+datetime gAnchor = 0;
+
+datetime ReplayAnchor()
+  {
+   datetime t = iTime(_Symbol, _Period, 0);
+   if(t == 0) t = TimeCurrent();
+   return t - (t % 86400) - (datetime)MathMax(1, InpReplayDays) * 86400;
+  }
+
+// index of the first bar at or after the anchor (clamped to the history)
+int AnchorShift(const datetime anchor, const int total)
+  {
+   int sh = iBarShift(_Symbol, _Period, anchor, false);
+   if(sh < 0) sh = total - 5;
+   else if(iTime(_Symbol, _Period, sh) < anchor) sh--;
+   sh = (int)MathMin(sh, total - 5);
+   return (int)MathMax(sh, 1);
+  }
+
+bool HTFReady()
+  {
+   return (iTime(_Symbol, InpTF_D, 1) != 0 && iTime(_Symbol, InpTF_H4, 1) != 0 &&
+           iTime(_Symbol, InpTF_H1, 1) != 0 && iTime(_Symbol, InpTF_M5, 1) != 0);
+  }
+
+// one line per engine state change, printed by both: compare them in the Experts tab
+string gLastEngineKey = "";
+string EngineKey()
+  {
+   if(idea.state == IDEA_IDLE || idea.signalTime == 0) return "IDLE";
+   string st = (idea.state == IDEA_PENDING ? "PENDING" : (idea.state == IDEA_LIVE ? "LIVE" : "SL WAIT"));
+   return StringFormat("%s %s  signal %s", st, (idea.dir > 0 ? "BUY" : "SELL"),
+                       TimeToString(idea.signalTime, TIME_DATE|TIME_MINUTES));
   }
 
 void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4)
@@ -1177,7 +1218,7 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "St.LukesMTF Max Ind", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.87  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.88  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -1230,6 +1271,7 @@ void DrawPanel(const bool force = false)
      {
       string side = (idea.dir > 0 ? (idea.re ? "RE-BUY" : "BUY") : (idea.re ? "RE-SELL" : "SELL"));
       PRow("Status", side + "  " + StateText(), SignalColor(idea.dir, idea.re));
+      PRow("Signal bar", TimeToString(idea.signalTime, TIME_DATE|TIME_MINUTES), C_TXT);
       PRow("Entry", Px(idea.entry), C_TXT);
       PRow("SL", Px(idea.sl), InpLineSL);
       PRow("TP1 / TP2", Px(idea.tp1) + " / " + Px(idea.tp2), InpLineTP1);
@@ -1368,8 +1410,11 @@ int OnCalculate(const int rates_total,
    ArraySetAsSeries(close, true);
 
    int start;
-   if(prev_calculated <= 0)
+   datetime anc = ReplayAnchor();
+   if(prev_calculated <= 0 || anc != gAnchor)
      {
+      if(!HTFReady()) return(0);   // D1/H4/H1/M5 history still loading: replay later, like the EA
+      gAnchor = anc;
       ArrayInitialize(BuyBuf, EMPTY_VALUE);
       ArrayInitialize(SellBuf, EMPTY_VALUE);
       ArrayInitialize(ReBuyBuf, EMPTY_VALUE);
@@ -1381,7 +1426,7 @@ int OnCalculate(const int rates_total,
       ResetCounts();
       ClearZones();
       gLastBar = 0;
-      start = (int)MathMin(rates_total - 5, 800);
+      start = AnchorShift(anc, rates_total);
      }
    else
       start = (int)MathMax(2, rates_total - prev_calculated + 1);
@@ -1485,6 +1530,12 @@ int OnCalculate(const int rates_total,
      }
 
    BuyBuf[0] = SellBuf[0] = ReBuyBuf[0] = ReSellBuf[0] = EMPTY_VALUE;
+   string ek = EngineKey();
+   if(ek != gLastEngineKey)
+     {
+      gLastEngineKey = ek;
+      Print("St.LukesMTF Max Ind ENGINE | ", ek);
+     }
    DrawPanel();
    DrawLiveZone();
 
