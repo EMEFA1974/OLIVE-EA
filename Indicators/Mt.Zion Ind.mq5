@@ -4,12 +4,14 @@
 //|                                                                  |
 //|  What it shows                                                   |
 //|   - Confirmed swing highs / lows (fractal-style, no repaint once |
-//|     confirmed) labelled HH / HL / LH / LL                        |
+//|     confirmed)                                                   |
 //|   - Break of Structure (BOS) and Change of Character (CHoCH)     |
 //|     on candle CLOSE beyond the last swing                        |
 //|   - Buy / Sell arrows from engulfing and pin-bar candles, only   |
 //|     when they agree with structure (trend) and form in the       |
 //|     discount (buys) / premium (sells) half of the dealing range  |
+//|   - Entry / TP / SL zone box for the latest signal, drawn at the |
+//|     right edge of the chart                                      |
 //|                                                                  |
 //|  Tuned for XAUUSD M5. All size filters are ATR based, so it      |
 //|  adapts to gold's volatility and broker digit differences.       |
@@ -24,12 +26,12 @@
 
 #property indicator_label1  "Buy Signal"
 #property indicator_type1   DRAW_ARROW
-#property indicator_color1  clrDodgerBlue
+#property indicator_color1  clrAqua
 #property indicator_width1  2
 
 #property indicator_label2  "Sell Signal"
 #property indicator_type2   DRAW_ARROW
-#property indicator_color2  clrTomato
+#property indicator_color2  clrMagenta
 #property indicator_width2  2
 
 #property indicator_label3  "Swing High"
@@ -66,14 +68,25 @@ input int    InpSessionStart    = 8;      // Session start hour (server time)
 input int    InpSessionEnd      = 20;     // Session end hour (server time)
 
 input group "Display"
-input bool   InpShowSwingLabels = true;   // Show HH / HL / LH / LL labels
 input bool   InpShowBreaks      = true;   // Show BOS / CHoCH lines
 input bool   InpShowPanel       = true;   // Show structure panel
-input color  InpBullColor       = clrDodgerBlue; // Bullish colour
-input color  InpBearColor       = clrTomato;     // Bearish colour
+input color  InpBuyArrowColor   = clrAqua;       // Buy arrow colour
+input color  InpSellArrowColor  = clrMagenta;    // Sell arrow colour
+input color  InpBullColor       = clrDodgerBlue; // Bullish structure colour
+input color  InpBearColor       = clrTomato;     // Bearish structure colour
 input color  InpLabelColor      = clrSilver;     // Swing label colour
 input int    InpFontSize        = 7;      // Label font size
 input double InpArrowOffsetATR  = 0.30;   // Arrow distance from candle (x ATR)
+
+input group "Trade zone box"
+input bool   InpShowZone        = true;   // Show Entry / TP / SL box at right edge
+input double InpSLBufferATR     = 0.20;   // SL beyond signal candle (x ATR)
+input double InpRiskReward      = 2.0;    // TP distance = risk x this ratio
+input int    InpZoneBars        = 12;     // Box width in bars
+input bool   InpChartShift      = true;   // Enable chart shift to make room on the right
+input color  InpTPZoneColor     = C'0,95,80';    // TP zone fill
+input color  InpSLZoneColor     = C'115,25,60';  // SL zone fill
+input color  InpEntryColor      = clrWhite;      // Entry line / text colour
 
 input group "Alerts"
 input bool   InpAlertPopup      = true;   // Popup alert
@@ -108,12 +121,12 @@ int OnInit()
    SetIndexBuffer(3, SwingLowBuf,  INDICATOR_DATA);
    SetIndexBuffer(4, AtrBuf,       INDICATOR_CALCULATIONS);
 
-   PlotIndexSetInteger(0, PLOT_ARROW, 233);
-   PlotIndexSetInteger(1, PLOT_ARROW, 234);
+   PlotIndexSetInteger(0, PLOT_ARROW, 241);   // hollow up arrow
+   PlotIndexSetInteger(1, PLOT_ARROW, 242);   // hollow down arrow
    PlotIndexSetInteger(2, PLOT_ARROW, 159);
    PlotIndexSetInteger(3, PLOT_ARROW, 159);
-   PlotIndexSetInteger(0, PLOT_LINE_COLOR, InpBullColor);
-   PlotIndexSetInteger(1, PLOT_LINE_COLOR, InpBearColor);
+   PlotIndexSetInteger(0, PLOT_LINE_COLOR, InpBuyArrowColor);
+   PlotIndexSetInteger(1, PLOT_LINE_COLOR, InpSellArrowColor);
    PlotIndexSetInteger(2, PLOT_LINE_COLOR, InpLabelColor);
    PlotIndexSetInteger(3, PLOT_LINE_COLOR, InpLabelColor);
    for(int p = 0; p < 4; p++)
@@ -126,6 +139,9 @@ int OnInit()
       Print("Mt.Zion Ind: tuned for XAUUSD, current symbol is ", _Symbol);
    if(_Period != PERIOD_M5)
       Print("Mt.Zion Ind: tuned for M5, current timeframe is ", EnumToString(_Period));
+
+   if(InpShowZone && InpChartShift)
+      ChartSetInteger(0, CHART_SHIFT, true);
 
    return(INIT_SUCCEEDED);
   }
@@ -223,7 +239,7 @@ bool InSession(const datetime t)
   }
 
 void DrawText(const string name, const datetime t, const double price, const string txt,
-              const color clr, const ENUM_ANCHOR_POINT anchor)
+              const color clr, const ENUM_ANCHOR_POINT anchor, const int size = 0)
   {
    if(ObjectFind(0, name) < 0)
       ObjectCreate(0, name, OBJ_TEXT, 0, t, price);
@@ -231,7 +247,7 @@ void DrawText(const string name, const datetime t, const double price, const str
       ObjectMove(0, name, 0, t, price);
    ObjectSetString(0, name, OBJPROP_TEXT, txt);
    ObjectSetString(0, name, OBJPROP_FONT, "Arial");
-   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, InpFontSize);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, size > 0 ? size : InpFontSize);
    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
    ObjectSetInteger(0, name, OBJPROP_ANCHOR, anchor);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
@@ -258,6 +274,53 @@ void DrawLevel(const string name, const datetime t1, const datetime t2, const do
    ObjectSetInteger(0, name, OBJPROP_BACK, true);
   }
 
+void DrawRect(const string name, const datetime t1, const double p1, const datetime t2, const double p2,
+              const color clr)
+  {
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_RECTANGLE, 0, t1, p1, t2, p2);
+   else
+     {
+      ObjectMove(0, name, 0, t1, p1);
+      ObjectMove(0, name, 1, t2, p2);
+     }
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_FILL, true);
+   ObjectSetInteger(0, name, OBJPROP_BACK, true);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+  }
+
+//--- Entry / TP / SL box for the latest signal, drawn just right of the current candle
+void DrawZone(const datetime lastBarTime, const int dir, const double entry, const double sl,
+              const double tp, const string status)
+  {
+   if(!InpShowZone || dir == 0)
+      return;
+   int      sec = PeriodSeconds();
+   datetime t1  = lastBarTime + sec;
+   datetime t2  = t1 + sec * MathMax(InpZoneBars, 2);
+
+   DrawRect(PREFIX + "Z_TP", t1, entry, t2, tp, InpTPZoneColor);
+   DrawRect(PREFIX + "Z_SL", t1, entry, t2, sl, InpSLZoneColor);
+   DrawLevel(PREFIX + "Z_EN", t1, t2, entry, InpEntryColor, STYLE_SOLID);
+   ObjectSetInteger(0, PREFIX + "Z_EN", OBJPROP_WIDTH, 2);
+   ObjectSetInteger(0, PREFIX + "Z_EN", OBJPROP_BACK, false);
+
+   bool   up  = (tp > entry);
+   string tpT = "TP  " + DoubleToString(tp, _Digits);
+   string slT = "SL  " + DoubleToString(sl, _Digits);
+   string enT = "ENTRY  " + DoubleToString(entry, _Digits);
+   DrawText(PREFIX + "Z_TPT", t2, tp, tpT, InpEntryColor, up ? ANCHOR_RIGHT_UPPER : ANCHOR_RIGHT_LOWER, 8);
+   DrawText(PREFIX + "Z_SLT", t2, sl, slT, InpEntryColor, up ? ANCHOR_RIGHT_LOWER : ANCHOR_RIGHT_UPPER, 8);
+   DrawText(PREFIX + "Z_ENT", t2, entry, enT, InpEntryColor, up ? ANCHOR_RIGHT_LOWER : ANCHOR_RIGHT_UPPER, 8);
+
+   string head = StringFormat("%s  |  %s  |  RR 1:%s", dir == 1 ? "BUY" : "SELL", status,
+                              DoubleToString(InpRiskReward, 1));
+   DrawText(PREFIX + "Z_HD", t1, MathMax(tp, sl), head, dir == 1 ? InpBuyArrowColor : InpSellArrowColor,
+            ANCHOR_LEFT_LOWER, 8);
+  }
+
 void DrawPanel()
   {
    string name = PREFIX + "Panel";
@@ -279,10 +342,12 @@ void DrawPanel()
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
   }
 
-void SendSignalAlert(const string side, const string pattern, const double price, const datetime t)
+void SendSignalAlert(const string side, const string pattern, const double price, const double sl,
+                     const double tp, const datetime t)
   {
-   string msg = StringFormat("%s %s: %s %s @ %s (%s)", _Symbol, EnumToString(_Period), side, pattern,
-                             DoubleToString(price, _Digits), TimeToString(t, TIME_DATE | TIME_MINUTES));
+   string msg = StringFormat("%s %s: %s %s @ %s  SL %s  TP %s (%s)", _Symbol, EnumToString(_Period), side, pattern,
+                             DoubleToString(price, _Digits), DoubleToString(sl, _Digits),
+                             DoubleToString(tp, _Digits), TimeToString(t, TIME_DATE | TIME_MINUTES));
    if(InpAlertPopup)
       Alert(msg);
    if(InpAlertPush)
@@ -341,6 +406,11 @@ int OnCalculate(const int rates_total,
    int    lastBuyBar  = -1000000, lastSellBar = -1000000;
    string lastBreak   = "-";
    string buyPattern  = "", sellPattern = "";
+   double buySL = 0.0, buyTP = 0.0, sellSL = 0.0, sellTP = 0.0;
+   int    tDir        = 0;                          // latest signal: 1 buy, -1 sell
+   int    tBar        = -1;
+   double tEntry      = 0.0, tSL = 0.0, tTP = 0.0;
+   string tStatus     = "";
 
    for(int i = begin; i <= lastClosed; i++)
      {
@@ -348,13 +418,21 @@ int OnCalculate(const int rates_total,
       if(atr <= 0.0)
          continue;
 
+      //--- 0) follow the latest signal until TP or SL is touched (SL checked first)
+      if(tDir != 0 && i > tBar && tStatus == "Active")
+        {
+         if(tDir == 1)
+            tStatus = (low[i] <= tSL) ? "SL hit" : (high[i] >= tTP) ? "TP hit" : "Active";
+         else
+            tStatus = (high[i] >= tSL) ? "SL hit" : (low[i] <= tTP) ? "TP hit" : "Active";
+        }
+
       //--- 1) confirm the swing that is now InpSwingRight bars old
       int p = i - InpSwingRight;
       if(p - InpSwingLeft >= 0)
         {
          if(IsSwingHigh(p, high))
            {
-            string lbl = (lastHighBar < 0) ? "H" : (high[p] > lastHigh ? "HH" : "LH");
             lastHigh    = high[p];
             lastHighBar = p;
             highBroken  = false;
@@ -362,13 +440,9 @@ int OnCalculate(const int rates_total,
             for(int k = p + 1; k <= i; k++)
                loSinceHigh = MathMin(loSinceHigh, low[k]);
             SwingHighBuf[p] = high[p] + 0.15 * atr;
-            if(InpShowSwingLabels)
-               DrawText(PREFIX + "SH_" + (string)(long)time[p], time[p], high[p] + 0.35 * atr,
-                        lbl, InpLabelColor, ANCHOR_LOWER);
            }
          if(IsSwingLow(p, low))
            {
-            string lbl = (lastLowBar < 0) ? "L" : (low[p] < lastLow ? "LL" : "HL");
             lastLow    = low[p];
             lastLowBar = p;
             lowBroken  = false;
@@ -376,9 +450,6 @@ int OnCalculate(const int rates_total,
             for(int k = p + 1; k <= i; k++)
                hiSinceLow = MathMax(hiSinceLow, high[k]);
             SwingLowBuf[p] = low[p] - 0.15 * atr;
-            if(InpShowSwingLabels)
-               DrawText(PREFIX + "SL_" + (string)(long)time[p], time[p], low[p] - 0.35 * atr,
-                        lbl, InpLabelColor, ANCHOR_UPPER);
            }
         }
 
@@ -446,8 +517,18 @@ int OnCalculate(const int rates_total,
            {
             BuyBuf[i]  = low[i] - InpArrowOffsetATR * atr;
             lastBuyBar = i;
+            tDir    = 1;
+            tBar    = i;
+            tEntry  = close[i];
+            tSL     = low[i] - InpSLBufferATR * atr;
+            tTP     = tEntry + (tEntry - tSL) * InpRiskReward;
+            tStatus = "Active";
             if(i == lastClosed)
+              {
                buyPattern = bull;
+               buySL      = tSL;
+               buyTP      = tTP;
+              }
            }
         }
 
@@ -475,8 +556,18 @@ int OnCalculate(const int rates_total,
            {
             SellBuf[i]  = high[i] + InpArrowOffsetATR * atr;
             lastSellBar = i;
+            tDir    = -1;
+            tBar    = i;
+            tEntry  = close[i];
+            tSL     = high[i] + InpSLBufferATR * atr;
+            tTP     = tEntry - (tSL - tEntry) * InpRiskReward;
+            tStatus = "Active";
             if(i == lastClosed)
+              {
                sellPattern = bear;
+               sellSL      = tSL;
+               sellTP      = tTP;
+              }
            }
         }
      }
@@ -484,6 +575,7 @@ int OnCalculate(const int rates_total,
    g_trend     = trend;
    g_lastBreak = lastBreak;
    DrawPanel();
+   DrawZone(time[rates_total - 1], tDir, tEntry, tSL, tTP, tStatus);
 
    //--- alerts for the candle that just closed (skip the initial history load)
    datetime closedTime = time[lastClosed];
@@ -493,9 +585,9 @@ int OnCalculate(const int rates_total,
      {
       g_lastAlertTime = closedTime;
       if(buyPattern != "")
-         SendSignalAlert("BUY", buyPattern, close[lastClosed], closedTime);
+         SendSignalAlert("BUY", buyPattern, close[lastClosed], buySL, buyTP, closedTime);
       if(sellPattern != "")
-         SendSignalAlert("SELL", sellPattern, close[lastClosed], closedTime);
+         SendSignalAlert("SELL", sellPattern, close[lastClosed], sellSL, sellTP, closedTime);
      }
 
    ChartRedraw();
