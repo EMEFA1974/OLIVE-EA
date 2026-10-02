@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|                                   XAUUSD_M5_CandleStructure.mq5 |
+//|                                                 Mt.Zion Ind.mq5 |
 //|        Clean candlestick + market-structure indicator for MT5    |
 //|                                                                  |
 //|  What it shows                                                   |
@@ -17,7 +17,7 @@
 //+------------------------------------------------------------------+
 #property copyright   "OLIVE-EA"
 #property version     "1.00"
-#property description "Candlestick structure indicator for XAUUSD M5: swings, BOS/CHoCH and filtered engulfing / pin-bar signals."
+#property description "Mt.Zion Ind - candlestick structure indicator for XAUUSD M5: swings, BOS/CHoCH and filtered engulfing / pin-bar signals."
 #property indicator_chart_window
 #property indicator_buffers 5
 #property indicator_plots   4
@@ -98,7 +98,7 @@ int OnInit()
   {
    if(InpSwingLeft < 1 || InpSwingRight < 1 || InpATRPeriod < 1)
      {
-      Print("CandleStructure: swing and ATR periods must be >= 1");
+      Print("Mt.Zion Ind: swing and ATR periods must be >= 1");
       return(INIT_PARAMETERS_INCORRECT);
      }
 
@@ -119,13 +119,13 @@ int OnInit()
    for(int p = 0; p < 4; p++)
       PlotIndexSetDouble(p, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "CandleStructure");
+   IndicatorSetString(INDICATOR_SHORTNAME, "Mt.Zion Ind");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
    if(StringFind(_Symbol, "XAU") < 0 && StringFind(_Symbol, "GOLD") < 0)
-      Print("CandleStructure: tuned for XAUUSD, current symbol is ", _Symbol);
+      Print("Mt.Zion Ind: tuned for XAUUSD, current symbol is ", _Symbol);
    if(_Period != PERIOD_M5)
-      Print("CandleStructure: tuned for M5, current timeframe is ", EnumToString(_Period));
+      Print("Mt.Zion Ind: tuned for M5, current timeframe is ", EnumToString(_Period));
 
    return(INIT_SUCCEEDED);
   }
