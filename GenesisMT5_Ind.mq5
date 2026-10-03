@@ -1,23 +1,40 @@
 //+------------------------------------------------------------------+
-//|                                       CharisGold_Dashboard.mq5   |
-//|  MT5 port of the "CharisGold FX" TradingView dashboard:          |
+//|                                             GenesisMT5_Ind.mq5   |
+//|  GenesisMT5 Ind:                                                 |
 //|   - Sydney / Asian / London / New York session boxes             |
 //|     (high, low, midpoint, range and pips label)                  |
 //|   - 5-factor Bull/Bear score and bias                            |
 //|   - RSI(9) with its 7-period signal average                      |
+//|   - Buy (aqua) / Sell (magenta) hollow entry arrows              |
+//|   - Entry, SL, TP1-3 levels with risk / reward zone boxes        |
+//|   - Popup and phone push notifications                           |
 //|   - Equity and daily / weekly / monthly profit-target progress   |
 //+------------------------------------------------------------------+
 #property copyright "OLIVE-EA"
-#property version   "1.00"
-#property description "Session boxes, 5-factor bias score, RSI and profit-target dashboard (MT5 port of CharisGold FX)."
+#property version   "2.00"
+#property description "GenesisMT5 Ind: session boxes, 5-factor bias score, entry arrows with Entry/SL/TP zones, and phone push alerts."
 #property indicator_chart_window
-#property indicator_buffers 0
-#property indicator_plots   0
+#property indicator_buffers 2
+#property indicator_plots   2
+#property indicator_label1  "Buy Entry"
+#property indicator_type1   DRAW_ARROW
+#property indicator_color1  clrAqua
+#property indicator_width1  2
+#property indicator_label2  "Sell Entry"
+#property indicator_type2   DRAW_ARROW
+#property indicator_color2  clrMagenta
+#property indicator_width2  2
 
 enum ENUM_GMT_MODE
   {
    GMT_AUTO   = 0, // Auto (server time - GMT)
    GMT_MANUAL = 1  // Manual offset
+  };
+
+enum ENUM_SL_MODE
+  {
+   SL_ATR   = 0, // ATR multiple from entry
+   SL_SWING = 1  // Beyond recent swing high/low
   };
 
 //--- Time
@@ -68,14 +85,37 @@ input double InpDailyTarget  = 500;    // Daily target (account currency)
 input double InpWeeklyTarget = 2500;   // Weekly target
 input double InpMonthlyTarget= 10000;  // Monthly target
 
+//--- Signals and trade levels
+input group "Signals & trade levels"
+input bool         InpShowSignals    = true;        // Show Buy / Sell entry arrows
+input int          InpMinScore       = 4;           // Min score (of 5) required for a signal
+input int          InpSignalBars     = 1000;        // Bars of history to scan for signals
+input color        InpBuyArrowColor  = clrAqua;     // Buy arrow color
+input color        InpSellArrowColor = clrMagenta;  // Sell arrow color
+input int          InpArrowSize      = 2;           // Arrow size (1-5)
+input ENUM_SL_MODE InpSlMode         = SL_ATR;      // Stop-loss mode
+input int          InpAtrPeriod      = 14;          // ATR period
+input double       InpSlAtrMult      = 1.5;         // SL distance, x ATR (ATR mode)
+input int          InpSwingBars      = 10;          // Swing lookback bars (swing mode)
+input double       InpTp1R           = 1.0;         // TP1, multiple of risk (R)
+input double       InpTp2R           = 2.0;         // TP2, multiple of risk (R)
+input double       InpTp3R           = 3.0;         // TP3, multiple of risk (R)
+input bool         InpShowLevels     = true;        // Draw Entry / SL / TP levels and zones
+input int          InpLevelsExtend   = 20;          // Extend open-trade levels N bars past price
+input color        InpSlColor        = C'239,68,90';  // SL line / risk zone color
+input color        InpTpColor        = C'38,198,140'; // TP lines / reward zone color
+
 //--- Alerts
-input group "Alerts"
-input bool InpAlertStrong = false;     // Alert when bias turns STRONG
-input bool InpPushStrong  = false;     // Push notification when bias turns STRONG
+input group "Alerts & phone push notifications"
+input bool InpPopupSignals = true;     // Popup alert on new Buy / Sell signal
+input bool InpPushSignals  = true;     // Phone push on new Buy / Sell signal
+input bool InpPushLevels   = true;     // Phone push when TP / SL is hit
+input bool InpAlertStrong  = false;    // Popup alert when bias turns STRONG
+input bool InpPushStrong   = false;    // Phone push when bias turns STRONG
 
 //--- Panel
 input group "Panel"
-input string           InpTitle      = "CharisGold FX";      // Panel title
+input string           InpTitle      = "GenesisMT5 Ind";     // Panel title
 input ENUM_BASE_CORNER InpCorner     = CORNER_LEFT_UPPER;    // Panel corner
 input int              InpX          = 10;                   // Panel X offset
 input int              InpY          = 25;                   // Panel Y offset
@@ -89,7 +129,8 @@ input color            InpBullColor  = C'38,198,140';        // Bullish color
 input color            InpBearColor  = C'239,68,90';         // Bearish color
 input color            InpNeutralColor = C'245,200,66';      // Neutral / warning color
 
-#define PFX   "CGFX_"
+#define PFX   "GEN5_"
+#define IND_NAME "GenesisMT5 Ind"
 #define NSESS 4
 
 struct SessionDef
@@ -125,7 +166,32 @@ SessionStat g_last[NSESS];   // latest instance of each session (active or most 
 SessionStat g_prevDone;      // most recently completed session of any kind
 Row         g_rows[];
 
+struct TradeInfo
+  {
+   bool              valid;
+   int               dir;      // +1 buy, -1 sell
+   int               bar;      // bar index (oldest = 0) of the signal bar
+   datetime          t;        // signal bar time
+   datetime          closeT;   // bar time where SL or TP3 was hit (0 = open)
+   double            entry;
+   double            sl;
+   double            tp1;
+   double            tp2;
+   double            tp3;
+   int               score;
+   int               hits;     // TPs reached: 0..3
+   bool              stopped;  // SL reached
+  };
+
 int    g_hRsi = INVALID_HANDLE, g_hFast = INVALID_HANDLE, g_hSlow = INVALID_HANDLE;
+// chart-timeframe handles for signals
+int    g_hRsiC = INVALID_HANDLE, g_hFastC = INVALID_HANDLE, g_hSlowC = INVALID_HANDLE, g_hAtrC = INVALID_HANDLE;
+double g_buy[], g_sell[];
+TradeInfo g_tr;
+int      g_lastTotal = 0;
+bool     g_signalsReady = false;   // first signal scan done (suppresses alerts on history)
+datetime g_alertedSignalT = 0;
+datetime g_trackedT = 0;           // trade whose TP/SL state has been seeded
 double g_pip = 0;
 int    g_panelW = 0, g_panelH = 0;
 ulong  g_lastRefresh = 0, g_lastPL = 0;
@@ -184,7 +250,13 @@ int OnInit()
    g_hRsi  = iRSI(_Symbol, InpBiasTF, InpRsiPeriod, PRICE_CLOSE);
    g_hFast = iMA(_Symbol, InpBiasTF, InpEmaFast, 0, MODE_EMA, PRICE_CLOSE);
    g_hSlow = iMA(_Symbol, InpBiasTF, InpEmaSlow, 0, MODE_EMA, PRICE_CLOSE);
-   if(g_hRsi == INVALID_HANDLE || g_hFast == INVALID_HANDLE || g_hSlow == INVALID_HANDLE)
+   g_hRsiC  = iRSI(_Symbol, PERIOD_CURRENT, InpRsiPeriod, PRICE_CLOSE);
+   g_hFastC = iMA(_Symbol, PERIOD_CURRENT, InpEmaFast, 0, MODE_EMA, PRICE_CLOSE);
+   g_hSlowC = iMA(_Symbol, PERIOD_CURRENT, InpEmaSlow, 0, MODE_EMA, PRICE_CLOSE);
+   g_hAtrC  = iATR(_Symbol, PERIOD_CURRENT, InpAtrPeriod);
+   if(g_hRsi == INVALID_HANDLE || g_hFast == INVALID_HANDLE || g_hSlow == INVALID_HANDLE
+      || g_hRsiC == INVALID_HANDLE || g_hFastC == INVALID_HANDLE || g_hSlowC == INVALID_HANDLE
+      || g_hAtrC == INVALID_HANDLE)
      {
       Print("Failed to create indicator handles: ", GetLastError());
       return INIT_FAILED;
@@ -195,6 +267,30 @@ int OnInit()
    if(g_pip <= 0)
       g_pip = (_Digits == 2 || _Digits == 3 || _Digits == 5) ? _Point * 10 : _Point;
 
+   // --- hollow entry arrows (Wingdings 241 = outlined up, 242 = outlined down)
+   SetIndexBuffer(0, g_buy, INDICATOR_DATA);
+   SetIndexBuffer(1, g_sell, INDICATOR_DATA);
+   ArraySetAsSeries(g_buy, false);
+   ArraySetAsSeries(g_sell, false);
+   int aw = MathMax(1, MathMin(5, InpArrowSize));
+   PlotIndexSetInteger(0, PLOT_ARROW, 241);
+   PlotIndexSetInteger(1, PLOT_ARROW, 242);
+   PlotIndexSetInteger(0, PLOT_ARROW_SHIFT, 12);
+   PlotIndexSetInteger(1, PLOT_ARROW_SHIFT, -12);
+   PlotIndexSetInteger(0, PLOT_LINE_COLOR, InpBuyArrowColor);
+   PlotIndexSetInteger(1, PLOT_LINE_COLOR, InpSellArrowColor);
+   PlotIndexSetInteger(0, PLOT_LINE_WIDTH, aw);
+   PlotIndexSetInteger(1, PLOT_LINE_WIDTH, aw);
+   PlotIndexSetDouble(0, PLOT_EMPTY_VALUE, EMPTY_VALUE);
+   PlotIndexSetDouble(1, PLOT_EMPTY_VALUE, EMPTY_VALUE);
+   IndicatorSetString(INDICATOR_SHORTNAME, IND_NAME);
+
+   if((InpPushSignals || InpPushLevels || InpPushStrong) && !MQLInfoInteger(MQL_TESTER)
+      && !TerminalInfoInteger(TERMINAL_NOTIFICATIONS_ENABLED))
+      Print(IND_NAME, ": push notifications are OFF. Enable them in Tools > Options > Notifications ",
+            "and enter your MetaQuotes ID (from the MT5 mobile app: Settings > Messages).");
+
+   g_tr.valid = false;
    ObjectsDeleteAll(0, PFX);
    EventSetTimer(1);
    Refresh(true);
@@ -212,6 +308,14 @@ void OnDeinit(const int reason)
       IndicatorRelease(g_hFast);
    if(g_hSlow != INVALID_HANDLE)
       IndicatorRelease(g_hSlow);
+   if(g_hRsiC != INVALID_HANDLE)
+      IndicatorRelease(g_hRsiC);
+   if(g_hFastC != INVALID_HANDLE)
+      IndicatorRelease(g_hFastC);
+   if(g_hSlowC != INVALID_HANDLE)
+      IndicatorRelease(g_hSlowC);
+   if(g_hAtrC != INVALID_HANDLE)
+      IndicatorRelease(g_hAtrC);
    ChartRedraw();
   }
 
@@ -221,6 +325,17 @@ int OnCalculate(const int rates_total, const int prev_calculated,
                 const double &low[], const double &close[], const long &tick_volume[],
                 const long &volume[], const int &spread[])
   {
+   if(prev_calculated == 0)
+     {
+      ArrayInitialize(g_buy, EMPTY_VALUE);
+      ArrayInitialize(g_sell, EMPTY_VALUE);
+      g_lastTotal = 0;
+     }
+   // signals are evaluated on closed bars, so rescan only when a new bar appears
+   if(rates_total != g_lastTotal && ComputeSignals(rates_total, time, high, low, close))
+      g_lastTotal = rates_total;
+   UpdateTrade(rates_total, time, high, low);
+   DrawTrade(rates_total, time);
    Refresh(false);
    return rates_total;
   }
@@ -287,7 +402,7 @@ void RectSet(const string n, const datetime t0, const double p0, const datetime 
   }
 
 void LineSet(const string n, const datetime t0, const double p0, const datetime t1, const double p1,
-             const color c, const ENUM_LINE_STYLE st, const bool ray)
+             const color c, const ENUM_LINE_STYLE st, const bool ray, const int width = 1)
   {
    if(ObjectFind(0, n) < 0)
      {
@@ -298,7 +413,7 @@ void LineSet(const string n, const datetime t0, const double p0, const datetime 
    ObjectMove(0, n, 1, t1, p1);
    ObjectSetInteger(0, n, OBJPROP_COLOR, c);
    ObjectSetInteger(0, n, OBJPROP_STYLE, st);
-   ObjectSetInteger(0, n, OBJPROP_WIDTH, 1);
+   ObjectSetInteger(0, n, OBJPROP_WIDTH, width);
    ObjectSetInteger(0, n, OBJPROP_RAY_RIGHT, ray);
    ObjectSetInteger(0, n, OBJPROP_RAY_LEFT, false);
    ObjectSetInteger(0, n, OBJPROP_BACK, true);
@@ -561,7 +676,7 @@ void RenderPanel()
    int fs = MathMax(6, InpFontSize);
    int rh = fs * 2 + 6;
    int c1 = fs * 11;
-   int c2 = fs * 18;
+   int c2 = fs * 22;
    int n  = ArraySize(g_rows);
    g_panelW = c1 + c2;
    g_panelH = rh * n;
@@ -651,21 +766,9 @@ void Refresh(const bool force)
          sig += rsiArr[i];
       sig /= InpRsiSignal;
 
-      // 1. Trend: price vs slow EMA
-      if(close > slow[0]) bull++; else if(close < slow[0]) bear++;
-      // 2. Structure: fast EMA vs slow EMA
-      if(fast[0] > slow[0]) bull++; else if(fast[0] < slow[0]) bear++;
-      // 3. Momentum: RSI vs 50
-      if(rsi > 50) bull++; else if(rsi < 50) bear++;
-      // 4. Momentum direction: RSI vs its signal
-      if(rsi > sig) bull++; else if(rsi < sig) bear++;
-      // 5. Session: price vs midpoint of the last completed session
-      double sMid = 0;
-      if(g_prevDone.valid)
-        {
-         sMid = (g_prevDone.hi + g_prevDone.lo) / 2.0;
-         if(close > sMid) bull++; else if(close < sMid) bear++;
-        }
+      // factor 5 uses the midpoint of the last completed session
+      double sMid = g_prevDone.valid ? (g_prevDone.hi + g_prevDone.lo) / 2.0 : 0;
+      Score(close, fast[0], slow[0], rsi, sig, sMid, bull, bear);
       detail = StringFormat("Close %s vs EMA%d %s | EMA%d %s | RSI %.1f vs 50 | RSI vs signal %.1f | Last session mid %s",
                             Px(close), InpEmaSlow, Px(slow[0]), InpEmaFast, Px(fast[0]), rsi, sig,
                             g_prevDone.valid ? Px(sMid) : "n/a");
@@ -732,6 +835,18 @@ void Refresh(const bool force)
    AddRow("Bull Score", StringFormat("%d / 5", bull), bull > 0 ? InpBullColor : clrGray, detail);
    AddRow("Bear Score", StringFormat("%d / 5", bear), bear > 0 ? InpBearColor : clrGray, detail);
    AddRow("Bar closes in", Countdown(), InpTextColor);
+   if(g_tr.valid)
+     {
+      color dc = g_tr.dir > 0 ? InpBuyArrowColor : InpSellArrowColor;
+      AddRow("Last Signal", StringFormat("%s @ %s  (%d/5)", g_tr.dir > 0 ? "BUY" : "SELL", Px(g_tr.entry), g_tr.score),
+             dc, "Signal bar: " + TimeToString(g_tr.t, TIME_DATE | TIME_MINUTES));
+      AddRow("Stop Loss", StringFormat("%s  (%.1f pips)", Px(g_tr.sl), MathAbs(g_tr.entry - g_tr.sl) / g_pip), InpSlColor);
+      AddRow("TP1 / TP2 / TP3", Px(g_tr.tp1) + " / " + Px(g_tr.tp2) + " / " + Px(g_tr.tp3), InpTpColor);
+      AddRow("Trade Status", TradeStatus(), g_tr.stopped && g_tr.hits == 0 ? InpSlColor
+                                           : (g_tr.hits > 0 ? InpTpColor : InpTextColor));
+     }
+   else
+      AddRow("Last Signal", "none in last " + IntegerToString(InpSignalBars) + " bars", clrGray);
    if(InpShowTargets)
      {
       AddRow("Equity", Money(AccountInfoDouble(ACCOUNT_EQUITY)), clrWhite);
@@ -746,10 +861,7 @@ void Refresh(const bool force)
    if(g_alertArmed && strong && bias != g_lastStrong)
      {
       string msg = StringFormat("%s %s: %s (RSI %.1f)", _Symbol, EnumToString(_Period), bias, rsi);
-      if(InpAlertStrong)
-         Alert(msg);
-      if(InpPushStrong)
-         SendNotification(msg);
+      Notify(msg, InpAlertStrong, InpPushStrong);
      }
    if(haveInd)
      {
@@ -758,5 +870,301 @@ void Refresh(const bool force)
      }
 
    ChartRedraw();
+  }
+//+------------------------------------------------------------------+
+
+//+------------------------------------------------------------------+
+//| 5-factor score (shared by dashboard bias and entry signals)      |
+//+------------------------------------------------------------------+
+void Score(const double close, const double fast, const double slow, const double rsi,
+           const double sig, const double mid, int &bull, int &bear)
+  {
+   bull = 0;
+   bear = 0;
+   // 1. Trend: price vs slow EMA
+   if(close > slow) bull++; else if(close < slow) bear++;
+   // 2. Structure: fast EMA vs slow EMA
+   if(fast > slow) bull++; else if(fast < slow) bear++;
+   // 3. Momentum: RSI vs 50
+   if(rsi > 50) bull++; else if(rsi < 50) bear++;
+   // 4. Momentum direction: RSI vs its signal
+   if(rsi > sig) bull++; else if(rsi < sig) bear++;
+   // 5. Price vs a reference midpoint (session / previous day); skipped when unknown
+   if(mid > 0)
+     {
+      if(close > mid) bull++; else if(close < mid) bear++;
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Notifications                                                    |
+//+------------------------------------------------------------------+
+void Notify(const string msg, const bool popup, const bool push)
+  {
+   if(popup)
+      Alert(msg);
+   if(push && !MQLInfoInteger(MQL_TESTER))
+      if(!SendNotification(msg))
+         Print(IND_NAME, ": push failed (", GetLastError(), "). Check Tools > Options > Notifications / MetaQuotes ID.");
+  }
+
+string TfName()
+  {
+   string tf = EnumToString((ENUM_TIMEFRAMES)_Period);
+   StringReplace(tf, "PERIOD_", "");
+   return tf;
+  }
+
+//+------------------------------------------------------------------+
+//| Midpoint of the previous day's range (signal factor 5)           |
+//+------------------------------------------------------------------+
+double PrevDayMid(const datetime t)
+  {
+   int d = iBarShift(_Symbol, PERIOD_D1, t, false);
+   if(d < 0)
+      return 0;
+   double h = iHigh(_Symbol, PERIOD_D1, d + 1);
+   double l = iLow(_Symbol, PERIOD_D1, d + 1);
+   if(h <= 0 || l <= 0)
+      return 0;
+   return (h + l) / 2.0;
+  }
+
+//+------------------------------------------------------------------+
+//| Build Entry / SL / TP levels for a signal on bar i               |
+//+------------------------------------------------------------------+
+void SetTrade(const int dir, const int i, const datetime t, const double entry, const double atr,
+              const int score, const double &high[], const double &low[])
+  {
+   double sl;
+   if(InpSlMode == SL_SWING)
+     {
+      int from = MathMax(0, i - MathMax(1, InpSwingBars) + 1);
+      double ext = (dir > 0) ? low[i] : high[i];
+      for(int k = from; k <= i; k++)
+         ext = (dir > 0) ? MathMin(ext, low[k]) : MathMax(ext, high[k]);
+      sl = ext - dir * atr * 0.2;               // small buffer beyond the swing
+     }
+   else
+      sl = entry - dir * atr * InpSlAtrMult;
+
+   double risk = dir * (entry - sl);
+   if(risk <= _Point)                            // swing on the wrong side: fall back to ATR
+     {
+      risk = atr * InpSlAtrMult;
+      sl = entry - dir * risk;
+     }
+
+   g_tr.valid   = true;
+   g_tr.dir     = dir;
+   g_tr.bar     = i;
+   g_tr.t       = t;
+   g_tr.closeT  = 0;
+   g_tr.entry   = entry;
+   g_tr.sl      = NormalizeDouble(sl, _Digits);
+   g_tr.tp1     = NormalizeDouble(entry + dir * risk * InpTp1R, _Digits);
+   g_tr.tp2     = NormalizeDouble(entry + dir * risk * InpTp2R, _Digits);
+   g_tr.tp3     = NormalizeDouble(entry + dir * risk * InpTp3R, _Digits);
+   g_tr.score   = score;
+   g_tr.hits    = 0;
+   g_tr.stopped = false;
+  }
+
+//+------------------------------------------------------------------+
+//| Entry signals on closed bars of the chart timeframe              |
+//|  BUY : RSI crosses above its signal, bull score >= min,          |
+//|        RSI below overbought.  SELL is the mirror image.          |
+//+------------------------------------------------------------------+
+bool ComputeSignals(const int total, const datetime &time[], const double &high[],
+                    const double &low[], const double &close[])
+  {
+   int warm = InpEmaSlow + InpRsiSignal + 2;
+   int n = MathMin(total, MathMax(10, InpSignalBars) + warm);
+   if(n < warm + 2)
+      return false;
+
+   double rsi[], fast[], slow[], atr[];
+   if(CopyBuffer(g_hRsiC, 0, 0, n, rsi) != n || CopyBuffer(g_hFastC, 0, 0, n, fast) != n
+      || CopyBuffer(g_hSlowC, 0, 0, n, slow) != n || CopyBuffer(g_hAtrC, 0, 0, n, atr) != n)
+      return false;                              // indicators still calculating
+
+   int base = total - n;                         // bar index of element 0
+   double sig[];
+   ArrayResize(sig, n);
+   double sum = 0;
+   for(int j = 0; j < n; j++)
+     {
+      sum += rsi[j];
+      if(j >= InpRsiSignal)
+         sum -= rsi[j - InpRsiSignal];
+      sig[j] = (j >= InpRsiSignal - 1) ? sum / InpRsiSignal : EMPTY_VALUE;
+     }
+
+   TradeInfo old = g_tr;
+   g_tr.valid = false;
+   for(int i = base; i < total; i++)
+     {
+      g_buy[i]  = EMPTY_VALUE;
+      g_sell[i] = EMPTY_VALUE;
+     }
+
+   for(int j = InpRsiSignal; j < n - 1; j++)     // n-1 is the live bar: skip it
+     {
+      int i = base + j;
+      if(i < InpEmaSlow || rsi[j] <= 0 || atr[j] <= 0)
+         continue;
+      bool up = rsi[j] > sig[j] && rsi[j - 1] <= sig[j - 1];
+      bool dn = rsi[j] < sig[j] && rsi[j - 1] >= sig[j - 1];
+      if(!up && !dn)
+         continue;
+
+      int bull, bear;
+      Score(close[i], fast[j], slow[j], rsi[j], sig[j], PrevDayMid(time[i]), bull, bear);
+      if(up && bull >= InpMinScore && rsi[j] < InpOverbought)
+        {
+         if(InpShowSignals)
+            g_buy[i] = low[i] - atr[j] * 0.2;
+         SetTrade(1, i, time[i], close[i], atr[j], bull, high, low);
+        }
+      else if(dn && bear >= InpMinScore && rsi[j] > InpOversold)
+        {
+         if(InpShowSignals)
+            g_sell[i] = high[i] + atr[j] * 0.2;
+         SetTrade(-1, i, time[i], close[i], atr[j], bear, high, low);
+        }
+     }
+
+   // keep TP/SL progress of a trade we were already tracking
+   if(g_tr.valid && old.valid && old.t == g_tr.t)
+     {
+      g_tr.hits    = old.hits;
+      g_tr.stopped = old.stopped;
+      g_tr.closeT  = old.closeT;
+     }
+
+   // alert only for a signal on the bar that just closed, never for history
+   if(g_tr.valid && g_tr.t != g_alertedSignalT)
+     {
+      if(g_signalsReady && g_tr.bar == total - 2)
+        {
+         string msg = StringFormat("%s | %s %s | %s @ %s | SL %s | TP1 %s TP2 %s TP3 %s | Score %d/5",
+                                   IND_NAME, _Symbol, TfName(), g_tr.dir > 0 ? "BUY" : "SELL",
+                                   Px(g_tr.entry), Px(g_tr.sl), Px(g_tr.tp1), Px(g_tr.tp2), Px(g_tr.tp3), g_tr.score);
+         Notify(msg, InpPopupSignals, InpPushSignals);
+        }
+      g_alertedSignalT = g_tr.t;
+     }
+   g_signalsReady = true;
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+//| Track TP / SL hits of the latest signal (runs every tick)        |
+//+------------------------------------------------------------------+
+void UpdateTrade(const int total, const datetime &time[], const double &high[], const double &low[])
+  {
+   if(!g_tr.valid || g_tr.bar >= total)
+      return;
+   int d = g_tr.dir;
+   int hits = 0;
+   bool stopped = false;
+   datetime ct = 0;
+   for(int i = g_tr.bar + 1; i < total; i++)
+     {
+      // SL first: when one bar touches both, assume the worse outcome
+      if((d > 0) ? (low[i] <= g_tr.sl) : (high[i] >= g_tr.sl))
+        {
+         stopped = true;
+         ct = time[i];
+         break;
+        }
+      double fav = (d > 0) ? high[i] : low[i];
+      if(hits < 1 && d * (fav - g_tr.tp1) >= 0)
+         hits = 1;
+      if(hits < 2 && d * (fav - g_tr.tp2) >= 0)
+         hits = 2;
+      if(d * (fav - g_tr.tp3) >= 0)
+        {
+         hits = 3;
+         ct = time[i];
+         break;
+        }
+     }
+
+   // first look at a historical trade: seed silently; a fresh trade may alert at once
+   bool notify = (g_trackedT == g_tr.t) || (g_tr.bar >= total - 2);
+   if(notify && (InpPushLevels || InpPopupSignals))
+     {
+      string head = StringFormat("%s | %s %s %s @ %s | ", IND_NAME, _Symbol, TfName(),
+                                 d > 0 ? "BUY" : "SELL", Px(g_tr.entry));
+      double tps[3];
+      tps[0] = g_tr.tp1;
+      tps[1] = g_tr.tp2;
+      tps[2] = g_tr.tp3;
+      for(int k = g_tr.hits; k < hits; k++)
+         Notify(head + StringFormat("TP%d HIT at %s", k + 1, Px(tps[k])), InpPopupSignals, InpPushLevels);
+      if(stopped && !g_tr.stopped)
+         Notify(head + "SL HIT at " + Px(g_tr.sl), InpPopupSignals, InpPushLevels);
+     }
+   g_trackedT   = g_tr.t;
+   g_tr.hits    = hits;
+   g_tr.stopped = stopped;
+   g_tr.closeT  = ct;
+  }
+
+string TradeStatus()
+  {
+   if(g_tr.stopped)
+      return g_tr.hits > 0 ? StringFormat("TP%d HIT, then SL - closed", g_tr.hits) : "SL HIT - closed";
+   if(g_tr.hits >= 3)
+      return "TP3 HIT - closed";
+   if(g_tr.hits > 0)
+      return StringFormat("TP%d HIT - running", g_tr.hits);
+   return "RUNNING";
+  }
+
+//+------------------------------------------------------------------+
+//| Entry / SL / TP lines, zone boxes and texts for the latest trade |
+//+------------------------------------------------------------------+
+void DrawTrade(const int total, const datetime &time[])
+  {
+   string p = PFX + "T_";
+   if(!InpShowLevels || !g_tr.valid || total < 1)
+     {
+      ObjectsDeleteAll(0, p);
+      return;
+     }
+   int      ps = PeriodSeconds(_Period);
+   datetime t0 = g_tr.t;
+   datetime t1 = (g_tr.closeT > 0) ? g_tr.closeT + ps : time[total - 1] + ps * MathMax(1, InpLevelsExtend);
+   color    bg = (color)ChartGetInteger(0, CHART_COLOR_BACKGROUND);
+   color    dc = g_tr.dir > 0 ? InpBuyArrowColor : InpSellArrowColor;
+   bool     closed = g_tr.closeT > 0;
+
+   // zones: risk (entry -> SL) and reward (entry -> TP3)
+   RectSet(p + "ZR", t0, g_tr.entry, t1, g_tr.sl, Blend(InpSlColor, bg, 0.28), true, STYLE_SOLID);
+   RectSet(p + "ZW", t0, g_tr.entry, t1, g_tr.tp3, Blend(InpTpColor, bg, 0.22), true, STYLE_SOLID);
+   RectSet(p + "ZRE", t0, g_tr.entry, t1, g_tr.sl, InpSlColor, false, STYLE_SOLID);
+   RectSet(p + "ZWE", t0, g_tr.entry, t1, g_tr.tp3, InpTpColor, false, STYLE_SOLID);
+
+   // lines
+   LineSet(p + "LE", t0, g_tr.entry, t1, g_tr.entry, dc, STYLE_SOLID, false, 2);
+   LineSet(p + "LS", t0, g_tr.sl, t1, g_tr.sl, InpSlColor, STYLE_SOLID, false, 2);
+   LineSet(p + "L1", t0, g_tr.tp1, t1, g_tr.tp1, InpTpColor, STYLE_DASH, false);
+   LineSet(p + "L2", t0, g_tr.tp2, t1, g_tr.tp2, InpTpColor, STYLE_DASH, false);
+   LineSet(p + "L3", t0, g_tr.tp3, t1, g_tr.tp3, InpTpColor, STYLE_SOLID, false, 2);
+
+   // texts at the right edge of the zone
+   double dist = MathAbs(g_tr.entry - g_tr.sl);
+   string side = g_tr.dir > 0 ? "BUY" : "SELL";
+   TextSet(p + "TE", t1, g_tr.entry, StringFormat(" ENTRY %s  %s%s", side, Px(g_tr.entry), closed ? "  (closed)" : ""), dc);
+   TextSet(p + "TS", t1, g_tr.sl, StringFormat(" SL  %s  (-%.1f pips)%s", Px(g_tr.sl), dist / g_pip,
+                                               g_tr.stopped ? "  HIT" : ""), InpSlColor);
+   TextSet(p + "T1", t1, g_tr.tp1, StringFormat(" TP1  %s  (+%.1f pips)%s", Px(g_tr.tp1),
+                                                MathAbs(g_tr.tp1 - g_tr.entry) / g_pip, g_tr.hits >= 1 ? "  HIT" : ""), InpTpColor);
+   TextSet(p + "T2", t1, g_tr.tp2, StringFormat(" TP2  %s  (+%.1f pips)%s", Px(g_tr.tp2),
+                                                MathAbs(g_tr.tp2 - g_tr.entry) / g_pip, g_tr.hits >= 2 ? "  HIT" : ""), InpTpColor);
+   TextSet(p + "T3", t1, g_tr.tp3, StringFormat(" TP3  %s  (+%.1f pips)%s", Px(g_tr.tp3),
+                                                MathAbs(g_tr.tp3 - g_tr.entry) / g_pip, g_tr.hits >= 3 ? "  HIT" : ""), InpTpColor);
   }
 //+------------------------------------------------------------------+
