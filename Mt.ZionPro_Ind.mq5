@@ -109,7 +109,7 @@ input int    InpPinSweep    = 3;                   // and the wick takes out the
 
 input group "=== Signal Grade ==="
 input bool       InpGradeB   = true;               // B-grade signals (fail one filter) become signals (zone / alert / EA trade); A is always on
-input bool       InpGradeC   = true;               // C-grade signals (fail two or more filters) become signals
+input bool       InpGradeC   = false;              // C-grade signals (fail two or more filters) become signals
 input bool       InpReNeedA  = false;              // true = re-entries only on a fresh A-grade trigger (false = same grades as the B / C toggles)
 input bool       InpShowFiltered = true;          // grey grade letter on signals whose grade is toggled off (no zone, no alert)
 input color      InpFiltColor    = clrSilver;
