@@ -6,9 +6,9 @@
 //|   panel, and can alert. It never places or closes orders.        |
 //+------------------------------------------------------------------+
 #property copyright   "OLIVE-EA"
-#property version     "1.20"
+#property version     "1.30"
 #property description "Tuned for XAUUSD M5. MTF structure (D/H4/H1/M5) -> quality impulse -> ~45% pullback -> confirmation."
-#property description "Hollow arrows: Aqua = buy, Magenta = sell. Trade box: red SL zone, green TP1 zone, blue TP2 zone."
+#property description "Hollow arrows (kept for all past signals): Aqua = buy, Magenta = sell. Trade box drawn for the current signal only."
 #property description "Signal indicator only - it does not trade."
 #property indicator_chart_window
 #property indicator_buffers 9
@@ -63,6 +63,13 @@ enum ENUM_RECLAIM
    RECLAIM_CLOSE = 3  // Close beyond impulse close
   };
 
+//--- how each timeframe is scored BULL / BEAR / MIX
+enum ENUM_STRUCT_MODE
+  {
+   STRUCT_CANDLES = 0, // Last 2 closed candles: direction + HH/HL (strict, fewer signals)
+   STRUCT_TREND   = 1  // Last close vs SMA + SMA slope (steadier bias, more signals)
+  };
+
 //+------------------------------------------------------------------+
 //| Inputs                                                           |
 //+------------------------------------------------------------------+
@@ -70,13 +77,16 @@ input group "1) Multi-TF structure filter (D / H4 / H1 / M5)"
 input int          InpMinAlign       = 2;      // Min TFs aligned with direction (0-4)
 input bool         InpRequireH4      = true;   // H4 must agree with direction
 input bool         InpRequireD       = false;  // Daily must agree with direction
+input ENUM_STRUCT_MODE InpStructMode = STRUCT_TREND; // TF scoring method
+input int          InpStructSMA      = 20;     // Trend mode: SMA period (on each TF)
+input int          InpStructSlope    = 3;      // Trend mode: SMA slope lookback (bars of that TF)
 
 input group "2) Impulse candle"
 input double       InpMinBodyRatio   = 0.25;   // Min body / range
 input double       InpCloseZone      = 0.55;   // Close inside this upper (buy) / lower (sell) fraction of range
 input int          InpSwingLookback  = 2;      // Swing break lookback (bars)
 input double       InpMinWickRatio   = 0.30;   // Rejection wick / range (alternative to swing break)
-input double       InpMinImpulseATR  = 0.8;    // Min impulse range (x ATR, 0 = off)
+input double       InpMinImpulseATR  = 0.7;    // Min impulse range (x ATR, 0 = off)
 
 input group "3) Pullback entry"
 input bool         InpPullbackOn     = true;   // Pullback mode (false = impulse close is the entry)
@@ -90,8 +100,8 @@ input ENUM_RECLAIM InpReclaim        = RECLAIM_NONE; // Confirmation candle must
 input group "Quality filters (XAUUSD M5)"
 input bool         InpUseSession     = true;   // Only signal inside the session window
 input int          InpSessionStart   = 8;      // Session start hour (server time)
-input int          InpSessionEnd     = 21;     // Session end hour (server time, exclusive)
-input bool         InpUseEMA         = true;   // Chart-TF EMA trend filter
+input int          InpSessionEnd     = 22;     // Session end hour (server time, exclusive)
+input bool         InpUseEMA         = true;   // Chart-TF EMA trend filter (checked on the impulse)
 input int          InpEMAPeriod      = 50;     // EMA period
 input int          InpEMASlopeBars   = 5;      // EMA must rise (buy) / fall (sell) over this many bars
 input int          InpMaxSpreadPts   = 60;     // Max bar spread in points (0 = off)
@@ -107,12 +117,13 @@ input bool         InpUseSpread      = true;   // Include bar spread for sells (
 
 input group "5) Re-entry after SL"
 input bool         InpReentryOn      = true;   // Allow re-entries after SL
+input bool         InpReleaseAtTP1   = true;   // After TP1, look for the next signal (keeps signal flow up)
 input int          InpMaxReentries   = 2;      // Max re-entries per idea
 input int          InpReentryWindow  = 24;     // Re-entry window (bars after first SL)
 
 input group "Trade box & levels"
-input bool         InpShowZones      = true;   // Draw trade boxes
-input bool         InpShowLevels     = true;   // Latest trade: dotted levels + price labels
+input bool         InpShowZones      = true;   // Draw the box of the current signal
+input bool         InpShowLevels     = true;   // Current signal: dotted levels + price labels
 input int          InpBoxBars        = 30;     // Box width (bars from entry)
 input int          InpLineExtraBars  = 15;     // Level lines extend this many bars past the box
 input color        InpSLZoneColor    = C'110,22,22';  // SL zone fill
@@ -167,7 +178,7 @@ const string PFX       = "IPMTF_";
 const string PFX_ZONE  = "IPMTF_Z";
 const string PFX_PANEL = "IPMTF_P";
 const string PFX_LEVEL = "IPMTF_L";
-const int    PANEL_LINES = 5;
+const int    PANEL_LINES = 6;
 
 //--- buffers
 double BufPBLong[], BufPBShort[], BufDirLong[], BufDirShort[];
@@ -201,7 +212,17 @@ int      g_exitIdx    = -1;
 datetime g_entryTime  = 0;
 double   g_entry, g_sl, g_tp1, g_tp2;
 bool     g_tp1Hit     = false;
+bool     g_tradeOpen  = false;
 string   g_status     = "";
+
+//--- per-day signal statistics
+int      g_days       = 0;
+datetime g_dayKey[];
+int      g_daySig[], g_dayTP1[], g_daySL[];
+
+//--- per-TF structure cache (state only changes when that TF closes a bar)
+datetime g_tfKey[4];
+int      g_tfVal[4];
 
 //--- re-entry
 int    g_reentries  = 0;
@@ -244,7 +265,8 @@ int OnInit()
       return INIT_PARAMETERS_INCORRECT;
      }
    if(InpMinAlign < 0 || InpMinAlign > 4 || InpSwingLookback < 1 || InpATRPeriod < 1 ||
-      InpEMAPeriod < 1 || InpEMASlopeBars < 1 || InpBoxBars < 1)
+      InpEMAPeriod < 1 || InpEMASlopeBars < 1 || InpBoxBars < 1 ||
+      InpStructSMA < 1 || InpStructSlope < 1)
      {
       Print("ImpulsePullbackMTF: invalid input (MinAlign 0-4, lookbacks / periods / box bars >= 1)");
       return INIT_PARAMETERS_INCORRECT;
@@ -366,19 +388,22 @@ void ProcessBar(const int i, const datetime &time[], const double &open[],
                 const int &spread[], const bool alerts)
   {
    g_spr = InpUseSpread ? spread[i] * _Point : 0.0;
+   StatsBar(time[i]);
 
    //--- MTF structure as of this bar's close
    datetime tClose = time[i] + PeriodSeconds(_Period);
-   g_sD  = TFState(PERIOD_D1, tClose);
-   g_sH4 = TFState(PERIOD_H4, tClose);
-   g_sH1 = TFState(PERIOD_H1, tClose);
-   g_sM5 = TFState(PERIOD_M5, tClose);
+   g_sD  = TFState(0, PERIOD_D1, tClose);
+   g_sH4 = TFState(1, PERIOD_H4, tClose);
+   g_sH1 = TFState(2, PERIOD_H1, tClose);
+   g_sM5 = TFState(3, PERIOD_M5, tClose);
 
-   //--- LIVE: manage targets / stop
-   if(g_state == ST_LIVE)
+   //--- open trade: manage targets / stop
+   if(g_tradeOpen)
      {
+      bool owned = (g_state == ST_LIVE);
       ManageTrade(i, time, high, low, alerts);
-      return;
+      if(owned)
+         return;      // the trade owned the idea on this bar; scanning resumes next bar
      }
 
    //--- SL_WAIT: look for a re-entry impulse
@@ -388,7 +413,7 @@ void ProcessBar(const int i, const datetime &time[], const double &open[],
       bool flipped = FlipAgainst(g_dir);
       if(!expired && !flipped)
         {
-         if(Allowed(g_dir) && QualityOK(g_dir, i, time, close, spread) &&
+         if(Allowed(g_dir) && QualityOK(g_dir, i, time, close, spread, true) &&
             IsImpulse(g_dir, i, open, high, low, close))
            {
             g_reentries++;
@@ -414,7 +439,7 @@ void ProcessBar(const int i, const datetime &time[], const double &open[],
         {
          g_sinceTouch++;
          if(IsConfirm(g_dir, i, open, high, low, close) && Allowed(g_dir) &&
-            QualityOK(g_dir, i, time, close, spread) &&
+            QualityOK(g_dir, i, time, close, spread, false) &&
             OpenTrade(g_dir, i, KIND_PULLBACK, time, high, low, close, alerts))
             return;
          if(g_sinceTouch >= InpConfirmBars)
@@ -428,7 +453,7 @@ void ProcessBar(const int i, const datetime &time[], const double &open[],
             g_touched    = true;
             g_sinceTouch = 0;
            }
-         else if(Allowed(g_dir) && QualityOK(g_dir, i, time, close, spread) &&
+         else if(Allowed(g_dir) && QualityOK(g_dir, i, time, close, spread, true) &&
                  IsImpulse(g_dir, i, open, high, low, close))
            {
             // fresh impulse in the same direction before any pullback: re-anchor
@@ -447,9 +472,9 @@ void ProcessBar(const int i, const datetime &time[], const double &open[],
 
    //--- IDLE: structure + quality filters must pass first, then a quality impulse
    int dir = 0;
-   if(Allowed(1) && QualityOK(1, i, time, close, spread) && IsImpulse(1, i, open, high, low, close))
+   if(Allowed(1) && QualityOK(1, i, time, close, spread, true) && IsImpulse(1, i, open, high, low, close))
       dir = 1;
-   else if(Allowed(-1) && QualityOK(-1, i, time, close, spread) && IsImpulse(-1, i, open, high, low, close))
+   else if(Allowed(-1) && QualityOK(-1, i, time, close, spread, true) && IsImpulse(-1, i, open, high, low, close))
       dir = -1;
    if(dir == 0)
       return;
@@ -517,11 +542,11 @@ bool OpenTrade(const int dir, const int i, const int kind, const datetime &time[
    if(InpMaxRiskATR > 0.0 && risk > InpMaxRiskATR * atr)
       return false;
 
-   //--- previous trade's box must not run into this one
-   if(g_tradeId > 0)
-      BoxSetRight(g_tradeId, time[MathMin(BoxRightIdx(i), i)]);
+   //--- only the current signal keeps a box (arrows of old signals stay)
+   ObjectsDeleteAll(0, PFX_ZONE);
 
    g_state     = ST_LIVE;
+   g_tradeOpen = true;
    g_dir       = dir;
    g_tradeDir  = dir;
    g_entryIdx  = i;
@@ -534,6 +559,8 @@ bool OpenTrade(const int dir, const int i, const int kind, const datetime &time[
    g_tp1Hit    = false;
    g_status    = "ACTIVE";
    g_tradeId++;
+   if(g_days > 0)
+      g_daySig[g_days - 1]++;
 
    double mark = (dir > 0) ? low[i] : high[i];
    if(kind == KIND_PULLBACK)
@@ -571,16 +598,26 @@ void ManageTrade(const int i, const datetime &time[], const double &high[],
                  const double &low[], const bool alerts)
   {
    //--- chart prices are bid; a sell is closed at ask = bid + spread
-   bool hitSL  = (g_dir > 0) ? (low[i]  <= g_sl)  : (high[i] + g_spr >= g_sl);
-   bool hitTP1 = (g_dir > 0) ? (high[i] >= g_tp1) : (low[i]  + g_spr <= g_tp1);
-   bool hitTP2 = (g_dir > 0) ? (high[i] >= g_tp2) : (low[i]  + g_spr <= g_tp2);
+   bool hitSL  = (g_tradeDir > 0) ? (low[i]  <= g_sl)  : (high[i] + g_spr >= g_sl);
+   bool hitTP1 = (g_tradeDir > 0) ? (high[i] >= g_tp1) : (low[i]  + g_spr <= g_tp1);
+   bool hitTP2 = (g_tradeDir > 0) ? (high[i] >= g_tp2) : (low[i]  + g_spr <= g_tp2);
 
    //--- SL and a target inside the same candle: assume the worse case (SL first)
    if(hitSL)
      {
-      g_exitIdx = i;
-      g_status  = g_tp1Hit ? "SL HIT after TP1" : "SL HIT";
+      g_exitIdx   = i;
+      g_tradeOpen = false;
+      g_status    = g_tp1Hit ? "SL HIT after TP1" : "SL HIT";
       BoxSetRight(g_tradeId, BarTime(time, BoxRightIdx(i)));
+      if(!g_tp1Hit && g_days > 0)
+         g_daySL[g_days - 1]++;
+      if(g_state != ST_LIVE)
+        {
+         // idea was already released at TP1 - just close the trade
+         if(alerts && InpAlertExit)
+            Notify(StringFormat("%s stopped out after TP1 @ %s", SideName(g_tradeDir), DoubleToString(g_sl, _Digits)));
+         return;
+        }
       if(g_reentries == 0)
          g_firstSLIdx = i;   // re-entry window starts at the idea's first SL
       bool canRetry = InpReentryOn && g_reentries < InpMaxReentries &&
@@ -594,13 +631,17 @@ void ManageTrade(const int i, const datetime &time[], const double &high[],
 
    if(hitTP2)
      {
-      g_exitIdx = i;
-      g_tp1Hit  = true;
-      g_status  = "TP2 HIT";
+      if(!g_tp1Hit && g_days > 0)
+         g_dayTP1[g_days - 1]++;
+      g_exitIdx   = i;
+      g_tradeOpen = false;
+      g_tp1Hit    = true;
+      g_status    = "TP2 HIT";
       BoxSetRight(g_tradeId, BarTime(time, BoxRightIdx(i)));
-      g_state = ST_IDLE;
+      if(g_state == ST_LIVE)
+         g_state = ST_IDLE;
       if(alerts && InpAlertExit)
-         Notify(StringFormat("%s TP2 hit @ %s - idea complete", SideName(g_dir), DoubleToString(g_tp2, _Digits)));
+         Notify(StringFormat("%s TP2 hit @ %s - idea complete", SideName(g_tradeDir), DoubleToString(g_tp2, _Digits)));
       return;
      }
 
@@ -608,8 +649,12 @@ void ManageTrade(const int i, const datetime &time[], const double &high[],
      {
       g_tp1Hit = true;
       g_status = "TP1 HIT";
+      if(g_days > 0)
+         g_dayTP1[g_days - 1]++;
+      if(InpReleaseAtTP1 && g_state == ST_LIVE)
+         g_state = ST_IDLE;   // trade keeps running to TP2 / SL, next signal may now form
       if(alerts && InpAlertExit)
-         Notify(StringFormat("%s TP1 hit @ %s", SideName(g_dir), DoubleToString(g_tp1, _Digits)));
+         Notify(StringFormat("%s TP1 hit @ %s", SideName(g_tradeDir), DoubleToString(g_tp1, _Digits)));
      }
   }
 
@@ -624,8 +669,8 @@ void Abandon(const string why, const bool alerts)
 //+------------------------------------------------------------------+
 //| Rules                                                            |
 //+------------------------------------------------------------------+
-//--- BULL / BEAR / MIX from the last two CLOSED candles of tf as of time t
-int TFState(const ENUM_TIMEFRAMES tf, const datetime t)
+//--- BULL / BEAR / MIX of tf as of time t, from its CLOSED candles only
+int TFState(const int slot, const ENUM_TIMEFRAMES tf, const datetime t)
   {
    int idx = iBarShift(_Symbol, tf, t, false);
    if(idx < 0)
@@ -635,20 +680,52 @@ int TFState(const ENUM_TIMEFRAMES tf, const datetime t)
       return TF_MIX;
    if(ot + PeriodSeconds(tf) > t)
       idx++;                         // that bar is still forming at time t
-   if(idx + 1 >= iBars(_Symbol, tf))
+   int bars = iBars(_Symbol, tf);
+   if(idx + 1 >= bars)
       return TF_MIX;
 
-   double o1 = iOpen(_Symbol, tf, idx),  c1 = iClose(_Symbol, tf, idx);
-   double h1 = iHigh(_Symbol, tf, idx),  l1 = iLow(_Symbol, tf, idx);
-   double h2 = iHigh(_Symbol, tf, idx + 1), l2 = iLow(_Symbol, tf, idx + 1);
-   if(o1 == 0 || c1 == 0 || h2 == 0 || l2 == 0)
-      return TF_MIX;
+   //--- unchanged until this TF closes another candle
+   datetime key = iTime(_Symbol, tf, idx);
+   if(key == g_tfKey[slot])
+      return g_tfVal[slot];
 
-   if(c1 > o1 && h1 > h2 && l1 > l2)
-      return TF_BULL;               // up candle + HH/HL
-   if(c1 < o1 && h1 < h2 && l1 < l2)
-      return TF_BEAR;               // down candle + LH/LL
-   return TF_MIX;
+   int state = TF_MIX;
+   if(InpStructMode == STRUCT_CANDLES)
+     {
+      double o1 = iOpen(_Symbol, tf, idx),  c1 = iClose(_Symbol, tf, idx);
+      double h1 = iHigh(_Symbol, tf, idx),  l1 = iLow(_Symbol, tf, idx);
+      double h2 = iHigh(_Symbol, tf, idx + 1), l2 = iLow(_Symbol, tf, idx + 1);
+      if(o1 > 0 && c1 > 0 && h2 > 0 && l2 > 0)
+        {
+         if(c1 > o1 && h1 > h2 && l1 > l2)
+            state = TF_BULL;            // up candle + HH/HL
+         else if(c1 < o1 && h1 < h2 && l1 < l2)
+            state = TF_BEAR;            // down candle + LH/LL
+        }
+     }
+   else if(idx + InpStructSMA + InpStructSlope < bars)
+     {
+      double sma0 = 0.0, sma1 = 0.0;
+      for(int k = 0; k < InpStructSMA; k++)
+        {
+         sma0 += iClose(_Symbol, tf, idx + k);
+         sma1 += iClose(_Symbol, tf, idx + InpStructSlope + k);
+        }
+      sma0 /= InpStructSMA;
+      sma1 /= InpStructSMA;
+      double c1 = iClose(_Symbol, tf, idx);
+      if(c1 > 0 && sma1 > 0)
+        {
+         if(c1 > sma0 && sma0 > sma1)
+            state = TF_BULL;            // above a rising average
+         else if(c1 < sma0 && sma0 < sma1)
+            state = TF_BEAR;            // below a falling average
+        }
+     }
+
+   g_tfKey[slot] = key;
+   g_tfVal[slot] = state;
+   return state;
   }
 
 //--- structure filter for a direction, using the current MTF states
@@ -678,7 +755,7 @@ bool FlipAgainst(const int dir)
 
 //--- session / spread / EMA trend filters
 bool QualityOK(const int dir, const int i, const datetime &time[], const double &close[],
-               const int &spread[])
+               const int &spread[], const bool trendCheck)
   {
    if(InpUseSession)
      {
@@ -692,7 +769,7 @@ bool QualityOK(const int dir, const int i, const datetime &time[], const double 
      }
    if(InpMaxSpreadPts > 0 && spread[i] > InpMaxSpreadPts)
       return false;
-   if(InpUseEMA)
+   if(InpUseEMA && trendCheck)
      {
       if(i < InpEMASlopeBars)
          return false;
@@ -1005,29 +1082,25 @@ void UpdatePanel()
                              Allowed(1) ? "OK" : "--", Allowed(-1) ? "OK" : "--"),
              clrSilver);
 
-   string s1, s2 = "";
+   //--- idea state
+   string s1;
    color  c1 = clrSilver;
    switch(g_state)
      {
       case ST_WATCH:
-         s1 = StringFormat("WAIT PB %s  (%s)", SideName(g_dir),
-                           g_touched ? StringFormat("pulled back, confirm %d/%d", g_sinceTouch, InpConfirmBars)
-                                     : StringFormat("bar %d/%d", g_watchBars, InpPullbackBars));
-         s2 = StringFormat("PB level %s   invalid beyond %s", DoubleToString(g_pbLevel, _Digits),
-                           DoubleToString(g_dir > 0 ? g_impLow - g_impBuf : g_impHigh + g_impBuf, _Digits));
+         s1 = StringFormat("WAIT PB %s  %s  PB level %s", SideName(g_dir),
+                           g_touched ? StringFormat("confirm %d/%d", g_sinceTouch, InpConfirmBars)
+                                     : StringFormat("bar %d/%d", g_watchBars, InpPullbackBars),
+                           DoubleToString(g_pbLevel, _Digits));
          c1 = clrYellow;
          break;
       case ST_LIVE:
-         s1 = StringFormat("LIVE %s%s  [%s]", SideName(g_dir), g_reentries > 0 ? " (re-entry)" : "", g_status);
-         s2 = StringFormat("E %s  SL %s  TP1 %s  TP2 %s", DoubleToString(g_entry, _Digits),
-                           DoubleToString(g_sl, _Digits), DoubleToString(g_tp1, _Digits),
-                           DoubleToString(g_tp2, _Digits));
+         s1 = StringFormat("LIVE %s%s", SideName(g_dir), g_reentries > 0 ? " (re-entry)" : "");
          c1 = (g_dir > 0) ? clrAqua : clrMagenta;
          break;
       case ST_SLWAIT:
-         s1 = StringFormat("SL_WAIT %s", SideName(g_dir));
-         s2 = StringFormat("Re-entries %d/%d   window %d/%d bars", g_reentries, InpMaxReentries,
-                           g_lastIdx - g_firstSLIdx, InpReentryWindow);
+         s1 = StringFormat("SL_WAIT %s  re-entries %d/%d  window %d/%d bars", SideName(g_dir),
+                           g_reentries, InpMaxReentries, g_lastIdx - g_firstSLIdx, InpReentryWindow);
          c1 = clrOrange;
          break;
       default:
@@ -1035,7 +1108,32 @@ void UpdatePanel()
          break;
      }
    PanelLine(3, s1, c1);
-   PanelLine(4, s2, clrSilver);
+
+   //--- current signal (the one with the box)
+   string s2 = "No signal yet";
+   color  c2 = clrSilver;
+   if(g_tradeId > 0)
+     {
+      s2 = StringFormat("%s E %s  SL %s  TP1 %s  TP2 %s  [%s]", SideName(g_tradeDir),
+                        DoubleToString(g_entry, _Digits), DoubleToString(g_sl, _Digits),
+                        DoubleToString(g_tp1, _Digits), DoubleToString(g_tp2, _Digits), g_status);
+      c2 = g_tradeOpen ? ((g_tradeDir > 0) ? clrAqua : clrMagenta) : clrSilver;
+     }
+   PanelLine(4, s2, c2);
+
+   //--- signal count: today and average of previous full days (first, partial day skipped)
+   string s3 = "";
+   if(g_days > 0)
+     {
+      int last = g_days - 1;
+      int n = 0, sum = 0;
+      for(int d = last - 1; d >= 1 && n < 20; d--, n++)
+         sum += g_daySig[d];
+      s3 = StringFormat("Today %d signals (TP1 %d, SL %d)", g_daySig[last], g_dayTP1[last], g_daySL[last]);
+      if(n > 0)
+         s3 += StringFormat("   avg %.1f/day over %d days", (double)sum / n, n);
+     }
+   PanelLine(5, s3, clrSilver);
   }
 
 //+------------------------------------------------------------------+
@@ -1054,11 +1152,39 @@ void ResetState()
    g_exitIdx    = -1;
    g_entryTime  = 0;
    g_tp1Hit     = false;
+   g_tradeOpen  = false;
    g_status     = "";
    g_reentries  = 0;
+   g_days       = 0;
+   ArrayResize(g_dayKey, 0);
+   ArrayResize(g_daySig, 0);
+   ArrayResize(g_dayTP1, 0);
+   ArrayResize(g_daySL,  0);
+   for(int k = 0; k < 4; k++)
+     {
+      g_tfKey[k] = 0;
+      g_tfVal[k] = TF_MIX;
+     }
    g_firstSLIdx = -1;
    g_lastIdx    = -1;
    g_lastTime   = 0;
+  }
+
+//--- register the trading day of a processed bar
+void StatsBar(const datetime t)
+  {
+   datetime day = (datetime)((long)t - (long)t % 86400);
+   if(g_days > 0 && g_dayKey[g_days - 1] == day)
+      return;
+   g_days++;
+   ArrayResize(g_dayKey, g_days, 256);
+   ArrayResize(g_daySig, g_days, 256);
+   ArrayResize(g_dayTP1, g_days, 256);
+   ArrayResize(g_daySL,  g_days, 256);
+   g_dayKey[g_days - 1] = day;
+   g_daySig[g_days - 1] = 0;
+   g_dayTP1[g_days - 1] = 0;
+   g_daySL[g_days - 1]  = 0;
   }
 
 void Notify(const string msg)
