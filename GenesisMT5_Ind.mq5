@@ -285,8 +285,8 @@ int OnInit()
    PlotIndexSetDouble(1, PLOT_EMPTY_VALUE, EMPTY_VALUE);
    IndicatorSetString(INDICATOR_SHORTNAME, IND_NAME);
 
-   if((InpPushSignals || InpPushLevels || InpPushStrong) && !MQLInfoInteger(MQL_TESTER)
-      && !TerminalInfoInteger(TERMINAL_NOTIFICATIONS_ENABLED))
+   if((InpPushSignals || InpPushLevels || InpPushStrong) && MQLInfoInteger(MQL_TESTER) == 0
+      && TerminalInfoInteger(TERMINAL_NOTIFICATIONS_ENABLED) == 0)
       Print(IND_NAME, ": push notifications are OFF. Enable them in Tools > Options > Notifications ",
             "and enter your MetaQuotes ID (from the MT5 mobile app: Settings > Messages).");
 
@@ -351,7 +351,7 @@ void OnTimer()
 //+------------------------------------------------------------------+
 datetime NowServer()
   {
-   if(MQLInfoInteger(MQL_TESTER))
+   if(MQLInfoInteger(MQL_TESTER) != 0)
       return TimeCurrent();
    datetime t = TimeTradeServer();
    return (t > 0) ? t : TimeCurrent();
@@ -359,7 +359,7 @@ datetime NowServer()
 
 int BrokerOffsetSec()
   {
-   if(InpGmtMode == GMT_MANUAL || MQLInfoInteger(MQL_TESTER))
+   if(InpGmtMode == GMT_MANUAL || MQLInfoInteger(MQL_TESTER) != 0)
       return InpManualGmtOffset * 3600;
    long d = (long)TimeTradeServer() - (long)TimeGMT();
    return (int)(MathRound(d / 1800.0) * 1800); // round to 30 min
@@ -687,7 +687,7 @@ void RenderPanel()
      {
       string id = IntegerToString(i);
       bool header = (i == 0);
-      color bg = header ? InpHeaderBg : ((i % 2) ? InpPanelBg : InpPanelBg2);
+      color bg = header ? InpHeaderBg : ((i % 2 != 0) ? InpPanelBg : InpPanelBg2);
       PanelRect(PFX + "P_R" + id, 0, i * rh, g_panelW, rh, bg);
       PanelText(PFX + "P_K" + id, 6, i * rh + ty, g_rows[i].k, header ? clrWhite : InpTextColor, header, "");
       PanelText(PFX + "P_V" + id, c1 + 6, i * rh + ty, g_rows[i].v, g_rows[i].vc, true, g_rows[i].tip);
@@ -903,7 +903,7 @@ void Notify(const string msg, const bool popup, const bool push)
   {
    if(popup)
       Alert(msg);
-   if(push && !MQLInfoInteger(MQL_TESTER))
+   if(push && MQLInfoInteger(MQL_TESTER) == 0)
       if(!SendNotification(msg))
          Print(IND_NAME, ": push failed (", GetLastError(), "). Check Tools > Options > Notifications / MetaQuotes ID.");
   }
