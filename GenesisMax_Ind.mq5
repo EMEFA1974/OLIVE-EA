@@ -127,10 +127,11 @@ input double InpPinWickPct  = 0.55;                // and >= this share of the c
 input int    InpPinSweep    = 3;                   // and the wick takes out the low/high of the previous N bars
 
 input group "=== Signal Grade ==="
-input ENUM_GRADE InpMinGrade = GRADE_C;            // lowest grade that becomes a signal (zone / alert / EA trade); C = A, B and C all accepted
-input bool       InpAllowGradeC = true;            // true = grade C signals are taken (zone / alert / trade); false = only A and B, C shows as a grey letter
-input bool       InpReNeedA  = false;              // true = re-entries only on a fresh A-grade trigger (false = same grades as InpMinGrade)
-input bool       InpShowFiltered = true;          // grey grade letter on signals below the minimum grade (no zone, no alert)
+// grade A is always taken; B and C each have their own switch. A grade that is off shows as a grey letter (no zone / alert / trade)
+input bool       InpAllowGradeB = true;            // true = grade B signals are taken (fail one quality filter)
+input bool       InpAllowGradeC = true;            // true = grade C signals are taken (fail two or more quality filters)
+input bool       InpReNeedA  = false;              // true = re-entries only on a fresh A-grade trigger (false = the same grades as normal signals)
+input bool       InpShowFiltered = true;          // grey grade letter on signals whose grade is switched off or blocked by the spread guard (no zone, no alert)
 input color      InpFiltColor    = clrSilver;
 
 input group "=== Trade Management (set the same as the EA) ==="
@@ -962,10 +963,24 @@ string GradeName(const int g)
   }
 
 // lowest (best) grade letter that may arm a fresh signal / a re-entry
-// InpAllowGradeC = false caps the minimum grade at B, whatever InpMinGrade says
-int MinGradeEff() { return (InpAllowGradeC ? (int)InpMinGrade : MathMin((int)InpMinGrade, (int)GRADE_B)); }
-int FreshLimit() { return MinGradeEff(); }
-int ReLimit()    { return (InpReNeedA ? GRADE_A : MinGradeEff()); }
+// which grades may arm a fresh signal / a re-entry (A always; B and C by their switches)
+bool FreshOK(const int g)
+  {
+   if(g == GRADE_A) return true;
+   if(g == GRADE_B) return InpAllowGradeB;
+   if(g == GRADE_C) return InpAllowGradeC;
+   return false;
+  }
+bool ReOK(const int g) { return (InpReNeedA ? g == GRADE_A : FreshOK(g)); }
+
+// grades a signal of this kind accepts, e.g. "A B C", "A C", "A"
+string GradeList(const bool re)
+  {
+   string t = "";
+   for(int g = GRADE_A; g <= GRADE_C; g++)
+      if(re ? ReOK(g) : FreshOK(g)) t += (t == "" ? "" : " ") + GradeName(g);
+   return t;
+  }
 
 double RecentSwingHigh(const int rates_total, const int i, const double &high[])
   {
@@ -1373,7 +1388,7 @@ void DrawPanel(const bool force = false)
    PRow("Align B / S", StringFormat("%d / %d", gScoreB, gScoreS),
         (gScoreB >= InpMinAlign ? C_UP : (gScoreS >= InpMinAlign ? C_DN : C_MUTE)));
    v = FilterTrendText(c);     PRow("Trend filter", v, c);
-   PRow("Min grade / re-entry", GradeName(FreshLimit()) + " / " + GradeName(ReLimit()), C_INFO);
+   PRow("Grades / re-entry", GradeList(false) + "  /  " + GradeList(true), C_INFO);
    v = SpreadText(c);          PRow("Spread", v, c);
    PRow("ATR (" + StringSubstr(EnumToString(_Period), 7) + ")", "$" + DoubleToString(ATRAt(1), 2), C_TXT);
    PRow("SL widening", StringFormat("+%.0f%%", MathMax(0.0, InpSLWidenPct)), C_INFO);
@@ -1619,7 +1634,7 @@ int OnCalculate(const int rates_total,
       if(InpReentryOn && idea.state == IDEA_SL_WAIT && idea.reCount < InpMaxReentry
          && idea.slBarAge >= InpReentryCool)
         {
-         if(idea.dir > 0 && sprOK && gradeB <= ReLimit())
+         if(idea.dir > 0 && sprOK && ReOK(gradeB))
            {
             ReBuyBuf[i] = low[i];
             int rc = idea.reCount + 1;
@@ -1630,7 +1645,7 @@ int OnCalculate(const int rates_total,
             HollowArrow(time[i], low[i], 1, InpReBuyColor, true);
             didRe = true;
            }
-         else if(idea.dir < 0 && sprOK && gradeS <= ReLimit())
+         else if(idea.dir < 0 && sprOK && ReOK(gradeS))
            {
             ReSellBuf[i] = high[i];
             int rc = idea.reCount + 1;
@@ -1650,7 +1665,7 @@ int OnCalculate(const int rates_total,
          bool coolS = Cooled(bar.t, lastSellTime, InpCooldown) && Cooled(bar.t, lastBuyTime, 3);
          bool free = (idea.state == IDEA_IDLE && sprOK);
 
-         if(free && gradeB <= FreshLimit() && coolB)
+         if(free && FreshOK(gradeB) && coolB)
            {
             BuyBuf[i] = low[i];
             lastBuyTime = bar.t;
@@ -1659,7 +1674,7 @@ int OnCalculate(const int rates_total,
             HollowArrow(time[i], low[i], 1, InpBuyColor, false);
             armed = true;
            }
-         else if(free && gradeS <= FreshLimit() && coolS)
+         else if(free && FreshOK(gradeS) && coolS)
            {
             SellBuf[i] = high[i];
             lastSellTime = bar.t;
@@ -1674,12 +1689,12 @@ int OnCalculate(const int rates_total,
       // grey letter only (no zone, no alert, no trade); hover shows why
       if(!armed && InpShowFiltered)
         {
-         if(gradeB != GRADE_NONE && (gradeB > FreshLimit() || sprBlock) && Cooled(bar.t, lastFiltB, InpCooldown))
+         if(gradeB != GRADE_NONE && (!FreshOK(gradeB) || sprBlock) && Cooled(bar.t, lastFiltB, InpCooldown))
            {
             lastFiltB = bar.t;
             FilteredMark(time[i], low[i], 1, gradeB, whyB);
            }
-         else if(gradeS != GRADE_NONE && (gradeS > FreshLimit() || sprBlock) && Cooled(bar.t, lastFiltS, InpCooldown))
+         else if(gradeS != GRADE_NONE && (!FreshOK(gradeS) || sprBlock) && Cooled(bar.t, lastFiltS, InpCooldown))
            {
             lastFiltS = bar.t;
             FilteredMark(time[i], high[i], -1, gradeS, whyS);
