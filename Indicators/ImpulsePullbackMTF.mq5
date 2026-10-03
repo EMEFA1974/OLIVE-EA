@@ -6,51 +6,50 @@
 //|   panel, and can alert. It never places or closes orders.        |
 //+------------------------------------------------------------------+
 #property copyright   "OLIVE-EA"
-#property version     "1.10"
-#property description "MTF structure (D/H4/H1/M5) -> quality impulse -> ~45% pullback -> confirmation."
-#property description "Tuned for XAUUSD M5. All signals are hollow arrows: green/red = entry, gold/orange = re-entry after SL."
-#property description "Live trade: zone boxes plus Entry / SL / TP1 / TP2 levels tagged at the right edge of the chart."
+#property version     "1.20"
+#property description "Tuned for XAUUSD M5. MTF structure (D/H4/H1/M5) -> quality impulse -> ~45% pullback -> confirmation."
+#property description "Hollow arrows: Aqua = buy, Magenta = sell. Trade box: red SL zone, green TP1 zone, blue TP2 zone."
 #property description "Signal indicator only - it does not trade."
 #property indicator_chart_window
-#property indicator_buffers 8
+#property indicator_buffers 9
 #property indicator_plots   8
 
-#property indicator_label1  "Pullback Long"
+#property indicator_label1  "Pullback Buy"
 #property indicator_type1   DRAW_ARROW
-#property indicator_color1  clrLime
+#property indicator_color1  clrAqua
 #property indicator_width1  2
 
-#property indicator_label2  "Pullback Short"
+#property indicator_label2  "Pullback Sell"
 #property indicator_type2   DRAW_ARROW
-#property indicator_color2  clrRed
+#property indicator_color2  clrMagenta
 #property indicator_width2  2
 
-#property indicator_label3  "Direct Long"
+#property indicator_label3  "Direct Buy"
 #property indicator_type3   DRAW_ARROW
-#property indicator_color3  clrLime
+#property indicator_color3  clrAqua
 #property indicator_width3  2
 
-#property indicator_label4  "Direct Short"
+#property indicator_label4  "Direct Sell"
 #property indicator_type4   DRAW_ARROW
-#property indicator_color4  clrRed
+#property indicator_color4  clrMagenta
 #property indicator_width4  2
 
-#property indicator_label5  "Re-entry Long"
+#property indicator_label5  "Re-entry Buy"
 #property indicator_type5   DRAW_ARROW
-#property indicator_color5  clrGold
+#property indicator_color5  clrAqua
 #property indicator_width5  2
 
-#property indicator_label6  "Re-entry Short"
+#property indicator_label6  "Re-entry Sell"
 #property indicator_type6   DRAW_ARROW
-#property indicator_color6  clrOrange
+#property indicator_color6  clrMagenta
 #property indicator_width6  2
 
-#property indicator_label7  "Impulse Long"
+#property indicator_label7  "Impulse Buy"
 #property indicator_type7   DRAW_ARROW
-#property indicator_color7  clrDeepSkyBlue
+#property indicator_color7  clrAqua
 #property indicator_width7  1
 
-#property indicator_label8  "Impulse Short"
+#property indicator_label8  "Impulse Sell"
 #property indicator_type8   DRAW_ARROW
 #property indicator_color8  clrMagenta
 #property indicator_width8  1
@@ -74,48 +73,65 @@ input bool         InpRequireD       = false;  // Daily must agree with directio
 
 input group "2) Impulse candle"
 input double       InpMinBodyRatio   = 0.25;   // Min body / range
-input double       InpCloseZone      = 0.55;   // Close inside this upper (long) / lower (short) fraction of range
+input double       InpCloseZone      = 0.55;   // Close inside this upper (buy) / lower (sell) fraction of range
 input int          InpSwingLookback  = 2;      // Swing break lookback (bars)
 input double       InpMinWickRatio   = 0.30;   // Rejection wick / range (alternative to swing break)
-input double       InpMinImpulseATR  = 0.8;    // Min impulse range (x ATR, 0 = off) - skips small XAUUSD M5 noise candles
+input double       InpMinImpulseATR  = 0.8;    // Min impulse range (x ATR, 0 = off)
 
 input group "3) Pullback entry"
 input bool         InpPullbackOn     = true;   // Pullback mode (false = impulse close is the entry)
 input int          InpPullbackBars   = 8;      // Bars allowed for the pullback to happen
 input double       InpPullbackPct    = 0.45;   // Required retrace of impulse range
 input int          InpConfirmBars    = 8;      // Bars allowed for confirmation after the pullback
+input double       InpConfirmBody    = 0.30;   // Confirmation candle: min body / range
+input double       InpConfirmClose   = 0.50;   // Confirmation candle: close inside this upper (buy) / lower (sell) fraction
 input ENUM_RECLAIM InpReclaim        = RECLAIM_NONE; // Confirmation candle must reclaim impulse level
+
+input group "Quality filters (XAUUSD M5)"
+input bool         InpUseSession     = true;   // Only signal inside the session window
+input int          InpSessionStart   = 8;      // Session start hour (server time)
+input int          InpSessionEnd     = 21;     // Session end hour (server time, exclusive)
+input bool         InpUseEMA         = true;   // Chart-TF EMA trend filter
+input int          InpEMAPeriod      = 50;     // EMA period
+input int          InpEMASlopeBars   = 5;      // EMA must rise (buy) / fall (sell) over this many bars
+input int          InpMaxSpreadPts   = 60;     // Max bar spread in points (0 = off)
+input double       InpMinRiskATR     = 0.6;    // Min SL distance (x ATR) - tighter stops are widened to this
+input double       InpMaxRiskATR     = 3.0;    // Max SL distance (x ATR, 0 = off) - wider setups are skipped
 
 input group "Risk / targets"
 input double       InpBufferATR      = 0.10;   // Buffer beyond wicks (x ATR)
-input int          InpATRPeriod      = 14;     // ATR period (for buffer)
+input int          InpATRPeriod      = 14;     // ATR period
 input double       InpTP1R           = 1.0;    // TP1 (R multiple)
 input double       InpTP2R           = 2.0;    // TP2 (R multiple)
-input bool         InpUseSpread      = true;   // Include bar spread for shorts (ask-side SL/TP) - matters on XAUUSD
+input bool         InpUseSpread      = true;   // Include bar spread for sells (ask-side SL/TP)
 
 input group "5) Re-entry after SL"
 input bool         InpReentryOn      = true;   // Allow re-entries after SL
 input int          InpMaxReentries   = 2;      // Max re-entries per idea
 input int          InpReentryWindow  = 24;     // Re-entry window (bars after first SL)
 
+input group "Trade box & levels"
+input bool         InpShowZones      = true;   // Draw trade boxes
+input bool         InpShowLevels     = true;   // Latest trade: dotted levels + price labels
+input int          InpBoxBars        = 30;     // Box width (bars from entry)
+input int          InpLineExtraBars  = 15;     // Level lines extend this many bars past the box
+input color        InpSLZoneColor    = C'110,22,22';  // SL zone fill
+input color        InpTP1ZoneColor   = C'22,95,45';   // TP1 zone fill
+input color        InpTP2ZoneColor   = C'25,35,150';  // TP2 zone fill
+input color        InpEntryColor     = clrAqua;        // Entry line / label
+input color        InpSLColor        = clrRed;         // SL line / label
+input color        InpTP1Color       = clrMediumSeaGreen; // TP1 line / label
+input color        InpTP2Color       = clrDodgerBlue;  // TP2 line / label
+input bool         InpChartShift     = true;   // Enable chart shift so boxes have room on the right
+
 input group "Display"
-input int          InpMaxBars        = 10000;  // History bars to calculate (10000 M5 bars ~ 5 weeks)
+input int          InpMaxBars        = 10000;  // History bars to calculate
 input bool         InpShowImpulse    = true;   // Mark impulse candles (WATCH start)
-input bool         InpShowZones      = true;   // Draw SL / TP zones
 input bool         InpShowPanel      = true;   // Show status panel
 input ENUM_BASE_CORNER InpPanelCorner = CORNER_LEFT_UPPER; // Panel corner
 input int          InpPanelX         = 10;     // Panel X offset
 input int          InpPanelY         = 25;     // Panel Y offset
-input int          InpFontSize       = 9;      // Panel font size
-input color        InpRiskColor      = C'85,30,30';  // Risk zone colour
-input color        InpRewardColor    = C'25,70,45';  // Reward zone colour
-input color        InpTP1Color       = clrSilver;    // TP1 line colour (inside zone)
-input bool         InpShowLevels     = true;   // Live trade: Entry / SL / TP lines + right-edge tags
-input int          InpRightBars      = 12;     // Live zone box extends this many bars past the last candle
-input bool         InpChartShift     = true;   // Enable chart shift so the right-edge tags have room
-input color        InpEntryColor     = clrDodgerBlue;  // Entry level colour
-input color        InpSLColor        = C'200,40,40';   // SL level colour
-input color        InpTPColor        = C'30,150,70';   // TP level colour
+input int          InpFontSize       = 9;      // Font size
 
 input group "Alerts"
 input bool         InpAlertWatch     = false;  // Alert on impulse / WATCH
@@ -137,6 +153,8 @@ input string       InpSoundFile      = "alert.wav"; // Sound file
 #define KIND_DIRECT   1
 #define KIND_REENTRY  2
 
+#define LEVEL_COUNT   4
+
 enum ENUM_IDEA_STATE
   {
    ST_IDLE,
@@ -154,6 +172,8 @@ const int    PANEL_LINES = 5;
 //--- buffers
 double BufPBLong[], BufPBShort[], BufDirLong[], BufDirShort[];
 double BufReLong[], BufReShort[], BufImpLong[], BufImpShort[];
+double BufEMA[];
+int    g_emaHandle = INVALID_HANDLE;
 
 //--- calculation bookkeeping
 int      g_lastIdx   = -1;
@@ -168,18 +188,20 @@ ENUM_IDEA_STATE g_state = ST_IDLE;
 int    g_dir        = 0;
 
 //--- impulse / watch
-int    g_impIdx     = -1;
 double g_impOpen, g_impHigh, g_impLow, g_impClose, g_impBuf, g_pbLevel;
 int    g_watchBars  = 0;
 bool   g_touched    = false;
 int    g_sinceTouch = 0;
 
-//--- live trade
-int    g_entryIdx   = -1;
-double g_entry, g_sl, g_tp1, g_tp2;
-datetime g_entryTime = 0;
-bool   g_tp1Hit     = false;
-int    g_tradeId    = 0;
+//--- latest trade (kept after it closes, until the next one, for the level labels)
+int      g_tradeId    = 0;
+int      g_tradeDir   = 0;
+int      g_entryIdx   = -1;
+int      g_exitIdx    = -1;
+datetime g_entryTime  = 0;
+double   g_entry, g_sl, g_tp1, g_tp2;
+bool     g_tp1Hit     = false;
+string   g_status     = "";
 
 //--- re-entry
 int    g_reentries  = 0;
@@ -199,6 +221,7 @@ int OnInit()
    SetIndexBuffer(5, BufReShort,  INDICATOR_DATA);
    SetIndexBuffer(6, BufImpLong,  INDICATOR_DATA);
    SetIndexBuffer(7, BufImpShort, INDICATOR_DATA);
+   SetIndexBuffer(8, BufEMA,      INDICATOR_CALCULATIONS);
 
    //--- Wingdings: 241/242 hollow arrows (all signals), 161 hollow circle (impulse)
    int codes[8]  = {241, 242, 241, 242, 241, 242, 161, 161};
@@ -220,13 +243,24 @@ int OnInit()
       Print("ImpulsePullbackMTF: TP2 R must be greater than TP1 R, and TP1 R > 0");
       return INIT_PARAMETERS_INCORRECT;
      }
-   if(InpMinAlign < 0 || InpMinAlign > 4 || InpSwingLookback < 1 || InpATRPeriod < 1)
+   if(InpMinAlign < 0 || InpMinAlign > 4 || InpSwingLookback < 1 || InpATRPeriod < 1 ||
+      InpEMAPeriod < 1 || InpEMASlopeBars < 1 || InpBoxBars < 1)
      {
-      Print("ImpulsePullbackMTF: invalid input (MinAlign 0-4, SwingLookback >= 1, ATR period >= 1)");
+      Print("ImpulsePullbackMTF: invalid input (MinAlign 0-4, lookbacks / periods / box bars >= 1)");
       return INIT_PARAMETERS_INCORRECT;
      }
 
-   if(InpShowLevels && InpChartShift)
+   if(InpUseEMA)
+     {
+      g_emaHandle = iMA(_Symbol, _Period, InpEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
+      if(g_emaHandle == INVALID_HANDLE)
+        {
+         Print("ImpulsePullbackMTF: cannot create EMA handle");
+         return INIT_FAILED;
+        }
+     }
+
+   if(InpShowZones && InpChartShift)
       ChartSetInteger(0, CHART_SHIFT, true);
 
    IndicatorSetString(INDICATOR_SHORTNAME, "ImpulsePullbackMTF");
@@ -238,21 +272,10 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
+   if(g_emaHandle != INVALID_HANDLE)
+      IndicatorRelease(g_emaHandle);
    ObjectsDeleteAll(0, PFX);
    ChartRedraw();
-  }
-
-//+------------------------------------------------------------------+
-//| Keep the right-edge level tags glued to their prices on          |
-//| scroll / zoom / resize                                           |
-//+------------------------------------------------------------------+
-void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
-  {
-   if(id == CHARTEVENT_CHART_CHANGE && g_state == ST_LIVE && InpShowLevels)
-     {
-      LevelsPosition();
-      ChartRedraw();
-     }
   }
 
 //+------------------------------------------------------------------+
@@ -267,7 +290,9 @@ int OnCalculate(const int rates_total,
                 const long &volume[],
                 const int &spread[])
   {
-   int warmup = MathMax(InpSwingLookback, InpATRPeriod) + 2;
+   int warmup = MathMax(MathMax(InpSwingLookback, InpATRPeriod), InpEMASlopeBars) + 2;
+   if(InpUseEMA)
+      warmup = MathMax(warmup, InpEMAPeriod * 2);
    if(rates_total < warmup + 2)
       return 0;
 
@@ -275,7 +300,16 @@ int OnCalculate(const int rates_total,
    ENUM_TIMEFRAMES tfs[4] = {PERIOD_D1, PERIOD_H4, PERIOD_H1, PERIOD_M5};
    for(int k = 0; k < 4; k++)
       if(iBars(_Symbol, tfs[k]) < 3 || iTime(_Symbol, tfs[k], 0) == 0)
-         return 0;
+         return prev_calculated;
+
+   //--- chart-TF EMA
+   if(InpUseEMA)
+     {
+      if(BarsCalculated(g_emaHandle) < rates_total)
+         return prev_calculated;
+      if(CopyBuffer(g_emaHandle, 0, 0, rates_total, BufEMA) <= 0)
+         return prev_calculated;
+     }
 
    //--- full recalculation when needed (first run, history change)
    bool full = (prev_calculated == 0 || g_lastIdx < 0 || g_lastIdx >= rates_total ||
@@ -311,13 +345,13 @@ int OnCalculate(const int rates_total,
       g_lastTime = time[i];
      }
 
-   if(g_state == ST_LIVE)
+   //--- latest trade: box width and level lines / labels
+   if(g_tradeId > 0)
      {
-      ZoneExtend(g_tradeId, time[rates_total - 1] + InpRightBars * PeriodSeconds(_Period));
-      LevelsDraw();
+      int right = BoxRightIdx(lastClosed);
+      BoxSetRight(g_tradeId, BarTime(time, right));
+      LevelsDraw(time, right);
      }
-   else
-      ObjectsDeleteAll(0, PFX_LEVEL);
 
    g_alertsOn = true;
    UpdatePanel();
@@ -354,10 +388,12 @@ void ProcessBar(const int i, const datetime &time[], const double &open[],
       bool flipped = FlipAgainst(g_dir);
       if(!expired && !flipped)
         {
-         if(Allowed(g_dir) && IsImpulse(g_dir, i, open, high, low, close))
+         if(Allowed(g_dir) && QualityOK(g_dir, i, time, close, spread) &&
+            IsImpulse(g_dir, i, open, high, low, close))
            {
             g_reentries++;
-            OpenTrade(g_dir, i, KIND_REENTRY, time, high, low, close, alerts);
+            if(!OpenTrade(g_dir, i, KIND_REENTRY, time, high, low, close, alerts))
+               g_reentries--;
            }
          return;
         }
@@ -377,11 +413,10 @@ void ProcessBar(const int i, const datetime &time[], const double &open[],
       else if(g_touched)
         {
          g_sinceTouch++;
-         if(IsConfirm(g_dir, i, open, high, low, close) && Allowed(g_dir))
-           {
-            OpenTrade(g_dir, i, KIND_PULLBACK, time, high, low, close, alerts);
+         if(IsConfirm(g_dir, i, open, high, low, close) && Allowed(g_dir) &&
+            QualityOK(g_dir, i, time, close, spread) &&
+            OpenTrade(g_dir, i, KIND_PULLBACK, time, high, low, close, alerts))
             return;
-           }
          if(g_sinceTouch >= InpConfirmBars)
             why = "no confirmation";
         }
@@ -393,7 +428,8 @@ void ProcessBar(const int i, const datetime &time[], const double &open[],
             g_touched    = true;
             g_sinceTouch = 0;
            }
-         else if(Allowed(g_dir) && IsImpulse(g_dir, i, open, high, low, close))
+         else if(Allowed(g_dir) && QualityOK(g_dir, i, time, close, spread) &&
+                 IsImpulse(g_dir, i, open, high, low, close))
            {
             // fresh impulse in the same direction before any pullback: re-anchor
             StartWatch(g_dir, i, open, high, low, close, alerts);
@@ -409,11 +445,11 @@ void ProcessBar(const int i, const datetime &time[], const double &open[],
       // fall through: this bar may start a new idea
      }
 
-   //--- IDLE: structure must pass first, then a quality impulse
+   //--- IDLE: structure + quality filters must pass first, then a quality impulse
    int dir = 0;
-   if(Allowed(1) && IsImpulse(1, i, open, high, low, close))
+   if(Allowed(1) && QualityOK(1, i, time, close, spread) && IsImpulse(1, i, open, high, low, close))
       dir = 1;
-   else if(Allowed(-1) && IsImpulse(-1, i, open, high, low, close))
+   else if(Allowed(-1) && QualityOK(-1, i, time, close, spread) && IsImpulse(-1, i, open, high, low, close))
       dir = -1;
    if(dir == 0)
       return;
@@ -433,7 +469,6 @@ void StartWatch(const int dir, const int i, const double &open[],
   {
    g_state      = ST_WATCH;
    g_dir        = dir;
-   g_impIdx     = i;
    g_impOpen    = open[i];
    g_impHigh    = high[i];
    g_impLow     = low[i];
@@ -453,32 +488,51 @@ void StartWatch(const int dir, const int i, const double &open[],
 
    if(alerts && InpAlertWatch)
       Notify(StringFormat("WAIT PB %s - impulse closed, pullback level %s",
-                          DirName(dir), DoubleToString(g_pbLevel, _Digits)));
+                          SideName(dir), DoubleToString(g_pbLevel, _Digits)));
   }
 
 //+------------------------------------------------------------------+
-void OpenTrade(const int dir, const int i, const int kind, const datetime &time[],
+//| Returns false (and changes nothing) when the setup is rejected   |
+//+------------------------------------------------------------------+
+bool OpenTrade(const int dir, const int i, const int kind, const datetime &time[],
                const double &high[], const double &low[], const double &close[],
                const bool alerts)
   {
-   double buf  = InpBufferATR * ATRAt(i, high, low, close);
-   double sl   = (dir > 0) ? low[i] - buf : high[i] + g_spr + buf;   // beyond entry candle wick (ask side for shorts)
-   double risk = MathAbs(close[i] - sl);
-   if(risk <= _Point)
-     {
-      g_state = ST_IDLE;
-      return;
-     }
+   double atr   = ATRAt(i, high, low, close);
+   double entry = close[i];
+   //--- SL beyond the entry candle wick (ask side for sells)
+   double sl    = (dir > 0) ? low[i] - InpBufferATR * atr
+                            : high[i] + g_spr + InpBufferATR * atr;
+   double risk  = MathAbs(entry - sl);
 
-   g_state    = ST_LIVE;
-   g_dir      = dir;
-   g_entryIdx = i;
-   g_entryTime= time[i];
-   g_entry    = close[i];
-   g_sl       = sl;
-   g_tp1      = g_entry + dir * risk * InpTP1R;
-   g_tp2      = g_entry + dir * risk * InpTP2R;
-   g_tp1Hit   = false;
+   //--- too tight: widen to the minimum so normal gold noise does not tag it
+   if(InpMinRiskATR > 0.0 && risk < InpMinRiskATR * atr)
+     {
+      risk = InpMinRiskATR * atr;
+      sl   = entry - dir * risk;
+     }
+   if(risk <= _Point)
+      return false;
+   //--- too wide: 2R would be unrealistic, skip
+   if(InpMaxRiskATR > 0.0 && risk > InpMaxRiskATR * atr)
+      return false;
+
+   //--- previous trade's box must not run into this one
+   if(g_tradeId > 0)
+      BoxSetRight(g_tradeId, time[MathMin(BoxRightIdx(i), i)]);
+
+   g_state     = ST_LIVE;
+   g_dir       = dir;
+   g_tradeDir  = dir;
+   g_entryIdx  = i;
+   g_exitIdx   = -1;
+   g_entryTime = time[i];
+   g_entry     = entry;
+   g_sl        = sl;
+   g_tp1       = entry + dir * risk * InpTP1R;
+   g_tp2       = entry + dir * risk * InpTP2R;
+   g_tp1Hit    = false;
+   g_status    = "ACTIVE";
    g_tradeId++;
 
    double mark = (dir > 0) ? low[i] : high[i];
@@ -498,26 +552,25 @@ void OpenTrade(const int dir, const int i, const int kind, const datetime &time[
       else        BufReShort[i] = mark;
      }
 
-   ZoneCreate(g_tradeId, time[i], time[i] + PeriodSeconds(_Period));
+   BoxCreate(g_tradeId, time[i], BarTime(time, i + InpBoxBars));
 
    if(alerts && InpAlertEntry)
      {
       string label = (kind == KIND_REENTRY)
-                     ? StringFormat("RE-ENTRY %d/%d %s", g_reentries, InpMaxReentries, DirName(dir))
-                     : StringFormat("%s %s", DirName(dir), kind == KIND_PULLBACK ? "pullback entry" : "entry");
+                     ? StringFormat("RE-ENTRY %d/%d %s", g_reentries, InpMaxReentries, SideName(dir))
+                     : StringFormat("%s %s", SideName(dir), kind == KIND_PULLBACK ? "pullback entry" : "entry");
       Notify(StringFormat("%s @ %s  SL %s  TP1 %s  TP2 %s", label,
                           DoubleToString(g_entry, _Digits), DoubleToString(g_sl, _Digits),
                           DoubleToString(g_tp1, _Digits), DoubleToString(g_tp2, _Digits)));
      }
+   return true;
   }
 
 //+------------------------------------------------------------------+
 void ManageTrade(const int i, const datetime &time[], const double &high[],
                  const double &low[], const bool alerts)
   {
-   ZoneExtend(g_tradeId, time[i]);
-
-   //--- chart prices are bid; a short is closed at ask = bid + spread
+   //--- chart prices are bid; a sell is closed at ask = bid + spread
    bool hitSL  = (g_dir > 0) ? (low[i]  <= g_sl)  : (high[i] + g_spr >= g_sl);
    bool hitTP1 = (g_dir > 0) ? (high[i] >= g_tp1) : (low[i]  + g_spr <= g_tp1);
    bool hitTP2 = (g_dir > 0) ? (high[i] >= g_tp2) : (low[i]  + g_spr <= g_tp2);
@@ -525,32 +578,38 @@ void ManageTrade(const int i, const datetime &time[], const double &high[],
    //--- SL and a target inside the same candle: assume the worse case (SL first)
    if(hitSL)
      {
-      ExitMark(g_tradeId, time[i], g_sl, false);
+      g_exitIdx = i;
+      g_status  = g_tp1Hit ? "SL HIT after TP1" : "SL HIT";
+      BoxSetRight(g_tradeId, BarTime(time, BoxRightIdx(i)));
       if(g_reentries == 0)
          g_firstSLIdx = i;   // re-entry window starts at the idea's first SL
       bool canRetry = InpReentryOn && g_reentries < InpMaxReentries &&
                       (i - g_firstSLIdx) < InpReentryWindow;
       g_state = canRetry ? ST_SLWAIT : ST_IDLE;
       if(alerts && InpAlertExit)
-         Notify(StringFormat("%s stopped out @ %s%s", DirName(g_dir), DoubleToString(g_sl, _Digits),
+         Notify(StringFormat("%s stopped out @ %s%s", SideName(g_dir), DoubleToString(g_sl, _Digits),
                              canRetry ? " - SL_WAIT for re-entry" : " - idea abandoned"));
       return;
      }
 
    if(hitTP2)
      {
-      ExitMark(g_tradeId, time[i], g_tp2, true);
+      g_exitIdx = i;
+      g_tp1Hit  = true;
+      g_status  = "TP2 HIT";
+      BoxSetRight(g_tradeId, BarTime(time, BoxRightIdx(i)));
       g_state = ST_IDLE;
       if(alerts && InpAlertExit)
-         Notify(StringFormat("%s TP2 hit @ %s - idea complete", DirName(g_dir), DoubleToString(g_tp2, _Digits)));
+         Notify(StringFormat("%s TP2 hit @ %s - idea complete", SideName(g_dir), DoubleToString(g_tp2, _Digits)));
       return;
      }
 
    if(hitTP1 && !g_tp1Hit)
      {
       g_tp1Hit = true;
+      g_status = "TP1 HIT";
       if(alerts && InpAlertExit)
-         Notify(StringFormat("%s TP1 hit @ %s", DirName(g_dir), DoubleToString(g_tp1, _Digits)));
+         Notify(StringFormat("%s TP1 hit @ %s", SideName(g_dir), DoubleToString(g_tp1, _Digits)));
      }
   }
 
@@ -558,7 +617,7 @@ void ManageTrade(const int i, const datetime &time[], const double &high[],
 void Abandon(const string why, const bool alerts)
   {
    if(alerts && InpAlertExit)
-      Notify(StringFormat("%s idea cancelled (%s)", DirName(g_dir), why));
+      Notify(StringFormat("%s idea cancelled (%s)", SideName(g_dir), why));
    g_state = ST_IDLE;
   }
 
@@ -617,6 +676,38 @@ bool FlipAgainst(const int dir)
    return (g_sH4 == against) || (InpRequireD && g_sD == against);
   }
 
+//--- session / spread / EMA trend filters
+bool QualityOK(const int dir, const int i, const datetime &time[], const double &close[],
+               const int &spread[])
+  {
+   if(InpUseSession)
+     {
+      MqlDateTime dt;
+      TimeToStruct(time[i], dt);
+      bool in = (InpSessionStart <= InpSessionEnd)
+                ? (dt.hour >= InpSessionStart && dt.hour < InpSessionEnd)
+                : (dt.hour >= InpSessionStart || dt.hour < InpSessionEnd);
+      if(!in)
+         return false;
+     }
+   if(InpMaxSpreadPts > 0 && spread[i] > InpMaxSpreadPts)
+      return false;
+   if(InpUseEMA)
+     {
+      if(i < InpEMASlopeBars)
+         return false;
+      double e  = BufEMA[i];
+      double e0 = BufEMA[i - InpEMASlopeBars];
+      if(e == EMPTY_VALUE || e0 == EMPTY_VALUE || e <= 0.0 || e0 <= 0.0)
+         return false;
+      if(dir > 0 && !(close[i] > e && e > e0))
+         return false;
+      if(dir < 0 && !(close[i] < e && e < e0))
+         return false;
+     }
+   return true;
+  }
+
 //--- quality impulse candle
 bool IsImpulse(const int dir, const int i, const double &open[], const double &high[],
                const double &low[], const double &close[])
@@ -657,6 +748,10 @@ bool IsImpulse(const int dir, const int i, const double &open[], const double &h
 bool IsConfirm(const int dir, const int i, const double &open[], const double &high[],
                const double &low[], const double &close[])
   {
+   double range = high[i] - low[i];
+   if(range <= 0.0 || MathAbs(close[i] - open[i]) / range < InpConfirmBody)
+      return false;
+
    double level = 0.0;
    switch(InpReclaim)
      {
@@ -670,9 +765,13 @@ bool IsConfirm(const int dir, const int i, const double &open[], const double &h
      {
       if(close[i] <= open[i] || low[i] < g_impLow - g_impBuf)
          return false;
+      if((close[i] - low[i]) / range < 1.0 - InpConfirmClose)
+         return false;
       return (InpReclaim == RECLAIM_NONE || close[i] > level);
      }
    if(close[i] >= open[i] || high[i] > g_impHigh + g_impBuf)
+      return false;
+   if((high[i] - close[i]) / range < 1.0 - InpConfirmClose)
       return false;
    return (InpReclaim == RECLAIM_NONE || close[i] < level);
   }
@@ -693,7 +792,10 @@ double ATRAt(const int i, const double &high[], const double &low[], const doubl
   }
 
 //+------------------------------------------------------------------+
-//| Drawing                                                          |
+//| Drawing: trade box                                               |
+//|   red   = entry -> SL                                            |
+//|   green = entry -> TP1                                           |
+//|   blue  = TP1   -> TP2                                           |
 //+------------------------------------------------------------------+
 void ClearBuffers(const int k)
   {
@@ -705,6 +807,23 @@ void ClearBuffers(const int k)
    BufReShort[k] = EMPTY_VALUE;
    BufImpLong[k] = EMPTY_VALUE;
    BufImpShort[k]= EMPTY_VALUE;
+  }
+
+//--- bar time for any index, extrapolated into the future past the last bar
+datetime BarTime(const datetime &time[], const int idx)
+  {
+   int last = ArraySize(time) - 1;
+   if(idx <= last)
+      return time[MathMax(idx, 0)];
+   return time[last] + (datetime)((idx - last) * PeriodSeconds(_Period));
+  }
+
+//--- right edge of the latest trade's box: at least InpBoxBars wide,
+//--- and never ending before the exit (or, while live, the current bar)
+int BoxRightIdx(const int currentIdx)
+  {
+   int end = (g_exitIdx >= 0) ? g_exitIdx : currentIdx + 2;
+   return MathMax(g_entryIdx + InpBoxBars, end);
   }
 
 string ZoneName(const int id)
@@ -724,86 +843,66 @@ void RectCreate(const string name, const datetime t0, const double p0,
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
   }
 
-void ZoneCreate(const int id, const datetime t0, const datetime t1)
+void BoxCreate(const int id, const datetime t0, const datetime t1)
   {
    if(!InpShowZones)
       return;
    string n = ZoneName(id);
-   RectCreate(n + "_R", t0, g_entry, t1, g_sl,  InpRiskColor);
-   RectCreate(n + "_W", t0, g_entry, t1, g_tp2, InpRewardColor);
-   if(ObjectCreate(0, n + "_T1", OBJ_TREND, 0, t0, g_tp1, t1, g_tp1))
-     {
-      ObjectSetInteger(0, n + "_T1", OBJPROP_COLOR, InpTP1Color);
-      ObjectSetInteger(0, n + "_T1", OBJPROP_STYLE, STYLE_DOT);
-      ObjectSetInteger(0, n + "_T1", OBJPROP_RAY_RIGHT, false);
-      ObjectSetInteger(0, n + "_T1", OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, n + "_T1", OBJPROP_HIDDEN, true);
-     }
+   RectCreate(n + "_SL",  t0, g_entry, t1, g_sl,  InpSLZoneColor);
+   RectCreate(n + "_TP1", t0, g_entry, t1, g_tp1, InpTP1ZoneColor);
+   RectCreate(n + "_TP2", t0, g_tp1,   t1, g_tp2, InpTP2ZoneColor);
   }
 
-void ZoneExtend(const int id, const datetime t1)
+void BoxSetRight(const int id, const datetime t1)
   {
    if(!InpShowZones)
       return;
    string n = ZoneName(id);
-   ObjectSetInteger(0, n + "_R",  OBJPROP_TIME, 1, t1);
-   ObjectSetInteger(0, n + "_W",  OBJPROP_TIME, 1, t1);
-   ObjectSetInteger(0, n + "_T1", OBJPROP_TIME, 1, t1);
-  }
-
-void ExitMark(const int id, const datetime t, const double price, const bool win)
-  {
-   if(!InpShowZones)
-      return;
-   string n = ZoneName(id) + "_X";
-   if(!ObjectCreate(0, n, OBJ_ARROW, 0, t, price))
-      return;
-   ObjectSetInteger(0, n, OBJPROP_ARROWCODE, win ? 252 : 251);   // check / cross
-   ObjectSetInteger(0, n, OBJPROP_COLOR, win ? clrLime : clrRed);
-   ObjectSetInteger(0, n, OBJPROP_ANCHOR, ANCHOR_CENTER);
-   ObjectSetInteger(0, n, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0, n, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, n + "_SL",  OBJPROP_TIME, 1, t1);
+   ObjectSetInteger(0, n + "_TP1", OBJPROP_TIME, 1, t1);
+   ObjectSetInteger(0, n + "_TP2", OBJPROP_TIME, 1, t1);
   }
 
 //+------------------------------------------------------------------+
-//| Live trade levels: Entry / SL / TP1 / TP2                        |
-//| Lines run from the entry candle to the right edge; price tags    |
-//| are pinned to the right edge of the chart.                       |
+//| Drawing: latest trade levels                                     |
+//|   dotted lines from the entry candle past the box, label above   |
+//|   each line starting at the box's right edge                     |
 //+------------------------------------------------------------------+
-#define LEVEL_COUNT 4
-
 void LevelInfo(const int k, double &price, string &text, color &clr)
   {
-   double risk = MathAbs(g_entry - g_sl);
    switch(k)
      {
       case 0:
-         price = g_entry;
-         text  = StringFormat("ENTRY %s %s", DirName(g_dir), DoubleToString(g_entry, _Digits));
-         clr   = InpEntryColor;
+         price = g_tp2;
+         text  = StringFormat("TP2  %s", DoubleToString(g_tp2, _Digits));
+         clr   = InpTP2Color;
          break;
       case 1:
-         price = g_sl;
-         text  = StringFormat("SL %s  (-%s)", DoubleToString(g_sl, _Digits), DoubleToString(risk, _Digits));
-         clr   = InpSLColor;
+         price = g_tp1;
+         text  = StringFormat("TP1  %s", DoubleToString(g_tp1, _Digits));
+         clr   = InpTP1Color;
          break;
       case 2:
-         price = g_tp1;
-         text  = StringFormat("TP1 %s  (%gR)%s", DoubleToString(g_tp1, _Digits), InpTP1R, g_tp1Hit ? " HIT" : "");
-         clr   = InpTPColor;
+         price = g_entry;
+         text  = StringFormat("Entry  %s  %s [%s]", DoubleToString(g_entry, _Digits),
+                              g_tradeDir > 0 ? "BUY" : "SELL", g_status);
+         clr   = InpEntryColor;
          break;
       default:
-         price = g_tp2;
-         text  = StringFormat("TP2 %s  (%gR)", DoubleToString(g_tp2, _Digits), InpTP2R);
-         clr   = InpTPColor;
+         price = g_sl;
+         text  = StringFormat("SL  %s", DoubleToString(g_sl, _Digits));
+         clr   = InpSLColor;
          break;
      }
   }
 
-void LevelsDraw()
+void LevelsDraw(const datetime &time[], const int boxRightIdx)
   {
    if(!InpShowLevels)
       return;
+   datetime tBox  = BarTime(time, boxRightIdx);
+   datetime tLine = BarTime(time, boxRightIdx + InpLineExtraBars);
+
    for(int k = 0; k < LEVEL_COUNT; k++)
      {
       double price = 0.0;
@@ -811,75 +910,38 @@ void LevelsDraw()
       color  clr   = clrNONE;
       LevelInfo(k, price, text, clr);
 
-      //--- horizontal level from the entry candle, ray to the right edge
+      //--- dotted level line: entry candle -> past the box
       string ln = PFX_LEVEL + "L" + IntegerToString(k);
       if(ObjectFind(0, ln) < 0)
         {
-         ObjectCreate(0, ln, OBJ_TREND, 0, g_entryTime, price, g_entryTime + PeriodSeconds(_Period), price);
-         ObjectSetInteger(0, ln, OBJPROP_RAY_RIGHT, true);
+         ObjectCreate(0, ln, OBJ_TREND, 0, g_entryTime, price, tLine, price);
+         ObjectSetInteger(0, ln, OBJPROP_RAY_RIGHT, false);
+         ObjectSetInteger(0, ln, OBJPROP_STYLE, STYLE_DOT);
+         ObjectSetInteger(0, ln, OBJPROP_WIDTH, 1);
          ObjectSetInteger(0, ln, OBJPROP_SELECTABLE, false);
          ObjectSetInteger(0, ln, OBJPROP_HIDDEN, true);
         }
       ObjectSetInteger(0, ln, OBJPROP_TIME, 0, g_entryTime);
-      ObjectSetInteger(0, ln, OBJPROP_TIME, 1, g_entryTime + PeriodSeconds(_Period));
+      ObjectSetInteger(0, ln, OBJPROP_TIME, 1, tLine);
       ObjectSetDouble(0, ln, OBJPROP_PRICE, 0, price);
       ObjectSetDouble(0, ln, OBJPROP_PRICE, 1, price);
       ObjectSetInteger(0, ln, OBJPROP_COLOR, clr);
-      ObjectSetInteger(0, ln, OBJPROP_WIDTH, k == 0 ? 2 : 1);
-      ObjectSetInteger(0, ln, OBJPROP_STYLE, k == 2 ? STYLE_DASH : STYLE_SOLID);
 
-      //--- price tag (read-only edit box gives a filled background)
+      //--- label sitting on the line, from the box's right edge
       string tg = PFX_LEVEL + "T" + IntegerToString(k);
       if(ObjectFind(0, tg) < 0)
         {
-         ObjectCreate(0, tg, OBJ_EDIT, 0, 0, 0);
-         ObjectSetInteger(0, tg, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-         ObjectSetInteger(0, tg, OBJPROP_READONLY, true);
-         ObjectSetInteger(0, tg, OBJPROP_ALIGN, ALIGN_CENTER);
+         ObjectCreate(0, tg, OBJ_TEXT, 0, tBox, price);
+         ObjectSetInteger(0, tg, OBJPROP_ANCHOR, ANCHOR_LEFT_LOWER);
+         ObjectSetString(0, tg, OBJPROP_FONT, "Arial");
+         ObjectSetInteger(0, tg, OBJPROP_FONTSIZE, InpFontSize);
          ObjectSetInteger(0, tg, OBJPROP_SELECTABLE, false);
          ObjectSetInteger(0, tg, OBJPROP_HIDDEN, true);
-         ObjectSetString(0, tg, OBJPROP_FONT, "Consolas");
-         ObjectSetInteger(0, tg, OBJPROP_FONTSIZE, InpFontSize);
-         ObjectSetInteger(0, tg, OBJPROP_COLOR, clrWhite);
         }
+      ObjectSetInteger(0, tg, OBJPROP_TIME, 0, tBox);
+      ObjectSetDouble(0, tg, OBJPROP_PRICE, 0, price);
       ObjectSetString(0, tg, OBJPROP_TEXT, text);
-      ObjectSetInteger(0, tg, OBJPROP_BGCOLOR, clr);
-      ObjectSetInteger(0, tg, OBJPROP_BORDER_COLOR, clr);
-     }
-   LevelsPosition();
-  }
-
-//--- pin the tags to the right edge, vertically at their price
-void LevelsPosition()
-  {
-   int chartW = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
-   int chartH = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
-   TextSetFont("Consolas", -InpFontSize * 10);
-
-   for(int k = 0; k < LEVEL_COUNT; k++)
-     {
-      string tg = PFX_LEVEL + "T" + IntegerToString(k);
-      if(ObjectFind(0, tg) < 0)
-         continue;
-      double price = 0.0;
-      string text  = "";
-      color  clr   = clrNONE;
-      LevelInfo(k, price, text, clr);
-
-      uint tw = 0, th = 0;
-      TextGetSize(text, tw, th);
-      int w = (int)tw + 12;
-      int h = MathMax((int)th + 6, InpFontSize + 10);
-
-      int x = 0, y = 0;
-      bool ok = ChartTimePriceToXY(0, 0, g_entryTime, price, x, y);
-      bool visible = ok && y >= 0 && y <= chartH;
-
-      ObjectSetInteger(0, tg, OBJPROP_XSIZE, w);
-      ObjectSetInteger(0, tg, OBJPROP_YSIZE, h);
-      ObjectSetInteger(0, tg, OBJPROP_XDISTANCE, MathMax(0, chartW - w - 2));
-      ObjectSetInteger(0, tg, OBJPROP_YDISTANCE, MathMax(0, y - h / 2));
-      ObjectSetInteger(0, tg, OBJPROP_TIMEFRAMES, visible ? OBJ_ALL_PERIODS : OBJ_NO_PERIODS);
+      ObjectSetInteger(0, tg, OBJPROP_COLOR, clr);
      }
   }
 
@@ -891,14 +953,9 @@ string StateName(const int s)
    return (s == TF_BULL) ? "BULL" : (s == TF_BEAR) ? "BEAR" : "MIX";
   }
 
-string DirName(const int dir)
+string SideName(const int dir)
   {
-   return (dir > 0) ? "LONG" : "SHORT";
-  }
-
-color StateColor(const int s)
-  {
-   return (s == TF_BULL) ? clrLime : (s == TF_BEAR) ? clrTomato : clrSilver;
+   return (dir > 0) ? "BUY" : "SELL";
   }
 
 void PanelLine(const int k, const string text, const color clr)
@@ -940,11 +997,11 @@ void UpdatePanel()
 
    PanelLine(1, StringFormat("D %-4s  H4 %-4s  H1 %-4s  M5 %-4s",
                              StateName(g_sD), StateName(g_sH4), StateName(g_sH1), StateName(g_sM5)),
-             StateColor(g_sH4));
+             g_sH4 == TF_BULL ? clrAqua : g_sH4 == TF_BEAR ? clrMagenta : clrSilver);
 
    int bull = (g_sD == TF_BULL ? 1 : 0) + (g_sH4 == TF_BULL ? 1 : 0) + (g_sH1 == TF_BULL ? 1 : 0) + (g_sM5 == TF_BULL ? 1 : 0);
    int bear = (g_sD == TF_BEAR ? 1 : 0) + (g_sH4 == TF_BEAR ? 1 : 0) + (g_sH1 == TF_BEAR ? 1 : 0) + (g_sM5 == TF_BEAR ? 1 : 0);
-   PanelLine(2, StringFormat("Bull %d/4  Bear %d/4   Long %s  Short %s", bull, bear,
+   PanelLine(2, StringFormat("Bull %d/4  Bear %d/4   Buy %s  Sell %s", bull, bear,
                              Allowed(1) ? "OK" : "--", Allowed(-1) ? "OK" : "--"),
              clrSilver);
 
@@ -953,7 +1010,7 @@ void UpdatePanel()
    switch(g_state)
      {
       case ST_WATCH:
-         s1 = StringFormat("WAIT PB %s  (%s)", DirName(g_dir),
+         s1 = StringFormat("WAIT PB %s  (%s)", SideName(g_dir),
                            g_touched ? StringFormat("pulled back, confirm %d/%d", g_sinceTouch, InpConfirmBars)
                                      : StringFormat("bar %d/%d", g_watchBars, InpPullbackBars));
          s2 = StringFormat("PB level %s   invalid beyond %s", DoubleToString(g_pbLevel, _Digits),
@@ -961,15 +1018,14 @@ void UpdatePanel()
          c1 = clrYellow;
          break;
       case ST_LIVE:
-         s1 = StringFormat("LIVE %s%s%s", DirName(g_dir), g_reentries > 0 ? " (re-entry)" : "",
-                           g_tp1Hit ? "  TP1 hit" : "");
+         s1 = StringFormat("LIVE %s%s  [%s]", SideName(g_dir), g_reentries > 0 ? " (re-entry)" : "", g_status);
          s2 = StringFormat("E %s  SL %s  TP1 %s  TP2 %s", DoubleToString(g_entry, _Digits),
                            DoubleToString(g_sl, _Digits), DoubleToString(g_tp1, _Digits),
                            DoubleToString(g_tp2, _Digits));
-         c1 = (g_dir > 0) ? clrLime : clrTomato;
+         c1 = (g_dir > 0) ? clrAqua : clrMagenta;
          break;
       case ST_SLWAIT:
-         s1 = StringFormat("SL_WAIT %s", DirName(g_dir));
+         s1 = StringFormat("SL_WAIT %s", SideName(g_dir));
          s2 = StringFormat("Re-entries %d/%d   window %d/%d bars", g_reentries, InpMaxReentries,
                            g_lastIdx - g_firstSLIdx, InpReentryWindow);
          c1 = clrOrange;
@@ -989,13 +1045,16 @@ void ResetState()
   {
    g_state      = ST_IDLE;
    g_dir        = 0;
-   g_impIdx     = -1;
    g_watchBars  = 0;
    g_touched    = false;
    g_sinceTouch = 0;
-   g_entryIdx   = -1;
-   g_tp1Hit     = false;
    g_tradeId    = 0;
+   g_tradeDir   = 0;
+   g_entryIdx   = -1;
+   g_exitIdx    = -1;
+   g_entryTime  = 0;
+   g_tp1Hit     = false;
+   g_status     = "";
    g_reentries  = 0;
    g_firstSLIdx = -1;
    g_lastIdx    = -1;
