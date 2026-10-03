@@ -128,6 +128,7 @@ input int    InpPinSweep    = 3;                   // and the wick takes out the
 
 input group "=== Signal Grade ==="
 input ENUM_GRADE InpMinGrade = GRADE_C;            // lowest grade that becomes a signal (zone / alert / EA trade); C = A, B and C all accepted
+input bool       InpAllowGradeC = true;            // true = grade C signals are taken (zone / alert / trade); false = only A and B, C shows as a grey letter
 input bool       InpReNeedA  = false;              // true = re-entries only on a fresh A-grade trigger (false = same grades as InpMinGrade)
 input bool       InpShowFiltered = true;          // grey grade letter on signals below the minimum grade (no zone, no alert)
 input color      InpFiltColor    = clrSilver;
@@ -961,8 +962,10 @@ string GradeName(const int g)
   }
 
 // lowest (best) grade letter that may arm a fresh signal / a re-entry
-int FreshLimit() { return (int)InpMinGrade; }
-int ReLimit()    { return (InpReNeedA ? GRADE_A : (int)InpMinGrade); }
+// InpAllowGradeC = false caps the minimum grade at B, whatever InpMinGrade says
+int MinGradeEff() { return (InpAllowGradeC ? (int)InpMinGrade : MathMin((int)InpMinGrade, (int)GRADE_B)); }
+int FreshLimit() { return MinGradeEff(); }
+int ReLimit()    { return (InpReNeedA ? GRADE_A : MinGradeEff()); }
 
 double RecentSwingHigh(const int rates_total, const int i, const double &high[])
   {
