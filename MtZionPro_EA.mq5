@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Mt.ZionPro EA"
 #property link      ""
-#property version   "1.42"
+#property version   "1.43"
 
 #include <Trade/Trade.mqh>
 
@@ -962,7 +962,7 @@ void DrawDot(const string name, const datetime t, const int dir, const string ti
    ObjectSetDouble(0, name, OBJPROP_PRICE, px);
    ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 159);   // dot
    ObjectSetInteger(0, name, OBJPROP_COLOR, (MathAbs(dir) == 2 ? InpReColor : (dir > 0 ? InpBuyColor : InpSellColor)));
-   ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);          // small
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);          // dot size
    ObjectSetInteger(0, name, OBJPROP_ANCHOR, dir > 0 ? ANCHOR_TOP : ANCHOR_BOTTOM);   // outside the candle
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
@@ -2020,7 +2020,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "Mt.ZionPro EA", C_TXT, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.42  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.43  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
