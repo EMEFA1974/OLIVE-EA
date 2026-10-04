@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
 //| Mt.ZionPro EA                                                    |
-//| Trades the signals of the Mt.ZionPro Ind indicator.              |
-//| Signals: the Mt.ZionPro Ind arrows on the chart. Single trades.  |
+//| Trades the Mt.ZionPro Ind signals; the indicator is not needed.  |
+//| Stand-alone: built-in copy of the indicator's signal engine.     |
 //+------------------------------------------------------------------+
 #property copyright "Mt.ZionPro EA"
 #property link      ""
-#property version   "1.20"
+#property version   "1.30"
 
 #include <Trade/Trade.mqh>
 
@@ -42,11 +42,7 @@ input ENUM_TIMEFRAMES InpTF_H4 = PERIOD_H4;
 input ENUM_TIMEFRAMES InpTF_H1 = PERIOD_H1;
 input ENUM_TIMEFRAMES InpTF_M5 = PERIOD_M5;
 
-input group "=== Signal Source ==="
-input bool   InpFollowInd    = true;              // take BUY / SELL / RE-ENTRY signals from the Mt.ZionPro Ind on this chart (own identical engine when it is not there)
-input string InpIndName      = "Mt.ZionPro Ind";  // indicator short name on the chart
-
-input group "=== Signal Quality (set the same as the indicator) ==="
+input group "=== Signal Quality ==="
 input int    InpMinAlign     = 2;
 input double InpMinBodyRatio = 0.25;
 input double InpClosePos     = 0.55;
@@ -178,12 +174,6 @@ datetime gLastProcessed = 0;       // last closed bar fed to the engine
 bool     gClosing       = false;   // closing everything, retry each tick until flat
 string   gLastEvent     = "";
 string   gLastSignal    = "none";
-
-// signal source: the Mt.ZionPro Ind on this chart
-int      gIndH          = INVALID_HANDLE;
-bool     gFollow        = false;   // true = signals are the indicator's arrows
-string   gLvlSync       = "-";     // indicator zone levels vs the EA's
-uint     gIndTryMs      = 0;
 
 enum IdeaState { IDEA_IDLE = 0, IDEA_PENDING, IDEA_LIVE, IDEA_SL_WAIT };
 
@@ -858,23 +848,6 @@ int ProcessBar(const int i)
    int gradeB = ((trigB && allowB) ? SignalGrade(1, bar, i, trendDir, whyB) : GRADE_NONE);
    int gradeS = ((trigS && allowS) ? SignalGrade(-1, bar, i, trendDir, whyS) : GRADE_NONE);
    double buf = StopBuffer(i);
-
-   // follow mode: the indicator's arrow on this bar decides; the levels come from the same code
-   if(gFollow)
-     {
-      int s = IndSignalAt(i);
-      if(s == 0) return 0;
-      int  dir = (s > 0 ? 1 : -1);
-      bool re  = (s == 2 || s == -2);
-      int  g   = (dir > 0 ? gradeB : gradeS);
-      if(g == GRADE_NONE) { string w; g = SignalGrade(dir, bar, i, trendDir, w); }
-      int rc = (re ? ((idea.state == IDEA_SL_WAIT && idea.dir == dir) ? idea.reCount : 0) + 1 : 0);
-      ArmIdea(dir, bar, re, buf, g, trendDir);
-      idea.reCount = rc;
-      if(dir > 0) { lastBuyTime = bar.t; gCntBuy++; }
-      else        { lastSellTime = bar.t; gCntSell++; }
-      return s;
-     }
 
    if(InpReentryOn && idea.state == IDEA_SL_WAIT && idea.reCount < InpMaxReentry
       && idea.slBarAge >= InpReentryCool)
@@ -1610,98 +1583,6 @@ void ManageTrades()
   }
 
 //+------------------------------------------------------------------+
-//| Signals from the Mt.ZionPro Ind on the chart                     |
-//| The EA reads the indicator's own arrow buffers (Buy, Sell,       |
-//| ReBuy, ReSell), so it trades exactly the arrows on the chart.    |
-//| Entry / SL / TP come from the same code as the indicator and are |
-//| checked against the indicator's zone lines.                      |
-//+------------------------------------------------------------------+
-
-void IndRelease()
-  {
-   if(gIndH != INVALID_HANDLE) IndicatorRelease(gIndH);
-   gIndH = INVALID_HANDLE;
-   gFollow = false;
-  }
-
-// look for the indicator on any window of this chart
-bool IndFind()
-  {
-   if(!InpFollowInd) return false;
-   int wins = (int)ChartGetInteger(0, CHART_WINDOWS_TOTAL);
-   for(int w = 0; w < wins; w++)
-     {
-      int h = ChartIndicatorGet(0, w, InpIndName);
-      if(h != INVALID_HANDLE) { gIndH = h; gFollow = true; return true; }
-     }
-   return false;
-  }
-
-// the indicator has calculated every bar of the chart (its arrows for the closed bars are final)
-bool IndReady()
-  {
-   if(!gFollow) return true;
-   int bc = BarsCalculated(gIndH);
-   if(bc < 0)
-     {
-      IndRelease();
-      Log("IND_LOST", InpIndName + " removed from the chart: using the EA's own (identical) signal engine");
-      return true;
-     }
-   return (bc >= Bars(_Symbol, _Period));
-  }
-
-// arrow of the indicator on bar sh: 1 BUY, -1 SELL, 2 RE-BUY, -2 RE-SELL, 0 none
-int IndSignalAt(const int sh)
-  {
-   int code[4] = {1, -1, 2, -2};
-   for(int b = 0; b < 4; b++)
-     {
-      double v[1];
-      if(CopyBuffer(gIndH, b, sh, 1, v) != 1) continue;
-      if(v[0] != EMPTY_VALUE && v[0] != 0.0) return code[b];
-     }
-   return 0;
-  }
-
-// price of one of the indicator's zone lines, when it belongs to signal time t
-bool IndLine(const string nm, const datetime t, double &price)
-  {
-   string name = "CSZN_" + nm;
-   if(ObjectFind(0, name) < 0) return false;
-   if((datetime)ObjectGetInteger(0, name, OBJPROP_TIME, 0) != t) return false;
-   price = ObjectGetDouble(0, name, OBJPROP_PRICE, 0);
-   return (price > 0);
-  }
-
-// compare the current signal's levels with the indicator's zone; on a difference the
-// indicator's levels are used (EA inputs differ from the indicator's)
-void IndCheckLevels()
-  {
-   if(!gFollow || idea.signalTime == 0 || (idea.state != IDEA_PENDING && idea.state != IDEA_LIVE) || idea.tp1Done) return;
-   double en, sl, t1, t2;
-   if(!IndLine("LEN0", idea.signalTime, en) || !IndLine("LSL0", idea.signalTime, sl) ||
-      !IndLine("LT10", idea.signalTime, t1) || !IndLine("LT20", idea.signalTime, t2))
-     {
-      gLvlSync = "zone not shown";
-      return;
-     }
-   double tol = _Point / 2.0;
-   if(MathAbs(en - idea.entry) <= tol && MathAbs(sl - idea.sl) <= tol &&
-      MathAbs(t1 - idea.tp1) <= tol && MathAbs(t2 - idea.tp2) <= tol)
-     {
-      gLvlSync = "match";
-      return;
-     }
-   Log("LEVELS_MISMATCH", StringFormat("EA %s/%s/%s/%s vs Ind %s/%s/%s/%s (entry/SL/TP1/TP2): using the indicator's. Set the EA inputs the same as the indicator",
-                                       Px(idea.entry), Px(idea.sl), Px(idea.tp1), Px(idea.tp2), Px(en), Px(sl), Px(t1), Px(t2)));
-   idea.entry = en; idea.sl = sl; idea.tp1 = t1; idea.tp2 = t2;
-   double r = MathAbs(t1 - en) / (InpRR1 > 0 ? InpRR1 : 1.0);
-   idea.slR = (idea.dir > 0 ? en - r : en + r);
-   gLvlSync = "MISMATCH: Ind used";
-  }
-
-//+------------------------------------------------------------------+
 //| Engine driver                                                    |
 //+------------------------------------------------------------------+
 bool WarmUp()
@@ -1713,8 +1594,6 @@ bool WarmUp()
       return false;   // higher timeframe history still loading
    if(!FiltersReady())
       return false;   // EMA / ATR filter data still calculating
-   if(!IndReady())
-      return false;   // indicator on the chart still calculating
 
    ResetIdea();
    ResetCounts();
@@ -1728,7 +1607,6 @@ bool WarmUp()
       if(s != 0) { DrawSignal(i, s); AddSignalTime(iTime(_Symbol, _Period, i)); gLastSignal = SigName(s) + " " + GradeName(idea.grade) + " " + TimeToString(iTime(_Symbol, _Period, i), TIME_DATE|TIME_MINUTES); }
      }
    gLastProcessed = iTime(_Symbol, _Period, 1);
-   IndCheckLevels();
    return true;
   }
 
@@ -1746,7 +1624,7 @@ void OnNewBars()
      }
    gLastProcessed = iTime(_Symbol, _Period, 1);
 
-   if(sig != 0) { IndCheckLevels(); TP1ReDisarm("new signal " + SigName(sig)); }
+   if(sig != 0) TP1ReDisarm("new signal " + SigName(sig));
    SyncOrders();
    if(sig == 0) return;
 
@@ -2028,7 +1906,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "Mt.ZionPro EA", C_TXT, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.20  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.30  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -2056,8 +1934,6 @@ void UpdatePanel(const bool force = false)
 
    PSection("EA");
    PRow("Mode", ModeName(), C_TXT);
-   PRow("Signals from", (gFollow ? "Mt.ZionPro Ind on chart" : "own engine (Ind not found)"), (gFollow ? C_UP : C_WARN));
-   if(gFollow) PRow("Ind levels", gLvlSync, (StringFind(gLvlSync, "MISMATCH") >= 0 ? C_DN : C_TXT));
    PRow("Entry", EntryName(), C_TXT);
    PRow("Grades / re-entry", GradesText(false) + " / " + GradesText(true), C_INFO);
    PRow("SL widen", StringFormat("+%.0f%%  (TP R unchanged)", MathMax(0.0, InpSLWidenPct)), (InpSLWidenPct > 0 ? C_WARN : C_MUTE));
@@ -2235,8 +2111,6 @@ int OnInit()
       Print("Mt.ZionPro EA: could not create the filter indicators (EMA / ATR)");
       return(INIT_FAILED);
      }
-   if(IndFind()) Log("SIGNALS", "following " + InpIndName + " on this chart");
-   else if(InpFollowInd) Log("SIGNALS", InpIndName + " not on this chart: using the EA's own (identical) signal engine");
    CleanPDKeys();
    ArrayResize(gSigTimes, 0);
    PanelInit();
@@ -2250,7 +2124,6 @@ void OnDeinit(const int reason)
    EventKillTimer();
    if(gDrag) ChartSetInteger(0, CHART_MOUSE_SCROLL, gScrollWas);
    ObjectsDeleteAll(0, EAPRE);
-   IndRelease();
    FiltersRelease();
    Comment("");
   }
@@ -2268,15 +2141,7 @@ bool EnsureWarm()
 
 void OnTimer()
   {
-   // indicator added to the chart later: replay history from its arrows
-   if(InpFollowInd && !gFollow && GetTickCount() - gIndTryMs > 5000)
-     {
-      gIndTryMs = GetTickCount();
-      if(IndFind()) { Log("SIGNALS", "found " + InpIndName + ": following its signals"); gWarm = false; }
-     }
    if(!gWarm) EnsureWarm();
-   // the indicator may finish the new bar after the tick: catch up without waiting for the next tick
-   if(gWarm && iTime(_Symbol, _Period, 1) > gLastProcessed && IndReady()) OnNewBars();
    if(gWarm) UpdatePanel();
   }
 
@@ -2285,7 +2150,7 @@ void OnTick()
    if(!EnsureWarm()) return;
    CheckBlocker();
 
-   if(iTime(_Symbol, _Period, 1) > gLastProcessed && IndReady())
+   if(iTime(_Symbol, _Period, 1) > gLastProcessed)
       OnNewBars();
 
    ManageTrades();
