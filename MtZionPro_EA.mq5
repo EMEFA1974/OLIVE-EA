@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Mt.ZionPro EA"
 #property link      ""
-#property version   "1.41"
+#property version   "1.42"
 
 #include <Trade/Trade.mqh>
 
@@ -171,6 +171,8 @@ int gCntBuy = 0, gCntSell = 0, gCntTP1 = 0, gCntTP2 = 0, gCntSL = 0;
 bool     gWarm          = false;   // engine replayed history
 datetime gLastProcessed = 0;       // last closed bar fed to the engine
 bool     gClosing       = false;   // closing everything, retry each tick until flat
+int      gQueuedSig     = 0;       // signal waiting for the opposite trade to close
+datetime gQueuedT       = 0;       // its signal time
 string   gLastEvent     = "";
 string   gLastSignal    = "none";
 
@@ -910,6 +912,18 @@ string ModeName() { return "Single trades"; }
 
 string Px(const double p) { return DoubleToString(p, _Digits); }
 
+// trade comment "<InpComment>|<signal time>[|RE / |RT]"; InpComment is shortened so the
+// whole comment fits the 31 characters MT5 keeps (the markers must not be cut off)
+string TradeComment(const string sig, const string suffix)
+  {
+   string tail = "|" + sig + suffix;
+   int room = 31 - StringLen(tail);
+   string head = InpComment;
+   StringReplace(head, "|", "");
+   if(StringLen(head) > room) head = StringSubstr(head, 0, MathMax(0, room));
+   return head + tail;
+  }
+
 void Log(const string event, const string details)
   {
    gLastEvent = TimeToString(TimeCurrent(), TIME_DATE|TIME_MINUTES) + "  " + event + "  " + details;
@@ -1051,7 +1065,7 @@ bool OurOrder()
    return (OrderGetString(ORDER_SYMBOL) == _Symbol && OrderGetInteger(ORDER_MAGIC) == InpMagic);
   }
 
-// the EA's open position(s) on this symbol (one trade, or two with the HYBRID split)
+// the EA's open position(s) on this symbol
 struct Basket
   {
    int    count;
@@ -1162,7 +1176,7 @@ bool OpenEntryAs(const int dir, const double lotIn, const string tag,
    double ms  = MinStop();
    double sl  = NormalizeDouble(idea.sl, _Digits);    // widened SL (placed on the order)
    double slR = NormalizeDouble(idea.slR, _Digits);   // original SL: TPs from fill use this R
-   string cmt = InpComment + "|" + IntegerToString((long)idea.signalTime) + (idea.re ? "|RE" : "");
+   string cmt = TradeComment(IntegerToString((long)idea.signalTime), (idea.re ? "|RE" : ""));
 
    bool pending = wantPending;
    double entry = NormalizeDouble(idea.entry, _Digits);
@@ -1220,8 +1234,10 @@ bool OpenEntryAs(const int dir, const double lotIn, const string tag,
       if(fp > 0 && MathAbs(fp - price) >= _Point / 2.0)
         {
          double ntp = (InpManageOn ? MarketTP2(dir, fp, slR, true) : MarketTP1(dir, fp, slR, true));
-         ulong  ptk = trade.ResultOrder();   // the position ticket is the ticket of the order that opened it
-         if(ntp != tpOrder && PositionSelectByTicket(ptk) && trade.PositionModify(ptk, sl, ntp))
+         ulong  ptk = trade.ResultOrder();   // hedging: the position ticket is the ticket of the order that opened it
+         bool   sel = PositionSelectByTicket(ptk);
+         if(!sel && PositionSelect(_Symbol)) { ptk = (ulong)PositionGetInteger(POSITION_TICKET); sel = true; }   // netting
+         if(ntp != tpOrder && sel && trade.PositionModify(ptk, sl, ntp))
             tpOrder = ntp;
         }
      }
@@ -1273,7 +1289,13 @@ void ActOnSignal(const int sig)
       if(b.dir == dir) { Log("SKIP", tag + ": trade already open in this direction"); return; }
       if(!InpCloseOnOpposite) { Log("SKIP", tag + ": opposite trade open"); return; }
       CloseAll("opposite signal " + tag);
-      if(GetBasket().count > 0) { gClosing = true; Log("SKIP", tag + ": could not close opposite trade yet"); return; }
+      if(GetBasket().count > 0)
+        {
+         gClosing = true;
+         gQueuedSig = sig; gQueuedT = idea.signalTime;
+         Log("WAIT", tag + ": opposite trade not closed yet, the signal is traded once it is");
+         return;
+        }
      }
    if(CountOrders() > 0) DeleteOrders("replaced by " + tag);
    OpenEntry(dir, InpSingleLot, tag);
@@ -1339,6 +1361,17 @@ double SignalSLR(const string cmt)
    return 0.0;
   }
 
+// TP1 of the signal that opened a position (0 when that signal is no longer known)
+double SignalTP1(const string cmt)
+  {
+   string k = SigKey(cmt);
+   if(k == "") return 0.0;
+   datetime t = (datetime)StringToInteger(k);
+   if(idea.signalTime == t && idea.tp1 > 0) return idea.tp1;
+   if(gEndedValid && gEnded.signalTime == t && gEnded.tp1 > 0) return gEnded.tp1;
+   return 0.0;
+  }
+
 void ManageRunner()
   {
    double bid  = SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -1373,6 +1406,12 @@ void ManageRunner()
          else
             risk /= (1.0 + MathMax(0.0, InpSLWidenPct) / 100.0);
          double tp1 = op + d * risk * InpRR1;
+         // MARKET / PENDING entries keep the signal's own TP1 (the order's TP2 is the signal's too)
+         if(InpEntryType != ENTRY_HYBRID && !InpTPFromFill)
+           {
+            double st = SignalTP1(PositionGetString(POSITION_COMMENT));
+            if(st > 0 && (d > 0 ? st > op : st < op)) tp1 = st;
+           }
          if(d > 0 ? px < tp1 : px > tp1) continue;
 
          // TP1 reached: remember entry / SL / TP2 for a re-entry if price comes back to the entry
@@ -1552,7 +1591,7 @@ void ManageTP1Re(const Basket &b)
    double tp = NormalizeDouble(gRe.tp2, _Digits);
    if(d > 0 ? (sl >= px - ms || tp <= px + ms) : (sl <= px + ms || tp >= px - ms)) return;   // too close for the broker
 
-   string cmt = InpComment + "|" + gRe.sig + "|RT";
+   string cmt = TradeComment(gRe.sig, "|RT");
    double lot = NormLot(InpSingleLot);
    bool ok = (d > 0 ? trade.Buy(lot, _Symbol, 0, sl, tp, cmt) : trade.Sell(lot, _Symbol, 0, sl, tp, cmt));
    uint rc = trade.ResultRetcode();
@@ -1586,7 +1625,8 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
    if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY) return;
    if(HistoryDealGetInteger(trans.deal, DEAL_REASON) != DEAL_REASON_TP) return;
 
-   long pid = HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID);
+   long   pid = HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID);
+   double tp1 = HistoryDealGetDouble(trans.deal, DEAL_PRICE);   // TP1, where the broker closed the trade
    if(!HistorySelectByPosition(pid)) return;
    for(int i = 0; i < HistoryDealsTotal(); i++)
      {
@@ -1599,7 +1639,6 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
       ulong  ord = (ulong)HistoryDealGetInteger(tk, DEAL_ORDER);
       if(!HistoryOrderSelect(ord)) return;
       double sl  = HistoryOrderGetDouble(ord, ORDER_SL);
-      double tp1 = HistoryOrderGetDouble(ord, ORDER_TP);
       if(sl <= 0 || tp1 <= 0 || InpRR1 <= 0) return;
       double r   = MathAbs(tp1 - op) / InpRR1;
       TP1ReArm(d, op, sl, NormalizeDouble(op + d * r * InpRR2, _Digits), SigKey(cmt));
@@ -1612,7 +1651,16 @@ void ManageTrades()
    if(gClosing)
      {
       CloseAll("closing all");
-      if(GetBasket().count == 0) { gClosing = false; Log("FLAT", "all EA trades closed"); }
+      if(GetBasket().count == 0)
+        {
+         gClosing = false;
+         Log("FLAT", "all EA trades closed");
+         // a reversal that waited for the close: trade it if its signal is still running
+         if(gQueuedT != 0 && gQueuedT == idea.signalTime && (idea.state == IDEA_PENDING || idea.state == IDEA_LIVE)
+            && TradeBlocker() == "")
+            ActOnSignal(gQueuedSig);
+         gQueuedT = 0;
+        }
       return;
      }
 
@@ -1632,6 +1680,8 @@ void ManageTrades()
          gClosing = true;
          CloseAll("equity protector");
          DeleteOrders("equity protector");
+         TP1ReDisarm("equity protector");
+         gQueuedT = 0;
          return;
         }
      }
@@ -1679,15 +1729,15 @@ void OnNewBars()
    int sh = iBarShift(_Symbol, _Period, gLastProcessed, true);
    if(sh > 1) from = sh - 1;
 
-   int sig = 0;
+   int sig = 0, anySig = 0;
    for(int i = from; i >= 1; i--)
      {
       sig = ProcessBar(i);
-      if(sig != 0) { DrawSignal(i, sig); AddSignalTime(iTime(_Symbol, _Period, i)); }
+      if(sig != 0) { anySig = sig; DrawSignal(i, sig); AddSignalTime(iTime(_Symbol, _Period, i)); }
      }
    gLastProcessed = iTime(_Symbol, _Period, 1);
 
-   if(sig != 0) TP1ReDisarm("new signal " + SigName(sig));
+   if(anySig != 0) TP1ReDisarm("new signal " + SigName(anySig));
    SyncOrders();
    if(sig == 0) return;
 
@@ -1704,6 +1754,7 @@ void OnNewBars()
       return;
      }
    if(!gClosing) ActOnSignal(sig);
+   else { gQueuedSig = sig; gQueuedT = idea.signalTime; Log("WAIT", SigName(sig) + ": closing trades first, the signal is traded once flat"); }
   }
 
 string StateText()
@@ -1969,7 +2020,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "Mt.ZionPro EA", C_TXT, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.41  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.42  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -2164,6 +2215,7 @@ int OnInit()
 
    gWarm = false;
    gClosing = false;
+   gQueuedSig = 0; gQueuedT = 0;
    gRe.armed = false; gRe.sig = ""; gRe.count = 0; gRe.dir = 0;
    ResetIdea();
    ResetCounts();
