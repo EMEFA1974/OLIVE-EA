@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Mt.ZionPro EA"
 #property link      ""
-#property version   "1.10"
+#property version   "1.20"
 
 #include <Trade/Trade.mqh>
 
@@ -129,6 +129,12 @@ input bool   InpMoveBE         = true;    // move SL to entry after TP1
 input int    InpBELockPts      = 0;       // break-even SL = entry +/- this many points (covers costs)
 input bool   InpRunnerTrailOn  = false;   // after TP1 trail the runner by ATR
 input double InpRunnerTrailATR = 1.5;     // runner trail distance in ATR (chart timeframe)
+
+input group "=== Re-entry after TP1 (price back at entry) ==="
+input bool   InpTP1ReOn       = true;     // after TP1, if price comes back to the entry (or beyond) re-enter once with TP2 as target
+input int    InpTP1ReBars     = 24;       // only within this many bars after TP1
+input int    InpTP1ReMax      = 1;        // re-entries of this kind per signal
+input bool   InpTP1ReTrendAgree = false;  // true = EMA trend (filter TF1 + TF2) must point with the trade; false = must not be against it
 
 input group "=== Equity Protector ==="
 input bool   InpEquityProtOn  = true;
@@ -1315,6 +1321,7 @@ void ManageRunner()
      {
       ulong tk = PositionGetTicket(i);
       if(tk == 0 || !Ours()) continue;
+      if(IsTP1ReTrade(PositionGetString(POSITION_COMMENT))) continue;   // TP1 re-entry: plain SL / TP2
       int    d   = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? 1 : -1);
       double op  = PositionGetDouble(POSITION_PRICE_OPEN);
       double sl  = PositionGetDouble(POSITION_SL);
@@ -1336,6 +1343,10 @@ void ManageRunner()
             risk /= (1.0 + MathMax(0.0, InpSLWidenPct) / 100.0);
          double tp1 = op + d * risk * InpRR1;
          if(d > 0 ? px < tp1 : px > tp1) continue;
+
+         // TP1 reached: remember entry / SL / TP2 for a re-entry if price comes back to the entry
+         double tp2 = ((InpManageOn && tp > 0) ? tp : NormalizeDouble(op + d * risk * InpRR2, _Digits));
+         TP1ReArm(d, op, sl, tp2, SigKey(PositionGetString(POSITION_COMMENT)));
 
          double cv = MathFloor(vol * InpPartialPct / 100.0 / step + 1e-9) * step;
          if(InpPartialPct >= 100.0 || cv >= vol - 1e-9)
@@ -1426,6 +1437,140 @@ void Trail()
      }
   }
 
+//+------------------------------------------------------------------+
+//| Re-entry after TP1                                               |
+//| An EA trade reached TP1 (part closed there, or all of it). If    |
+//| price then comes back to that trade's entry (or beyond, but not  |
+//| past its SL) while the signal and the trend are still valid, one |
+//| new trade is opened at market: same SL, TP2 as target. It is not |
+//| part-closed or moved to break-even.                              |
+//+------------------------------------------------------------------+
+struct TP1Re
+  {
+   bool     armed;
+   int      dir;
+   string   sig;       // signal id (signal bar time) of the trade that reached TP1
+   double   entry, sl, tp2;
+   datetime until;     // window end
+   int      count;     // re-entries already made for this signal
+   bool     trendMsg;  // "trend not valid" already logged at this touch
+  };
+TP1Re gRe;
+
+bool IsTP1ReTrade(const string cmt) { return (StringFind(cmt, "|RT") >= 0); }
+
+void TP1ReDisarm(const string why)
+  {
+   if(gRe.armed) Log("TP1_RE_OFF", why);
+   gRe.armed = false;
+  }
+
+void TP1ReArm(const int dir, const double entry, const double sl, const double tp2, const string sig)
+  {
+   if(!InpTP1ReOn || sig == "" || entry <= 0 || sl <= 0 || tp2 <= 0) return;
+   if(gRe.sig == sig && (gRe.armed || gRe.count >= InpTP1ReMax)) return;   // already armed / used for this signal
+   if(gRe.sig != sig) gRe.count = 0;
+   if(gRe.count >= InpTP1ReMax) return;
+   gRe.armed = true;
+   gRe.dir   = dir;
+   gRe.sig   = sig;
+   gRe.entry = entry;
+   gRe.sl    = sl;
+   gRe.tp2   = tp2;
+   gRe.until = TimeCurrent() + (datetime)MathMax(1, InpTP1ReBars) * PeriodSeconds(_Period);
+   gRe.trendMsg = false;
+   Log("TP1_RE_ARM", StringFormat("%s TP1 reached: re-entry if price returns to %s (SL %s, TP2 %s) within %d bars",
+                                  (dir > 0 ? "BUY" : "SELL"), Px(entry), Px(sl), Px(tp2), InpTP1ReBars));
+  }
+
+// trend still valid for the re-entry
+bool TP1ReTrendOK(const int dir)
+  {
+   int t = TrendDirAt(TimeCurrent());
+   if(InpTP1ReTrendAgree ? t != dir : t == -dir) return false;
+   if(InpD1FilterOn && D1Against(dir, TimeCurrent())) return false;
+   return true;
+  }
+
+void ManageTP1Re(const Basket &b)
+  {
+   if(!gRe.armed) return;
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   int    d   = gRe.dir;
+
+   if(TimeCurrent() > gRe.until)                      { TP1ReDisarm("window over"); return; }
+   if(d > 0 ? bid >= gRe.tp2 : ask <= gRe.tp2)        { TP1ReDisarm("TP2 reached"); return; }
+   if(d > 0 ? bid <= gRe.sl : ask >= gRe.sl)          { TP1ReDisarm("price passed the SL"); return; }
+   if(b.count > 0 || CountOrders() > 0) return;       // the runner (or another trade) is still open
+
+   bool atEntry = (d > 0 ? ask <= gRe.entry : bid >= gRe.entry);
+   if(!atEntry) { gRe.trendMsg = false; return; }
+
+   if(!TP1ReTrendOK(d))
+     {
+      if(!gRe.trendMsg) Log("TP1_RE_WAIT", "price back at the entry, but the trend is not valid: no re-entry yet");
+      gRe.trendMsg = true;
+      return;
+     }
+   if(TradeBlocker() != "" || gClosing) return;
+
+   double ms = MinStop();
+   double px = (d > 0 ? ask : bid);
+   double sl = NormalizeDouble(gRe.sl, _Digits);
+   double tp = NormalizeDouble(gRe.tp2, _Digits);
+   if(d > 0 ? (sl >= px - ms || tp <= px + ms) : (sl <= px + ms || tp >= px - ms)) return;   // too close for the broker
+
+   string cmt = InpComment + "|" + gRe.sig + "|RT";
+   double lot = NormLot(InpSingleLot);
+   bool ok = (d > 0 ? trade.Buy(lot, _Symbol, 0, sl, tp, cmt) : trade.Sell(lot, _Symbol, 0, sl, tp, cmt));
+   uint rc = trade.ResultRetcode();
+   if(!ok || (rc != TRADE_RETCODE_DONE && rc != TRADE_RETCODE_DONE_PARTIAL))
+     {
+      Log("TP1_RE_FAIL", StringFormat("lot %.2f retcode %u %s", lot, rc, trade.ResultRetcodeDescription()));
+      return;   // retried next tick while the conditions hold
+     }
+   gRe.count++;
+   gRe.armed = false;
+   string what = StringFormat("TP1 RE-ENTRY %s lot %.2f @ %s  SL %s  TP2 %s", (d > 0 ? "BUY" : "SELL"), lot,
+                              Px(trade.ResultPrice()), Px(sl), Px(tp));
+   Log("OPEN", what);
+   if(InpAlertTrades) Notify("OPEN " + what);
+  }
+
+// trade management off: the broker closes the whole trade at TP1; arm the re-entry from that deal
+void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest &request, const MqlTradeResult &result)
+  {
+   if(!InpTP1ReOn || InpManageOn || !gWarm) return;
+   if(trans.type != TRADE_TRANSACTION_DEAL_ADD || trans.deal == 0) return;
+   if(!HistoryDealSelect(trans.deal)) return;
+   if(HistoryDealGetString(trans.deal, DEAL_SYMBOL) != _Symbol) return;
+   if(HistoryDealGetInteger(trans.deal, DEAL_MAGIC) != InpMagic) return;
+   long entry = HistoryDealGetInteger(trans.deal, DEAL_ENTRY);
+   if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY) return;
+   if(HistoryDealGetInteger(trans.deal, DEAL_REASON) != DEAL_REASON_TP) return;
+
+   long pid = HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID);
+   if(!HistorySelectByPosition(pid)) return;
+   for(int i = 0; i < HistoryDealsTotal(); i++)
+     {
+      ulong tk = HistoryDealGetTicket(i);
+      if(tk == 0 || HistoryDealGetInteger(tk, DEAL_ENTRY) != DEAL_ENTRY_IN) continue;
+      string cmt = HistoryDealGetString(tk, DEAL_COMMENT);
+      if(IsTP1ReTrade(cmt)) return;   // the re-entry itself reached TP2
+      int    d   = (HistoryDealGetInteger(tk, DEAL_TYPE) == DEAL_TYPE_BUY ? 1 : -1);
+      double op  = HistoryDealGetDouble(tk, DEAL_PRICE);
+      ulong  ord = (ulong)HistoryDealGetInteger(tk, DEAL_ORDER);
+      if(!HistoryOrderSelect(ord)) return;
+      double sl  = HistoryOrderGetDouble(ord, ORDER_SL);
+      double tp1 = HistoryOrderGetDouble(ord, ORDER_TP);
+      if(sl <= 0 || tp1 <= 0 || InpRR1 <= 0) return;
+      double r   = MathAbs(tp1 - op) / InpRR1;
+      TP1ReArm(d, op, sl, NormalizeDouble(op + d * r * InpRR2, _Digits), SigKey(cmt));
+      return;
+     }
+  }
+
 void ManageTrades()
   {
    if(gClosing)
@@ -1456,6 +1601,11 @@ void ManageTrades()
      }
 
    if(InpManageOn) ManageRunner();
+   if(InpTP1ReOn)
+     {
+      Basket nb = GetBasket();   // fresh: the runner may just have closed at break-even
+      ManageTP1Re(nb);
+     }
    if(InpTrailOn) Trail();
   }
 
@@ -1596,7 +1746,7 @@ void OnNewBars()
      }
    gLastProcessed = iTime(_Symbol, _Period, 1);
 
-   if(sig != 0) IndCheckLevels();
+   if(sig != 0) { IndCheckLevels(); TP1ReDisarm("new signal " + SigName(sig)); }
    SyncOrders();
    if(sig == 0) return;
 
@@ -1761,7 +1911,7 @@ void TodayStats(int &trades, int &wins, int &losses, double &pl,
          ArrayResize(posId, m2 + 1);
          ArrayResize(posKey, m2 + 1);
          posId[m2]  = HistoryDealGetInteger(tk, DEAL_POSITION_ID);
-         posKey[m2] = key;
+         posKey[m2] = (key != "" && IsTP1ReTrade(cmt) ? key + "RT" : key);
          continue;
         }
       if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY) continue;
@@ -1878,7 +2028,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "Mt.ZionPro EA", C_TXT, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.10  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.20  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -1919,6 +2069,11 @@ void UpdatePanel(const bool force = false)
       PRow("Equity protector", StringFormat("-%.1f%%  (%.0f)", InpEquityProtPct, -AccountInfoDouble(ACCOUNT_BALANCE) * InpEquityProtPct / 100.0), C_WARN);
    else
       PRow("Equity protector", "OFF", C_MUTE);
+
+   if(InpTP1ReOn)
+      PRow("TP1 re-entry", (gRe.armed ? "armed @ " + Px(gRe.entry) + " -> TP2 " + Px(gRe.tp2) : "ON"), (gRe.armed ? C_WARN : C_TXT));
+   else
+      PRow("TP1 re-entry", "OFF", C_MUTE);
 
    PSection("CURRENT");
    string sigState = StateText();
@@ -2070,6 +2225,7 @@ int OnInit()
 
    gWarm = false;
    gClosing = false;
+   gRe.armed = false; gRe.sig = ""; gRe.count = 0; gRe.dir = 0;
    ResetIdea();
    ResetCounts();
    Log("START", StringFormat("mode %s, entry %s, digits %d", ModeName(),
