@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Mt.ZionPro EA"
 #property link      ""
-#property version   "1.30"
+#property version   "1.40"
 
 #include <Trade/Trade.mqh>
 
@@ -145,7 +145,7 @@ input bool   InpAlertPush    = true;
 input string InpSoundFile    = "alert.wav";
 
 input group "=== Visuals / Log ==="
-input bool   InpDrawSignals  = true;       // dot on every EA signal candle (compare with indicator arrows)
+input bool   InpDrawSignals  = true;       // small dot under (buy) / over (sell) every signal candle and every candle where an EA trade opened
 input bool   InpShowPanel    = true;
 input int    InpPanelX       = 4;        // left edge
 input int    InpPanelY       = -1;       // -1 = bottom-left (indicator panel is top-left). Drag to move.
@@ -157,8 +157,6 @@ input int    InpPanelRowH    = 15;
 input bool   InpLogToFile    = true;       // MQL5/Files/MtZionEA_log.csv
 input color  InpBuyColor     = clrAqua;
 input color  InpSellColor    = clrMagenta;
-input color  InpReBuyColor   = clrGold;
-input color  InpReSellColor  = clrYellow;
 
 #define EAPRE   "MZEA_"
 #define LOGFILE "MtZionEA_log.csv"
@@ -905,13 +903,7 @@ string SigName(const int sig)
    return "NONE";
   }
 
-color SigColor(const int sig)
-  {
-   if(sig == 1)  return InpBuyColor;
-   if(sig == -1) return InpSellColor;
-   if(sig == 2)  return InpReBuyColor;
-   return InpReSellColor;
-  }
+color SigColor(const int sig) { return (sig > 0 ? InpBuyColor : InpSellColor); }   // buys aqua, sells magenta (re-entries too)
 
 string ModeName() { return "Single trades"; }
 
@@ -939,25 +931,80 @@ void Notify(const string msg)
    if(InpAlertPush)  SendNotification(full);
   }
 
-void DrawSignal(const int i, const int sig)
+// small dot under the low (buy) / over the high (sell) of the candle at time t
+void DrawDot(const string name, const datetime t, const int dir, const string tip)
   {
-   if(!InpDrawSignals) return;
-   datetime t = iTime(_Symbol, _Period, i);
-   if(t == 0) return;
-   string name = EAPRE + "S" + IntegerToString((long)t);
-   bool   buy  = (sig > 0);   // BUY / RE-BUY
-   double px   = (buy ? iLow(_Symbol, _Period, i) : iHigh(_Symbol, _Period, i));
+   if(!InpDrawSignals || t == 0) return;
+   int sh = iBarShift(_Symbol, _Period, t, false);
+   if(sh < 0) return;
+   datetime bt = iTime(_Symbol, _Period, sh);
+   double   px = (dir > 0 ? iLow(_Symbol, _Period, sh) : iHigh(_Symbol, _Period, sh));
+   if(bt == 0 || px <= 0) return;
    if(ObjectFind(0, name) < 0)
-      ObjectCreate(0, name, OBJ_ARROW, 0, t, px);
-   ObjectSetInteger(0, name, OBJPROP_TIME, t);
+      ObjectCreate(0, name, OBJ_ARROW, 0, bt, px);
+   ObjectSetInteger(0, name, OBJPROP_TIME, bt);
    ObjectSetDouble(0, name, OBJPROP_PRICE, px);
-   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 159);   // small dot: under the low for buys, over the high for sells
-   ObjectSetInteger(0, name, OBJPROP_COLOR, SigColor(sig));
-   ObjectSetInteger(0, name, OBJPROP_WIDTH, 3);
-   ObjectSetInteger(0, name, OBJPROP_ANCHOR, buy ? ANCHOR_TOP : ANCHOR_BOTTOM);   // dot sits outside the candle
+   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 159);   // dot
+   ObjectSetInteger(0, name, OBJPROP_COLOR, (dir > 0 ? InpBuyColor : InpSellColor));
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);          // small
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, dir > 0 ? ANCHOR_TOP : ANCHOR_BOTTOM);   // outside the candle
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-   ObjectSetString(0, name, OBJPROP_TOOLTIP, "EA " + SigName(sig));
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+   ObjectSetString(0, name, OBJPROP_TOOLTIP, tip);
+  }
+
+void DrawSignal(const int i, const int sig)
+  {
+   datetime t = iTime(_Symbol, _Period, i);
+   DrawDot(EAPRE + "S" + IntegerToString((long)t), t, (sig > 0 ? 1 : -1), "EA signal " + SigName(sig));
+  }
+
+// dots of trades opened on the still-forming candle follow its low / high until it closes
+datetime gTradeDotT[];
+int      gTradeDotD[];
+
+void DrawTradeDot(const datetime t, const int dir)
+  {
+   DrawDot(EAPRE + "T" + IntegerToString((long)iTime(_Symbol, _Period, iBarShift(_Symbol, _Period, t, false))) + (dir > 0 ? "B" : "S"),
+           t, dir, (dir > 0 ? "EA BUY trade" : "EA SELL trade"));
+  }
+
+void RefreshTradeDots()
+  {
+   datetime cur = iTime(_Symbol, _Period, 0);
+   for(int k = ArraySize(gTradeDotT) - 1; k >= 0; k--)
+     {
+      DrawTradeDot(gTradeDotT[k], gTradeDotD[k]);
+      if(gTradeDotT[k] < cur) { ArrayRemove(gTradeDotT, k, 1); ArrayRemove(gTradeDotD, k, 1); }   // candle closed: final
+     }
+  }
+
+void AddTradeDot(const datetime t, const int dir)
+  {
+   DrawTradeDot(t, dir);
+   int n = ArraySize(gTradeDotT);
+   ArrayResize(gTradeDotT, n + 1);
+   ArrayResize(gTradeDotD, n + 1);
+   gTradeDotT[n] = t;
+   gTradeDotD[n] = dir;
+  }
+
+// dots for the EA's trades still open or closed on the chart's history (after a restart)
+void DrawHistoryTradeDots()
+  {
+   datetime from = iTime(_Symbol, _Period, (int)MathMin(Bars(_Symbol, _Period) - 1, 800));
+   if(from == 0 || !HistorySelect(from, TimeCurrent() + 60)) return;
+   for(int i = HistoryDealsTotal() - 1; i >= 0; i--)
+     {
+      ulong tk = HistoryDealGetTicket(i);
+      if(tk == 0 || HistoryDealGetString(tk, DEAL_SYMBOL) != _Symbol || HistoryDealGetInteger(tk, DEAL_MAGIC) != InpMagic) continue;
+      if(HistoryDealGetInteger(tk, DEAL_ENTRY) != DEAL_ENTRY_IN) continue;
+      datetime t = (datetime)HistoryDealGetInteger(tk, DEAL_TIME);
+      int d = (HistoryDealGetInteger(tk, DEAL_TYPE) == DEAL_TYPE_BUY ? 1 : -1);
+      if(t >= iTime(_Symbol, _Period, 0)) AddTradeDot(t, d);
+      else DrawTradeDot(t, d);
+     }
   }
 
 double NormLot(double lot)
@@ -1514,12 +1561,18 @@ void ManageTP1Re(const Basket &b)
 // trade management off: the broker closes the whole trade at TP1; arm the re-entry from that deal
 void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest &request, const MqlTradeResult &result)
   {
-   if(!InpTP1ReOn || InpManageOn || !gWarm) return;
    if(trans.type != TRADE_TRANSACTION_DEAL_ADD || trans.deal == 0) return;
    if(!HistoryDealSelect(trans.deal)) return;
    if(HistoryDealGetString(trans.deal, DEAL_SYMBOL) != _Symbol) return;
    if(HistoryDealGetInteger(trans.deal, DEAL_MAGIC) != InpMagic) return;
    long entry = HistoryDealGetInteger(trans.deal, DEAL_ENTRY);
+   if(entry == DEAL_ENTRY_IN)   // a trade opened: dot under / over its candle
+     {
+      AddTradeDot((datetime)HistoryDealGetInteger(trans.deal, DEAL_TIME),
+                  (HistoryDealGetInteger(trans.deal, DEAL_TYPE) == DEAL_TYPE_BUY ? 1 : -1));
+      return;
+     }
+   if(!InpTP1ReOn || InpManageOn || !gWarm) return;
    if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY) return;
    if(HistoryDealGetInteger(trans.deal, DEAL_REASON) != DEAL_REASON_TP) return;
 
@@ -1906,7 +1959,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "Mt.ZionPro EA", C_TXT, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.30  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.40  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -2113,6 +2166,8 @@ int OnInit()
      }
    CleanPDKeys();
    ArrayResize(gSigTimes, 0);
+   ArrayResize(gTradeDotT, 0);
+   ArrayResize(gTradeDotD, 0);
    PanelInit();
    Comment("");
    EventSetTimer(1);   // warm up + refresh the panel even when no tick arrives
@@ -2134,6 +2189,7 @@ bool EnsureWarm()
    gWarm = WarmUp();
    if(!gWarm) return false;
    Basket b = GetBasket();
+   DrawHistoryTradeDots();
    Log("READY", StringFormat("engine replayed history, state %s; found %d EA trades, %d pending orders",
                              StateText(), b.count, CountOrders()));
    return true;
@@ -2154,6 +2210,7 @@ void OnTick()
       OnNewBars();
 
    ManageTrades();
+   RefreshTradeDots();
 
    UpdatePanel();
   }
