@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Mt.ZionPro EA"
 #property link      ""
-#property version   "1.50"
+#property version   "1.60"
 
 #include <Trade/Trade.mqh>
 
@@ -125,6 +125,11 @@ input bool   InpMoveBE         = true;    // move SL to entry after TP1
 input int    InpBELockPts      = 0;       // break-even SL = entry +/- this many points (covers costs)
 input bool   InpRunnerTrailOn  = false;   // after TP1 trail the runner by ATR
 input double InpRunnerTrailATR = 1.5;     // runner trail distance in ATR (chart timeframe)
+
+input group "=== Scalp mode (reduced TP1, no TP2) ==="
+input bool   InpScalpOn       = false;    // on = one target at InpScalpPct % of the way to TP1; no TP2 / partial / runner; SL NOT widened
+input double InpScalpPct      = 50.0;     // target = this % of the entry -> TP1 distance
+input int    InpScalpReMax    = 2;        // after the target is hit: new trades (same SL, same target) when price comes back to the entry and the signal is still valid (uses the window / trend settings below)
 
 input group "=== Re-entry after TP1 (price back at entry) ==="
 input bool   InpTP1ReOn       = true;     // after TP1, if price comes back to the entry (or beyond) re-enter once with TP2 as target
@@ -1201,6 +1206,13 @@ double MarketTP2(const int dir, const double price, const double sl, const bool 
    return NormalizeDouble(tp, _Digits);
   }
 
+// scalp target: InpScalpPct % of the way from the entry price to TP1
+double ScalpTP(const double from, const double tp1)
+  {
+   double pct = MathMax(1.0, MathMin(100.0, InpScalpPct));
+   return NormalizeDouble(from + (tp1 - from) * pct / 100.0, _Digits);
+  }
+
 // One order. wantPending = pending at the indicator Entry (falls back to market when price is
 // already there); fromFill = TP1/TP2 measured from this order's own fill price (same R multiples).
 bool OpenEntryAs(const int dir, const double lotIn, const string tag,
@@ -1210,7 +1222,7 @@ bool OpenEntryAs(const int dir, const double lotIn, const string tag,
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ms  = MinStop();
-   double sl  = NormalizeDouble(idea.sl, _Digits);    // widened SL (placed on the order)
+   double sl  = NormalizeDouble(InpScalpOn ? idea.slR : idea.sl, _Digits);   // widened SL (scalp mode: original SL)
    double slR = NormalizeDouble(idea.slR, _Digits);   // original SL: TPs from fill use this R
    string cmt = TradeComment(IntegerToString((long)idea.signalTime), (idea.re ? "|RE" : ""));
 
@@ -1243,8 +1255,18 @@ bool OpenEntryAs(const int dir, const double lotIn, const string tag,
    double tp1 = (pending ? NormalizeDouble(idea.tp1, _Digits) : MarketTP1(dir, price, slR, fromFill));
 
    // trade management: the broker TP is TP2, TP1 is handled by ManageRunner (partial + BE)
+   // scalp mode: the broker TP is the reduced target, part of the way to TP1
    double tpOrder = tp1;
-   if(InpManageOn)
+   if(InpScalpOn)
+     {
+      tpOrder = ScalpTP(price, tp1);
+      if(dir > 0 ? tpOrder <= price + ms : tpOrder >= price - ms)
+        {
+         Log("SKIP", StringFormat("%s: scalp target %s too close to price %s", tag, Px(tpOrder), Px(price)));
+         return false;
+        }
+     }
+   else if(InpManageOn)
       tpOrder = (pending ? NormalizeDouble(idea.tp2, _Digits) : MarketTP2(dir, price, slR, fromFill));
 
    bool ok;
@@ -1269,7 +1291,8 @@ bool OpenEntryAs(const int dir, const double lotIn, const string tag,
       double fp = trade.ResultPrice();
       if(fp > 0 && MathAbs(fp - price) >= _Point / 2.0)
         {
-         double ntp = (InpManageOn ? MarketTP2(dir, fp, slR, true) : MarketTP1(dir, fp, slR, true));
+         double ntp = (InpScalpOn ? ScalpTP(fp, MarketTP1(dir, fp, slR, true))
+                       : (InpManageOn ? MarketTP2(dir, fp, slR, true) : MarketTP1(dir, fp, slR, true)));
          ulong  ptk = trade.ResultOrder();   // hedging: the position ticket is the ticket of the order that opened it
          bool   sel = PositionSelectByTicket(ptk);
          if(!sel && PositionSelect(_Symbol)) { ptk = (ulong)PositionGetInteger(POSITION_TICKET); sel = true; }   // netting
@@ -1571,12 +1594,15 @@ void TP1ReDisarm(const string why)
    gRe.armed = false;
   }
 
+// re-entries allowed per signal
+int TP1ReMax() { return (InpScalpOn ? InpScalpReMax : InpTP1ReMax); }
+
 void TP1ReArm(const int dir, const double entry, const double sl, const double tp2, const string sig)
   {
    if(!InpTP1ReOn || sig == "" || entry <= 0 || sl <= 0 || tp2 <= 0) return;
-   if(gRe.sig == sig && (gRe.armed || gRe.count >= InpTP1ReMax)) return;   // already armed / used for this signal
+   if(gRe.sig == sig && (gRe.armed || gRe.count >= TP1ReMax())) return;   // already armed / used for this signal
    if(gRe.sig != sig) gRe.count = 0;
-   if(gRe.count >= InpTP1ReMax) return;
+   if(gRe.count >= TP1ReMax()) return;
    gRe.armed = true;
    gRe.dir   = dir;
    gRe.sig   = sig;
@@ -1585,8 +1611,26 @@ void TP1ReArm(const int dir, const double entry, const double sl, const double t
    gRe.tp2   = tp2;
    gRe.until = TimeCurrent() + (datetime)MathMax(1, InpTP1ReBars) * PeriodSeconds(_Period);
    gRe.trendMsg = false;
-   Log("TP1_RE_ARM", StringFormat("%s TP1 reached: re-entry if price returns to %s (SL %s, TP2 %s) within %d bars",
-                                  (dir > 0 ? "BUY" : "SELL"), Px(entry), Px(sl), Px(tp2), InpTP1ReBars));
+   Log("TP1_RE_ARM", StringFormat("%s %s reached: re-entry if price returns to %s (SL %s, TP %s) within %d bars",
+                                  (dir > 0 ? "BUY" : "SELL"), (InpScalpOn ? "scalp target" : "TP1"), Px(entry), Px(sl), Px(tp2), InpTP1ReBars));
+  }
+
+// scalp mode: a target hit (first trade or a re-entry) arms the next re-entry of the same
+// signal at the FIRST trade's entry, SL and target
+void ScalpReArm(const int dir, const double entry, const double sl, const double tp, const string sig)
+  {
+   if(!InpTP1ReOn || sig == "") return;
+   if(gRe.sig == sig && gRe.count > 0)
+     {
+      if(gRe.armed || gRe.count >= TP1ReMax()) return;
+      gRe.armed = true;
+      gRe.until = TimeCurrent() + (datetime)MathMax(1, InpTP1ReBars) * PeriodSeconds(_Period);
+      gRe.trendMsg = false;
+      Log("TP1_RE_ARM", StringFormat("%s scalp target reached again: re-entry %d/%d if price returns to %s within %d bars",
+                                     (dir > 0 ? "BUY" : "SELL"), gRe.count + 1, TP1ReMax(), Px(gRe.entry), InpTP1ReBars));
+      return;
+     }
+   TP1ReArm(dir, entry, sl, tp, sig);
   }
 
 // trend still valid for the re-entry
@@ -1606,7 +1650,7 @@ void ManageTP1Re(const Basket &b)
    int    d   = gRe.dir;
 
    if(TimeCurrent() > gRe.until)                      { TP1ReDisarm("window over"); return; }
-   if(d > 0 ? bid >= gRe.tp2 : ask <= gRe.tp2)        { TP1ReDisarm("TP2 reached"); return; }
+   if(!InpScalpOn && (d > 0 ? bid >= gRe.tp2 : ask <= gRe.tp2)) { TP1ReDisarm("TP2 reached"); return; }
    if(d > 0 ? bid <= gRe.sl : ask >= gRe.sl)          { TP1ReDisarm("price passed the SL"); return; }
    if(b.count > 0 || CountOrders() > 0) return;       // the runner (or another trade) is still open
 
@@ -1638,7 +1682,7 @@ void ManageTP1Re(const Basket &b)
      }
    gRe.count++;
    gRe.armed = false;
-   string what = StringFormat("TP1 RE-ENTRY %s lot %.2f @ %s  SL %s  TP2 %s", (d > 0 ? "BUY" : "SELL"), lot,
+   string what = StringFormat("%s RE-ENTRY %s lot %.2f @ %s  SL %s  TP %s", (InpScalpOn ? "SCALP" : "TP1"), (d > 0 ? "BUY" : "SELL"), lot,
                               Px(trade.ResultPrice()), Px(sl), Px(tp));
    Log("OPEN", what);
    if(InpAlertTrades) Notify("OPEN " + what);
@@ -1657,7 +1701,8 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
       AddTradeDot((datetime)HistoryDealGetInteger(trans.deal, DEAL_TIME), TradeDotCode(trans.deal));
       return;
      }
-   if(!InpTP1ReOn || InpManageOn || !gWarm) return;
+   if(!InpTP1ReOn || !gWarm) return;
+   if(!InpScalpOn && InpManageOn) return;   // managed trades arm in ManageRunner
    if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY) return;
    if(HistoryDealGetInteger(trans.deal, DEAL_REASON) != DEAL_REASON_TP) return;
 
@@ -1669,12 +1714,13 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
       ulong tk = HistoryDealGetTicket(i);
       if(tk == 0 || HistoryDealGetInteger(tk, DEAL_ENTRY) != DEAL_ENTRY_IN) continue;
       string cmt = HistoryDealGetString(tk, DEAL_COMMENT);
-      if(IsTP1ReTrade(cmt)) return;   // the re-entry itself reached TP2
+      if(IsTP1ReTrade(cmt) && !InpScalpOn) return;   // the re-entry itself reached TP2
       int    d   = (HistoryDealGetInteger(tk, DEAL_TYPE) == DEAL_TYPE_BUY ? 1 : -1);
       double op  = HistoryDealGetDouble(tk, DEAL_PRICE);
       ulong  ord = (ulong)HistoryDealGetInteger(tk, DEAL_ORDER);
       if(!HistoryOrderSelect(ord)) return;
       double sl  = HistoryOrderGetDouble(ord, ORDER_SL);
+      if(InpScalpOn) { ScalpReArm(d, op, sl, NormalizeDouble(tp1, _Digits), SigKey(cmt)); return; }   // same target again
       if(sl <= 0 || tp1 <= 0 || InpRR1 <= 0) return;
       double r   = MathAbs(tp1 - op) / InpRR1;
       TP1ReArm(d, op, sl, NormalizeDouble(op + d * r * InpRR2, _Digits), SigKey(cmt));
@@ -1722,7 +1768,7 @@ void ManageTrades()
         }
      }
 
-   if(InpManageOn) ManageRunner();
+   if(InpManageOn && !InpScalpOn) ManageRunner();   // scalp: one target, nothing to manage
    if(InpTP1ReOn)
      {
       Basket nb = GetBasket();   // fresh: the runner may just have closed at break-even
@@ -1944,7 +1990,7 @@ void TodayStats(int &trades, int &wins, int &losses, double &pl,
          ArrayResize(posId, m2 + 1);
          ArrayResize(posKey, m2 + 1);
          posId[m2]  = HistoryDealGetInteger(tk, DEAL_POSITION_ID);
-         posKey[m2] = (key != "" && IsTP1ReTrade(cmt) ? key + "RT" : key);
+         posKey[m2] = (key != "" && IsTP1ReTrade(cmt) ? key + "RT" + IntegerToString(posId[m2]) : key);
          continue;
         }
       if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY) continue;
@@ -2061,7 +2107,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "Mt.ZionPro EA", C_TXT, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.50  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.60  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -2091,10 +2137,18 @@ void UpdatePanel(const bool force = false)
    PRow("Mode", ModeName(), C_TXT);
    PRow("Entry", EntryName(), C_TXT);
    PRow("Grades / re-entry", GradesText(false) + " / " + GradesText(true), C_INFO);
+   if(InpScalpOn)
+     {
+      PRow("Scalp mode", StringFormat("TP %.0f%% of TP1, no TP2", MathMax(1.0, MathMin(100.0, InpScalpPct))), C_UP);
+      PRow("SL widen", "OFF (scalp mode)", C_MUTE);
+     }
+   else
+     {
    PRow("SL widen", StringFormat("+%.0f%%  (TP R unchanged)", MathMax(0.0, InpSLWidenPct)), (InpSLWidenPct > 0 ? C_WARN : C_MUTE));
    PRow("Trade mgmt", (InpManageOn ? StringFormat("%.0f%% @TP1%s, rest TP2%s", InpPartialPct, (InpMoveBE ? " + BE" : ""),
                                                      (InpRunnerTrailOn ? " / trail" : "")) : "OFF (all at TP1)"),
            (InpManageOn ? C_UP : C_MUTE));
+     }
    PRow("Trading", (blk == "" ? "ENABLED" : "OFF"), (blk == "" ? C_UP : C_DN));
    if(InpEquityProtOn)
       PRow("Equity protector", StringFormat("-%.1f%%  (%.0f)", InpEquityProtPct, -AccountInfoDouble(ACCOUNT_BALANCE) * InpEquityProtPct / 100.0), C_WARN);
@@ -2102,9 +2156,11 @@ void UpdatePanel(const bool force = false)
       PRow("Equity protector", "OFF", C_MUTE);
 
    if(InpTP1ReOn)
-      PRow("TP1 re-entry", (gRe.armed ? "armed @ " + Px(gRe.entry) + " -> TP2 " + Px(gRe.tp2) : "ON"), (gRe.armed ? C_WARN : C_TXT));
+      PRow(InpScalpOn ? "Scalp re-entry" : "TP1 re-entry",
+           (gRe.armed ? StringFormat("armed @ %s -> TP %s (%d/%d)", Px(gRe.entry), Px(gRe.tp2), gRe.count + 1, TP1ReMax())
+                      : StringFormat("ON  max %d", TP1ReMax())), (gRe.armed ? C_WARN : C_TXT));
    else
-      PRow("TP1 re-entry", "OFF", C_MUTE);
+      PRow(InpScalpOn ? "Scalp re-entry" : "TP1 re-entry", "OFF", C_MUTE);
 
    PSection("CURRENT");
    string sigState = StateText();
