@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Mt.ZionPro EA"
 #property link      ""
-#property version   "1.43"
+#property version   "1.50"
 
 #include <Trade/Trade.mqh>
 
@@ -170,6 +170,7 @@ int gCntBuy = 0, gCntSell = 0, gCntTP1 = 0, gCntTP2 = 0, gCntSL = 0;
 
 bool     gWarm          = false;   // engine replayed history
 datetime gLastProcessed = 0;       // last closed bar fed to the engine
+datetime gAnchorUsed    = 0;       // replay anchor of the last warm-up (same rule as the indicator)
 bool     gClosing       = false;   // closing everything, retry each tick until flat
 int      gQueuedSig     = 0;       // signal waiting for the opposite trade to close
 datetime gQueuedT       = 0;       // its signal time
@@ -613,6 +614,37 @@ void FiltersRelease()
 
 bool HReady(const int h) { return (h != INVALID_HANDLE && BarsCalculated(h) > 0); }
 
+// the filter indicator has calculated every bar of its timeframe (incl. the newest one)
+bool HSynced(const int h, const ENUM_TIMEFRAMES tf)
+  {
+   return (h != INVALID_HANDLE && BarsCalculated(h) >= Bars(_Symbol, tf));
+  }
+
+// all filter data includes the newest bars. On the first tick of a bar the EMA / ATR
+// can lag one bar behind the price series: then a closed bar must wait (Ind and EA alike)
+bool FiltersSynced()
+  {
+   return (HSynced(gHTf1F, InpFiltTF1) && HSynced(gHTf1S, InpFiltTF1) && HSynced(gHTf2F, InpFiltTF2)
+           && HSynced(gHTf2S, InpFiltTF2) && HSynced(gHD1, PERIOD_D1) && HSynced(gHLoc, _Period)
+           && HSynced(gHATR, _Period));
+  }
+
+// Replay anchor: the open of the previous week. Ind and EA both replay their signal engine
+// from this same bar, so their state (running idea, cooldowns, re-entries) is identical no
+// matter when each was loaded. It moves once a week (weekend), then both replay again.
+datetime ReplayAnchor() { return iTime(_Symbol, PERIOD_W1, 1); }
+
+// shift of the first bar to replay; -1 = weekly history not loaded yet
+int ReplayStart(const int total)
+  {
+   datetime a = ReplayAnchor();
+   if(a == 0) return -1;
+   int sh = iBarShift(_Symbol, _Period, a, false);
+   if(sh < 0 || sh > total - 5) sh = total - 5;   // chart history shorter than that: as far back as it goes
+   if(sh < 1) sh = 1;
+   return sh;
+  }
+
 // all filter data is calculated (history replay must wait for it)
 bool FiltersReady()
   {
@@ -620,11 +652,15 @@ bool FiltersReady()
            && HReady(gHD1) && HReady(gHLoc) && HReady(gHATR));
   }
 
-double BufAt(const int h, const int sh)
+// value of a filter indicator on the bar of timeframe tf at shift sh, read by the bar's TIME
+// (a read by shift lands on the wrong bar while the indicator still lags the newest bar)
+double BufAt(const int h, const ENUM_TIMEFRAMES tf, const int sh)
   {
    if(h == INVALID_HANDLE || sh < 0) return 0.0;
+   datetime t = iTime(_Symbol, tf, sh);
+   if(t == 0) return 0.0;
    double v[1];
-   if(CopyBuffer(h, 0, sh, 1, v) != 1) return 0.0;
+   if(CopyBuffer(h, 0, t, 1, v) != 1) return 0.0;
    if(v[0] == EMPTY_VALUE) return 0.0;
    return v[0];
   }
@@ -634,7 +670,7 @@ int TFTrendAt(const ENUM_TIMEFRAMES tf, const int hF, const int hS, const dateti
   {
    int sh = ClosedShiftAt(tf, t);
    if(sh < 0) return 0;
-   double f = BufAt(hF, sh), s = BufAt(hS, sh), c = iClose(_Symbol, tf, sh);
+   double f = BufAt(hF, tf, sh), s = BufAt(hS, tf, sh), c = iClose(_Symbol, tf, sh);
    if(f <= 0 || s <= 0 || c <= 0) return 0;
    if(f > s && c > s) return 1;
    if(f < s && c < s) return -1;
@@ -653,12 +689,12 @@ bool D1Against(const int dir, const datetime t)
   {
    int sh = ClosedShiftAt(PERIOD_D1, t);
    if(sh < 0) return false;
-   double e = BufAt(gHD1, sh), c = iClose(_Symbol, PERIOD_D1, sh);
+   double e = BufAt(gHD1, PERIOD_D1, sh), c = iClose(_Symbol, PERIOD_D1, sh);
    if(e <= 0 || c <= 0) return false;
    return (dir > 0 ? c < e : c > e);
   }
 
-double ATRAt(const int sh) { return BufAt(gHATR, sh); }
+double ATRAt(const int sh) { return BufAt(gHATR, _Period, sh); }
 
 double SpreadPriceAt(const int sh)
   {
@@ -748,7 +784,7 @@ int SignalGrade(const int dir, const Candle &k, const int sh, const int trendDir
      }
    if(InpLocationOn)
      {
-      double e = BufAt(gHLoc, sh);
+      double e = BufAt(gHLoc, _Period, sh);
       if(atr <= 0 || e <= 0 || MathAbs(k.c - e) > atr * InpMaxExtATR) { fails++; why += " extended"; }
      }
    if(InpStrictOn && !StrictTrigger(dir, k, sh)) { fails++; why += " candle"; }
@@ -1705,15 +1741,18 @@ bool WarmUp()
    if(iTime(_Symbol, InpTF_D, 1) == 0 || iTime(_Symbol, InpTF_H4, 1) == 0 ||
       iTime(_Symbol, InpTF_H1, 1) == 0 || iTime(_Symbol, InpTF_M5, 1) == 0)
       return false;   // higher timeframe history still loading
-   if(!FiltersReady())
+   if(!FiltersReady() || !FiltersSynced())
       return false;   // EMA / ATR filter data still calculating
+   int start = ReplayStart(total);
+   if(start < 0)
+      return false;   // weekly history still loading
 
    ResetIdea();
    ResetCounts();
    gEndedValid = false;
    lastBuyTime = lastSellTime = 0;
-   int start = (int)MathMin(total - 5, 800);
-   if(start < 1) start = 1;
+   ClearSignalTimes();
+   gAnchorUsed = ReplayAnchor();   // same first bar as the indicator
    for(int i = start; i >= 1; i--)
      {
       int s = ProcessBar(i);
@@ -1827,6 +1866,8 @@ int  gDragDX = 0, gDragDY = 0, gDownX = 0, gDownY = 0;
 int    gRow = 0, gMaxRow = 0;
 datetime gSigTimes[];
 uint   gLastPanelMs = 0;
+
+void ClearSignalTimes() { ArrayResize(gSigTimes, 0); }
 
 void AddSignalTime(const datetime t)
   {
@@ -2020,7 +2061,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "Mt.ZionPro EA", C_TXT, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.43  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.50  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -2252,23 +2293,42 @@ bool EnsureWarm()
    if(!gWarm) return false;
    Basket b = GetBasket();
    DrawHistoryTradeDots();
-   Log("READY", StringFormat("engine replayed history, state %s; found %d EA trades, %d pending orders",
-                             StateText(), b.count, CountOrders()));
+   Log("READY", StringFormat("engine replayed history from %s, state %s; found %d EA trades, %d pending orders",
+                             TimeToString(gAnchorUsed, TIME_DATE|TIME_MINUTES), StateText(), b.count, CountOrders()));
    return true;
+  }
+
+// a closed bar is processed only when the EMA / ATR data includes the newest bar
+// (same rule as the indicator, 10 s at most so a missing timeframe can't stall it)
+bool BarDataReady()
+  {
+   return (FiltersSynced() || TimeCurrent() - iTime(_Symbol, _Period, 0) >= 10);
+  }
+
+// the weekly replay anchor moved: replay like the indicator does
+void CheckAnchor()
+  {
+   datetime a = ReplayAnchor();
+   if(!gWarm || a == 0 || a == gAnchorUsed) return;
+   gWarm = false;
+   Log("REPLAY", "new week: signal engine replays from " + TimeToString(a, TIME_DATE|TIME_MINUTES) + " (as the indicator)");
   }
 
 void OnTimer()
   {
+   CheckAnchor();
    if(!gWarm) EnsureWarm();
+   if(gWarm && iTime(_Symbol, _Period, 1) > gLastProcessed && BarDataReady()) OnNewBars();
    if(gWarm) UpdatePanel();
   }
 
 void OnTick()
   {
+   CheckAnchor();
    if(!EnsureWarm()) return;
    CheckBlocker();
 
-   if(iTime(_Symbol, _Period, 1) > gLastProcessed)
+   if(iTime(_Symbol, _Period, 1) > gLastProcessed && BarDataReady())
       OnNewBars();
 
    ManageTrades();
