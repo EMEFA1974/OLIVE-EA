@@ -1,6 +1,6 @@
 #property copyright "Mt.ZionPro Ind"
 #property link      ""
-#property version   "1.96"
+#property version   "1.97"
 #property indicator_chart_window
 #property indicator_buffers 4
 #property indicator_plots   4
@@ -114,6 +114,13 @@ input bool       InpReNeedA  = false;              // true = re-entries only on 
 input bool       InpShowFiltered = true;          // grey grade letter on signals whose grade is toggled off (no zone, no alert)
 input color      InpFiltColor    = clrSilver;
 
+input group "=== Scalp mode (set the same as the EA) ==="
+input bool   InpScalpOn         = false;  // on = zone / stats / alerts use the EA's scalp levels: target at InpScalpPct % of the way to TP1, no TP2, SL not widened (signals unchanged)
+input double InpScalpPct        = 50.0;   // target = this % of the entry -> TP1 distance
+input int    InpScalpReMax      = 2;      // re-entries per signal after the target is hit (price back at the entry, signal still valid)
+input int    InpTP1ReBars       = 24;     // re-entry only within this many bars after the target
+input bool   InpTP1ReTrendAgree = false;  // true = EMA trend (filter TF1 + TF2) must point with the trade; false = must not be against it
+
 input group "=== Trade Management (set the same as the EA) ==="
 input bool   InpManageOn     = true;    // EA closes part at TP1 and lets the rest run to TP2
 input bool   InpMoveBE       = true;    // EA moves the SL to entry after TP1 (zone and stats follow it)
@@ -183,6 +190,7 @@ datetime lastFiltB     = 0;      // last grey (grade toggled off) markers, for t
 datetime lastFiltS     = 0;
 
 int gCntBuy = 0, gCntSell = 0, gCntTP1 = 0, gCntTP2 = 0, gCntSL = 0, gCntLoss = 0;
+int gCntSTP = 0, gCntSSL = 0, gCntSRe = 0;   // scalp mode: target hits, SL hits, re-entries
 
 // signal outcome events, kept so the panel can count "today"
 #define EV_SIG  0
@@ -190,6 +198,8 @@ int gCntBuy = 0, gCntSell = 0, gCntTP1 = 0, gCntTP2 = 0, gCntSL = 0, gCntLoss = 
 #define EV_TP2  2
 #define EV_SL   3
 #define EV_LOSS 4   // SL hit before TP1
+#define EV_STP  5   // scalp target hit
+#define EV_SSL  6   // scalp SL hit
 datetime gEvT[];
 int      gEvK[];
 
@@ -232,6 +242,7 @@ struct ZoneSnap
    bool     re;
    int      grade;
    double   entry, sl, tp1, tp2;
+   double   slR;        // original (not widened) SL, used in scalp mode
    datetime t1, tEnd;   // tEnd = 0 while the idea is still running
    string   status;
   };
@@ -243,7 +254,7 @@ void ResetZone()
    gz.dir = 0;
    gz.re = false;
    gz.grade = GRADE_NONE;
-   gz.entry = gz.sl = gz.tp1 = gz.tp2 = 0;
+   gz.entry = gz.sl = gz.tp1 = gz.tp2 = gz.slR = 0;
    gz.t1 = gz.tEnd = 0;
    gz.status = "";
   }
@@ -336,6 +347,8 @@ void ClearZones()
 void ResetCounts()
   {
    gCntBuy = gCntSell = gCntTP1 = gCntTP2 = gCntSL = gCntLoss = 0;
+   gCntSTP = gCntSSL = gCntSRe = 0;
+   ScalpReset();
    ArrayResize(gEvT, 0);
    ArrayResize(gEvK, 0);
   }
@@ -366,6 +379,7 @@ void EndIdea(const string status, const datetime t)
       gz.sl     = idea.sl;
       gz.tp1    = idea.tp1;
       gz.tp2    = idea.tp2;
+      gz.slR    = idea.slR;
       gz.t1     = idea.signalTime;
       gz.tEnd   = t;
       gz.status = status;
@@ -592,6 +606,102 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int tren
      {
       if(idea.slBarAge > InpReentryWindow || TrendAgainst(idea.dir, d, h4, trendDir))
          EndIdea(" [SL HIT]", idea.slTime);
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Scalp mode: the EA's scalp trades, followed bar by bar for the   |
+//| zone and the stats. One target at InpScalpPct % of the way to    |
+//| TP1, original SL; after the target, re-entries when price comes  |
+//| back to the entry while the signal is still valid. It does NOT   |
+//| change the signal engine, so signals still match the EA.         |
+//+------------------------------------------------------------------+
+struct ScalpSim
+  {
+   bool     active;     // a scalp trade is running
+   bool     waitRe;     // target hit, waiting for price to come back to the entry
+   int      dir;
+   datetime sigT;       // signal of the trade
+   double   entry, sl, tp;
+   int      count;      // re-entries made
+   datetime until;      // re-entry window end
+  };
+ScalpSim gs;
+
+void ScalpReset()
+  {
+   gs.active = gs.waitRe = false;
+   gs.dir = 0; gs.sigT = 0; gs.count = 0; gs.until = 0;
+   gs.entry = gs.sl = gs.tp = 0;
+  }
+
+double ScalpTP(const double from, const double tp1)
+  {
+   double pct = MathMax(1.0, MathMin(100.0, InpScalpPct));
+   return from + (tp1 - from) * pct / 100.0;
+  }
+
+// trend still valid for a re-entry (same rule as the EA)
+bool ScalpTrendOK(const int dir, const int trendDir, const datetime t)
+  {
+   if(InpTP1ReTrendAgree ? trendDir != dir : trendDir == -dir) return false;
+   if(InpD1FilterOn && D1Against(dir, t)) return false;
+   return true;
+  }
+
+// a running scalp trade / a waiting re-entry, on one closed bar
+void ScalpBar(const Candle &bar, const int trendDir)
+  {
+   if(!InpScalpOn) return;
+   double sp = (InpSpreadAware ? bar.spr : 0.0);
+   double xs = (gs.dir < 0 ? sp : 0.0);
+   if(gs.active)
+     {
+      bool hitSL = (gs.dir > 0 ? bar.l <= gs.sl : bar.h + xs >= gs.sl);
+      bool hitTP = (gs.dir > 0 ? bar.h >= gs.tp : bar.l + xs <= gs.tp);
+      if(hitSL)                       // both on one bar: assume the loss
+        {
+         gCntSSL++; AddEv(EV_SSL, bar.t);
+         gs.active = gs.waitRe = false;
+        }
+      else if(hitTP)
+        {
+         gCntSTP++; AddEv(EV_STP, bar.t);
+         gs.active = false;
+         gs.waitRe = (gs.count < InpScalpReMax);
+         gs.until  = bar.t + (datetime)MathMax(1, InpTP1ReBars) * PeriodSeconds(_Period);
+        }
+      return;
+     }
+   if(!gs.waitRe) return;
+   if(bar.t > gs.until || (gs.dir > 0 ? bar.l <= gs.sl : bar.h + xs >= gs.sl)) { gs.waitRe = false; return; }
+   bool touch = (gs.dir > 0 ? bar.l + sp <= gs.entry : bar.h >= gs.entry);
+   if(!touch || !ScalpTrendOK(gs.dir, trendDir, bar.t)) return;
+   gs.count++; gCntSRe++;
+   gs.waitRe = false;
+   gs.active = true;                  // same SL and target; checked from the next bar
+  }
+
+// after the signal step of a bar: a new signal ends the old re-entry wait (and closes an
+// opposite trade, as the EA does); a fill starts the scalp trade of that signal
+void ScalpAfterSignals(const Candle &bar, const bool newSignal)
+  {
+   if(!InpScalpOn) return;
+   if(newSignal)
+     {
+      gs.waitRe = false;
+      if(gs.active && idea.dir != gs.dir) gs.active = false;
+     }
+   if(idea.state == IDEA_LIVE && idea.fillTime == bar.t && idea.signalTime != gs.sigT)
+     {
+      gs.sigT   = idea.signalTime;
+      gs.dir    = idea.dir;
+      gs.entry  = idea.entry;
+      gs.sl     = idea.slR;           // SL not widened
+      gs.tp     = ScalpTP(idea.entry, idea.tp1);
+      gs.count  = 0;
+      gs.active = true;
+      gs.waitRe = false;
      }
   }
 
@@ -1089,6 +1199,7 @@ void DrawLiveZone()
       gz.sl    = idea.sl;
       gz.tp1   = idea.tp1;
       gz.tp2   = idea.tp2;
+      gz.slR   = idea.slR;
       gz.t1    = idea.signalTime;
       gz.tEnd  = 0;
       gz.status = "";
@@ -1123,6 +1234,24 @@ void DrawLiveZone()
 
    color sig = SignalColor(gz.dir, gz.re);
    string side = (gz.dir > 0 ? (gz.re ? "RE-BUY" : "BUY") : (gz.re ? "RE-SELL" : "SELL")) + " " + GradeName(gz.grade);
+
+   if(InpScalpOn)
+     {
+      // scalp: original SL and one target; no TP2
+      double zsl = (gz.slR > 0 ? gz.slR : gz.sl);
+      double ztp = ScalpTP(gz.entry, gz.tp1);
+      PutRect(ZPRE+"ZSL0", t1, gz.entry, t2, zsl, Faint(InpZoneSL,  InpZoneOpacity));
+      PutRect(ZPRE+"ZT10", t1, gz.entry, t2, ztp, Faint(InpZoneTP1, InpZoneOpacity));
+      PutLine(ZPRE+"LEN0", t1, t3, gz.entry, Faint(sig,        InpLineOpacity));
+      PutLine(ZPRE+"LSL0", t1, t3, zsl,      Faint(InpLineSL,  InpLineOpacity));
+      PutLine(ZPRE+"LT10", t1, t3, ztp,      Faint(InpLineTP1, InpLineOpacity));
+      PutLabel(ZPRE+"NEN0", tl, gz.entry, "Entry  " + DoubleToString(gz.entry, _Digits) + "  " + side + gz.status, sig);
+      PutLabel(ZPRE+"NSL0", tl, zsl, "SL  " + DoubleToString(zsl, _Digits), InpLineSL);
+      PutLabel(ZPRE+"NT10", tl, ztp, StringFormat("TP %.0f%%  ", MathMax(1.0, MathMin(100.0, InpScalpPct))) + DoubleToString(ztp, _Digits), InpLineTP1);
+      ObjectDelete(0, ZPRE+"ZT20"); ObjectDelete(0, ZPRE+"LT20"); ObjectDelete(0, ZPRE+"NT20");
+      ChartRedraw(0);
+      return;
+     }
 
    PutRect(ZPRE+"ZSL0",  t1, gz.entry, t2, gz.sl,  Faint(InpZoneSL,  InpZoneOpacity));
    PutRect(ZPRE+"ZT10",  t1, gz.entry, t2, gz.tp1, Faint(InpZoneTP1, InpZoneOpacity));
@@ -1322,7 +1451,7 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "MT.ZIONPRO IND", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.96  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.97  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -1345,18 +1474,37 @@ void DrawPanel(const bool force = false)
 
    datetime d = DayStart();
    int tS = CountEv(EV_SIG, d), t1 = CountEv(EV_TP1, d), t2 = CountEv(EV_TP2, d), tSL = CountEv(EV_SL, d), tL = CountEv(EV_LOSS, d);
-   PSection("TODAY");
+   PSection(InpScalpOn ? "TODAY (SCALP)" : "TODAY");
    PRow("Signals", IntegerToString(tS), C_INFO);
+   if(InpScalpOn)
+     {
+      int sT = CountEv(EV_STP, d), sL = CountEv(EV_SSL, d);
+      PRow("Target hits", IntegerToString(sT), C_UP);
+      PRow("SL hits", IntegerToString(sL), C_DN);
+      PRow("Running", IntegerToString(gs.active ? 1 : 0), C_WARN);
+      v = WinRate(sT, sL, c);  PRow("Win rate", v, c);
+     }
+   else
+     {
    PRow("TP1 hits", IntegerToString(t1), C_UP);
    PRow("TP2 hits", IntegerToString(t2), C_UP);
    PRow("SL hits", IntegerToString(tSL), C_DN);
    PRow("Running", IntegerToString(idea.state == IDEA_LIVE ? 1 : 0), C_WARN);
    v = WinRate(t1, tL, c);     PRow("Win rate", v, c);
+     }
 
-   PSection("TOTAL (CHART HISTORY)");
+   PSection(InpScalpOn ? "TOTAL (SCALP, CHART HISTORY)" : "TOTAL (CHART HISTORY)");
    PRow("Signals (B/S)", StringFormat("%d  (%d/%d)", gCntBuy + gCntSell, gCntBuy, gCntSell), C_INFO);
+   if(InpScalpOn)
+     {
+      PRow("Target / SL / re-entries", StringFormat("%d / %d / %d", gCntSTP, gCntSSL, gCntSRe), C_TXT);
+      v = WinRate(gCntSTP, gCntSSL, c); PRow("Win rate", v, c);
+     }
+   else
+     {
    PRow("TP1 / TP2 / SL", StringFormat("%d / %d / %d", gCntTP1, gCntTP2, gCntSL), C_TXT);
    v = WinRate(gCntTP1, gCntLoss, c); PRow("Win rate", v, c);
+     }
 
    PSection("CURRENT SIGNAL");
    if(idea.state == IDEA_IDLE)
@@ -1366,9 +1514,20 @@ void DrawPanel(const bool force = false)
       string side = (idea.dir > 0 ? (idea.re ? "RE-BUY" : "BUY") : (idea.re ? "RE-SELL" : "SELL"));
       PRow("Status", side + " " + GradeName(idea.grade) + "  " + StateText(), SignalColor(idea.dir, idea.re));
       PRow("Entry", Px(idea.entry), C_TXT);
-      PRow("SL", Px(idea.sl), InpLineSL);
-      PRow("TP1 / TP2", Px(idea.tp1) + " / " + Px(idea.tp2), InpLineTP1);
+      if(InpScalpOn)
+        {
+         PRow("SL", Px(idea.slR), InpLineSL);
+         PRow(StringFormat("TP (%.0f%% of TP1)", MathMax(1.0, MathMin(100.0, InpScalpPct))), Px(ScalpTP(idea.entry, idea.tp1)), InpLineTP1);
+        }
+      else
+        {
+         PRow("SL", Px(idea.sl), InpLineSL);
+         PRow("TP1 / TP2", Px(idea.tp1) + " / " + Px(idea.tp2), InpLineTP1);
+        }
      }
+   if(InpScalpOn)
+      PRow("Scalp re-entry", (gs.waitRe ? StringFormat("waiting @ %s (%d/%d)", Px(gs.entry), gs.count + 1, InpScalpReMax)
+                                        : StringFormat("max %d", InpScalpReMax)), (gs.waitRe ? C_WARN : C_MUTE));
    PRow("Re-entry", (InpReentryOn ? StringFormat("ON  %d / %d", idea.reCount, InpMaxReentry) : "OFF"), (InpReentryOn ? C_UP : C_MUTE));
 
    }
@@ -1562,6 +1721,7 @@ int OnCalculate(const int rates_total,
       int trendDir = TrendDirAt(bar.t);
 
       ManageIdea(bar, d, h4, trendDir);
+      ScalpBar(bar, trendDir);
 
       double prevH = RecentSwingHigh(rates_total, i, high);
       double prevL = RecentSwingLow(rates_total, i, low);
@@ -1639,6 +1799,8 @@ int OnCalculate(const int rates_total,
            }
         }
 
+      ScalpAfterSignals(bar, armed);
+
       // base signals whose grade is toggled off: grey letter only (no zone, no alert, no trade)
       if(!armed && InpShowFiltered)
         {
@@ -1670,7 +1832,12 @@ void FireAlert(const string side, const datetime barTime, const double barClose)
    string tf = EnumToString(_Period);
    StringReplace(tf, "PERIOD_", "");
    string extra = "";
-   if(idea.state != IDEA_IDLE)
+   if(idea.state != IDEA_IDLE && InpScalpOn)
+      extra = StringFormat(" | EN %s SL %s TP %s (scalp)",
+                           DoubleToString(idea.entry, _Digits),
+                           DoubleToString(idea.slR, _Digits),
+                           DoubleToString(ScalpTP(idea.entry, idea.tp1), _Digits));
+   else if(idea.state != IDEA_IDLE)
       extra = StringFormat(" | EN %s SL %s TP1 %s TP2 %s",
                            DoubleToString(idea.entry, _Digits),
                            DoubleToString(idea.sl, _Digits),
