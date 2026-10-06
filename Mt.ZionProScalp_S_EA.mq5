@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
-//| Mt.ZionPro Scalp EA                                              |
+//| Mt.ZionProScalp_S_EA                                             |
 //| Trades the Mt.ZionPro Scalp Ind signals; indicator not needed.   |
 //| Stand-alone: built-in copy of the indicator's signal engine.     |
 //+------------------------------------------------------------------+
-#property copyright "Mt.ZionPro Scalp EA"
+#property copyright "Mt.ZionProScalp_S_EA"
 #property link      ""
-#property version   "1.70"
+#property version   "1.71"
 
 #include <Trade/Trade.mqh>
 
@@ -26,9 +26,9 @@ enum ENUM_GRADE
 #define GRADE_NONE 3
 
 input group "=== EA ==="
-input ENUM_ENTRY_TYPE InpEntryType   = ENTRY_HYBRID;    // Entry type (MARKET / PENDING / HYBRID = 1 market trade, TP from its fill / SMART)
+input ENUM_ENTRY_TYPE InpEntryType   = ENTRY_SMART;     // Entry type (MARKET / PENDING / HYBRID = 1 market trade, TP from its fill / SMART)
 input long            InpMagic       = 26100401;
-input string          InpComment     = "Mt.ZionPro Scalp";
+input string          InpComment     = "Mt.ZionProScalp_S";
 input int             InpSlippagePts = 30;       // max slippage (points)
 
 enum ENUM_PEND_TYPE
@@ -168,13 +168,13 @@ input string InpPanelFontName = "Segoe UI Semilight"; // thin font for labels an
 input string InpPanelFontHead = "Segoe UI";           // headings / title (e.g. "Segoe UI", "Calibri Light", "Arial")
 input int    InpPanelFont    = 8;
 input int    InpPanelRowH    = 15;
-input bool   InpLogToFile    = true;       // MQL5/Files/MtZionScalpEA_log.csv
+input bool   InpLogToFile    = true;       // MQL5/Files/MtZionProScalp_S_EA_log.csv
 input color  InpBuyColor     = clrAqua;
 input color  InpSellColor    = clrMagenta;
 input color  InpReColor      = clrYellow;    // dots of re-entries (after SL and after TP1)
 
 #define EAPRE   "MZEA_"
-#define LOGFILE "MtZionScalpEA_log.csv"
+#define LOGFILE "MtZionProScalp_S_EA_log.csv"
 
 CTrade   trade;
 
@@ -977,7 +977,7 @@ string TradeComment(const string sig, const string suffix)
 void Log(const string event, const string details)
   {
    gLastEvent = TimeToString(TimeCurrent(), TIME_DATE|TIME_MINUTES) + "  " + event + "  " + details;
-   Print("Mt.ZionPro Scalp EA ", event, " | ", details);
+   Print("Mt.ZionProScalp_S_EA ", event, " | ", details);
    if(!InpLogToFile) return;
    int h = FileOpen(LOGFILE, FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ|FILE_SHARE_WRITE, ',');
    if(h == INVALID_HANDLE) return;
@@ -990,7 +990,7 @@ void Log(const string event, const string details)
 
 void Notify(const string msg)
   {
-   string full = "Mt.ZionPro Scalp EA " + _Symbol + " | " + msg;
+   string full = "Mt.ZionProScalp_S_EA " + _Symbol + " | " + msg;
    if(InpAlertPopup) Alert(full);
    if(InpAlertSound) PlaySound(InpSoundFile);
    if(InpAlertPush)  SendNotification(full);
@@ -2216,8 +2216,8 @@ void UpdatePanel(const bool force = false)
    if(blk != "")               { st = "NOT TRADING";  sc = C_DN; }
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
-   PText(PPRE + "T1", gPX + 10, gPY + 6, "Mt.ZionPro Scalp EA", C_TXT, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.70  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T1", gPX + 10, gPY + 6, "Mt.ZionProScalp_S_EA", C_TXT, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.71  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -2423,7 +2423,7 @@ int OnInit()
    trade.LogLevel(LOG_LEVEL_ERRORS);
 
    if(_Period != PERIOD_M5)
-      Print("Mt.ZionPro Scalp EA: built for M5, running on ", EnumToString(_Period));
+      Print("Mt.ZionProScalp_S_EA: built for M5, running on ", EnumToString(_Period));
 
    gWarm = false;
    gClosing = false;
@@ -2436,7 +2436,7 @@ int OnInit()
                              EntryName(), _Digits));
    if(!FiltersInit())
      {
-      Print("Mt.ZionPro Scalp EA: could not create the filter indicators (EMA / ATR)");
+      Print("Mt.ZionProScalp_S_EA: could not create the filter indicators (EMA / ATR)");
       return(INIT_FAILED);
      }
    CleanPDKeys();
