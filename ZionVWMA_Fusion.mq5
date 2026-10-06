@@ -126,8 +126,9 @@ input int    InpMaxSpreadPts    = 60;              // max bar spread, in 2-digit
 input bool   InpAutoDigits      = true;            // 3-digit gold: point inputs are scaled x10
 
 input group "=== Grades / signals ==="
+input bool   InpGradeA       = true;               // A grade (passes every filter) becomes a signal
 input bool   InpGradeB       = true;               // B grade (fails one filter) becomes a signal
-input bool   InpGradeC       = false;              // C grade (fails two or more) becomes a signal
+input bool   InpGradeC       = true;               // C grade (fails two or more) becomes a signal
 input bool   InpShowFiltered = true;               // grey grade letter where a toggled-off grade fired (hover = failed filters)
 input color  InpFiltColor    = clrSilver;
 input int    InpCooldown     = 8;                  // bars between signals in the same direction
@@ -737,7 +738,7 @@ string GradeName(const int g)
 
 bool GradeOn(const int g)
   {
-   if(g == GRADE_A) return true;
+   if(g == GRADE_A) return InpGradeA;
    if(g == GRADE_B) return InpGradeB;
    if(g == GRADE_C) return InpGradeC;
    return false;
