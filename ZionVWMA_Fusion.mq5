@@ -25,9 +25,11 @@
 //|   - no RSI exhaustion (fast RSI beyond OB / OS)                  |
 //|   - strict trigger: close through a real swing, or a pin bar     |
 //|     that sweeps the last bars                                    |
-//| C signals must also pass the "C rules": max fails, full momentum,|
-//| no counter-trend, no trend+D1 miss, good candle, room to TP1,    |
-//| no exhaustion, London/NY only. Failing C = grey "C-" (no trade). |
+//| C signals must also pass the "C rules" (defaults): at most 3     |
+//| fails, momentum >= 4, not counter-trend, room to TP1, no RSI     |
+//| exhaustion, strict candle unless momentum is 5/5. Failing C =    |
+//| grey "C-" (no trade). Each rule can be toggled in the inputs.    |
+//| Panel: click its title to hide it, double-click chart to restore.|
 //| Arrows: buys Aqua, sells Magenta (all grades).                   |
 //| Each signal is tracked (pending -> fill -> TP1 / TP2 / SL) so the|
 //| panel shows a running win rate for the loaded history.           |
@@ -113,7 +115,7 @@ input double InpClosePos     = 0.55;               // base trigger: close in the
 input int    InpSwingLook    = 2;                  // base trigger: displacement over the last N bars
 input bool   InpStrictOn     = true;               // strict trigger (graded)
 input double InpStrictBody   = 0.50;
-input double InpStrictClose  = 0.70;
+input double InpStrictClose  = 0.65;
 input int    InpSwingBars    = 15;                 // swing to break is searched within this many bars
 input int    InpFractalSide  = 2;                  // bars on each side that make a swing point
 input double InpPinWickMult  = 2.0;                // pin bar: rejection wick >= this x body
@@ -123,10 +125,10 @@ input int    InpPinSweep     = 3;                  // and the wick sweeps the pr
 input group "=== Volatility / location filters (graded) ==="
 input int    InpATRPeriod   = 14;
 input bool   InpATROn       = true;                // signal candle range between min and max x ATR
-input double InpMinRangeATR = 0.6;
+input double InpMinRangeATR = 0.5;
 input double InpMaxRangeATR = 2.5;
 input bool   InpLocationOn  = true;                // close within k x ATR of the mid VWMA
-input double InpMaxExtATR   = 1.5;
+input double InpMaxExtATR   = 2.0;
 input bool   InpRoomOn      = true;                // no PDH/PDL/PWH/PWL between entry and TP1
 input bool   InpExhaustOn   = true;                // fast RSI not beyond OB (buys) / 100-OB (sells)
 input double InpRsiOB       = 80.0;
@@ -144,19 +146,20 @@ input bool   InpGradeA       = true;               // A grade (passes every filt
 input bool   InpGradeB       = true;               // B grade (fails one filter) becomes a signal
 input bool   InpGradeC       = true;               // C grade (fails 2+ filters AND passes the C rules) becomes a signal
 input group "=== Grade C rules (C = fails two or more filters) ==="
-input int    InpCMaxFails    = 2;                  // C may fail at most this many filters (more = rejected)
-input int    InpCMinScore    = 5;                  // C needs this momentum score (1-5)
+input int    InpCMaxFails    = 3;                  // C may fail at most this many filters (more = rejected)
+input int    InpCMinScore    = 4;                  // C needs this momentum score (1-5)
 input bool   InpCNoCounter   = true;               // reject C when H1+H4 trend is against the trade (no trend is OK)
-input bool   InpCNoTrendD1   = true;               // reject C when the trend AND D1 filters both fail
-input bool   InpCNeedCandle  = true;               // reject C when the strict trigger candle failed
+input bool   InpCNoTrendD1   = false;              // reject C when the trend AND D1 filters both fail
+input bool   InpCNeedCandle  = true;               // reject C when the strict candle failed AND momentum is below 5/5
 input bool   InpCNeedRoom    = true;               // reject C when PDH/PDL/PWH/PWL blocks the way to TP1
 input bool   InpCNoExhaust   = true;               // reject C when the fast RSI is exhausted
-input bool   InpCSessionOnly = true;               // C only between InpSessStartUTC and InpSessEndUTC (London/NY)
+input bool   InpCSessionOnly = false;              // C only between InpSessStartUTC and InpSessEndUTC (London/NY)
 
 input group "=== Signal display ==="
 input bool   InpShowFiltered = true;               // grey grade letter where a toggled-off grade fired (hover = failed filters)
 input color  InpFiltColor    = clrSilver;
-input int    InpCooldown     = 8;                  // bars between signals in the same direction
+input bool   InpReplacePending = true;             // a new signal replaces a pending (unfilled) entry
+input int    InpCooldown     = 6;                  // bars between signals in the same direction
 input int    InpHistoryBars  = 3000;               // closed bars replayed on load (stats cover these)
 
 input group "=== Entry / exits ==="
@@ -356,6 +359,7 @@ int OnInit()
    ResetIdea();
    ResetZone();
    ResetCounts();
+   gPanelHidden = (GlobalVariableCheck(HideKey()) && GlobalVariableGet(HideKey()) > 0);
    return INIT_SUCCEEDED;
   }
 
@@ -774,7 +778,7 @@ int SignalGrade(const int dir, const Candle &k, const int sh, const int trendDir
    if(score < InpCMinScore)                                   rule += " score<" + IntegerToString(InpCMinScore);
    if(InpCNoCounter  && (mask & F_COUNTER) != 0)              rule += " counter-trend";
    if(InpCNoTrendD1  && (mask & F_TREND) != 0 && (mask & F_D1) != 0) rule += " trend+D1";
-   if(InpCNeedCandle && (mask & F_CANDLE) != 0)               rule += " weak-candle";
+   if(InpCNeedCandle && (mask & F_CANDLE) != 0 && score < 5)  rule += " weak-candle";
    if(InpCNeedRoom   && (mask & F_ROOM) != 0)                 rule += " no-room";
    if(InpCNoExhaust  && (mask & F_EXH) != 0)                  rule += " exhausted";
    if(InpCSessionOnly && !InWindow(k.t))                      rule += " off-session";
@@ -1174,11 +1178,26 @@ string TrendText(const int t, color &c)
    return "NONE";
   }
 
-void DrawPanel()
+bool gPanelHidden = false;
+uint gLastClickMs = 0;
+int  gLastClickX = 0, gLastClickY = 0;
+
+string HideKey() { return "ZVF_panel_hidden_" + IntegerToString(ChartID()); }
+
+void DrawPanel(const bool force = false)
   {
    if(!InpShowPanel) return;
+   if(gPanelHidden)
+     {
+      if(ObjectFind(0, PPRE + "HINT") >= 0) return;
+      ObjectsDeleteAll(0, PPRE);
+      gMaxRow = 0;
+      PText(PPRE + "HINT", InpPanelX + 2, InpPanelY, "ZION  (double-click chart to show panel)", C'120,130,150',
+            InpPanelFont - 1, ANCHOR_LEFT_UPPER, "Arial");
+      return;
+     }
    uint ms = GetTickCount();
-   if(gLastPanelMs != 0 && ms - gLastPanelMs < 500) return;
+   if(!force && gLastPanelMs != 0 && ms - gLastPanelMs < 500) return;
    gLastPanelMs = ms;
 
    string bg = PPRE + "BG";
@@ -1274,6 +1293,47 @@ void DrawPanel()
    ObjectSetInteger(0, bg, OBJPROP_BACK, false);
    ObjectSetInteger(0, bg, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, bg, OBJPROP_HIDDEN, true);
+  }
+
+//+------------------------------------------------------------------+
+//| Click the panel title to hide it; double-click the chart to       |
+//| bring it back. The state is remembered per chart.                 |
+//+------------------------------------------------------------------+
+void SetPanelHidden(const bool hidden)
+  {
+   gPanelHidden = hidden;
+   GlobalVariableSet(HideKey(), hidden ? 1 : 0);
+   ObjectsDeleteAll(0, PPRE);
+   gMaxRow = 0;
+   gLastPanelMs = 0;
+   DrawPanel(true);
+   ChartRedraw(0);
+  }
+
+void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
+  {
+   if(id != CHARTEVENT_CLICK || !InpShowPanel) return;
+   int  x = (int)lparam, y = (int)dparam;
+   uint now = GetTickCount();
+   if(!gPanelHidden)
+     {
+      if(x >= InpPanelX && x <= InpPanelX + InpPanelWidth && y >= InpPanelY && y <= InpPanelY + 40)
+        {
+         SetPanelHidden(true);
+         gLastClickMs = 0;   // the hiding click does not count towards a double-click
+         return;
+        }
+     }
+   else if(gLastClickMs != 0 && now - gLastClickMs <= 450 &&
+           MathAbs(x - gLastClickX) <= 12 && MathAbs(y - gLastClickY) <= 12)
+     {
+      SetPanelHidden(false);
+      gLastClickMs = 0;
+      return;
+     }
+   gLastClickMs = now;
+   gLastClickX = x;
+   gLastClickY = y;
   }
 
 //+------------------------------------------------------------------+
@@ -1425,12 +1485,13 @@ int OnCalculate(const int rates_total,
       int gB = (trigB ? SignalGrade(1,  bar, i, trendDir, eB, t1B, (int)ScoreB[i], whyB) : GRADE_NONE);
       int gS = (trigS ? SignalGrade(-1, bar, i, trendDir, eS, t1S, (int)ScoreS[i], whyS) : GRADE_NONE);
 
-      bool free  = (idea.state == IDEA_IDLE);
+      bool free  = (idea.state == IDEA_IDLE || (InpReplacePending && idea.state == IDEA_PENDING));
       bool coolB = Cooled(bar.t, gLastBuy,  InpCooldown) && Cooled(bar.t, gLastSell, 3);
       bool coolS = Cooled(bar.t, gLastSell, InpCooldown) && Cooled(bar.t, gLastBuy,  3);
 
       if(free && GradeOn(gB) && coolB)
         {
+         if(idea.state == IDEA_PENDING) EndIdea(" [REPLACED]");
          BuyBuf[i] = low[i];
          BuyClr[i] = gB;
          gLastBuy  = bar.t;
@@ -1439,6 +1500,7 @@ int OnCalculate(const int rates_total,
         }
       else if(free && GradeOn(gS) && coolS)
         {
+         if(idea.state == IDEA_PENDING) EndIdea(" [REPLACED]");
          SellBuf[i] = high[i];
          SellClr[i] = gS;
          gLastSell  = bar.t;
