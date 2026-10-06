@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Mt.ZionPro Scalp EA"
 #property link      ""
-#property version   "1.60"
+#property version   "1.61"
 
 #include <Trade/Trade.mqh>
 
@@ -127,8 +127,10 @@ input bool   InpRunnerTrailOn  = false;   // after TP1 trail the runner by ATR
 input double InpRunnerTrailATR = 1.5;     // runner trail distance in ATR (chart timeframe)
 
 input group "=== Scalp mode (reduced TP1, no TP2) ==="
-input bool   InpScalpOn       = true;     // on = one target at InpScalpPct % of the way to TP1; no TP2 / partial / runner; SL NOT widened
+input bool   InpScalpOn       = true;     // on = one target at InpScalpPct % of the way to TP1; no TP2 / partial / runner; SL widened only by InpScalpWidenPct (toggle)
 input double InpScalpPct      = 50.0;     // target = this % of the entry -> TP1 distance
+input bool   InpScalpWidenOn  = true;     // widen the scalp SL (target unchanged)
+input double InpScalpWidenPct = 50.0;     // widen the scalp SL by this % of the entry -> SL distance
 input int    InpScalpReMax    = 2;        // after the target is hit: new trades (same SL, same target) when price comes back to the entry and the signal is still valid (uses the window / trend settings below)
 
 input group "=== Re-entry after TP1 (price back at entry) ==="
@@ -1206,6 +1208,15 @@ double MarketTP2(const int dir, const double price, const double sl, const bool 
    return NormalizeDouble(tp, _Digits);
   }
 
+// scalp SL: the original SL, optionally widened by InpScalpWidenPct % of the entry -> SL distance
+// (the target is still measured from the original SL, so it does not move)
+double ScalpSL(const int dir, const double entry, const double slR)
+  {
+   if(!InpScalpWidenOn || InpScalpWidenPct <= 0) return slR;
+   double ext = MathAbs(entry - slR) * InpScalpWidenPct / 100.0;
+   return (dir > 0 ? slR - ext : slR + ext);
+  }
+
 // scalp target: InpScalpPct % of the way from the entry price to TP1
 double ScalpTP(const double from, const double tp1)
   {
@@ -1222,7 +1233,7 @@ bool OpenEntryAs(const int dir, const double lotIn, const string tag,
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ms  = MinStop();
-   double sl  = NormalizeDouble(InpScalpOn ? idea.slR : idea.sl, _Digits);   // widened SL (scalp mode: original SL)
+   double sl  = NormalizeDouble(InpScalpOn ? ScalpSL(dir, idea.entry, idea.slR) : idea.sl, _Digits);   // widened SL (scalp: own widening toggle)
    double slR = NormalizeDouble(idea.slR, _Digits);   // original SL: TPs from fill use this R
    string cmt = TradeComment(IntegerToString((long)idea.signalTime), (idea.re ? "|RE" : ""));
 
@@ -2107,7 +2118,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "Mt.ZionPro Scalp EA", C_TXT, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.60  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.61  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -2140,7 +2151,10 @@ void UpdatePanel(const bool force = false)
    if(InpScalpOn)
      {
       PRow("Scalp mode", StringFormat("TP %.0f%% of TP1, no TP2", MathMax(1.0, MathMin(100.0, InpScalpPct))), C_UP);
-      PRow("SL widen", "OFF (scalp mode)", C_MUTE);
+      if(InpScalpWidenOn && InpScalpWidenPct > 0)
+         PRow("SL widen", StringFormat("+%.0f%%  (target unchanged)", InpScalpWidenPct), C_WARN);
+      else
+         PRow("SL widen", "OFF", C_MUTE);
      }
    else
      {

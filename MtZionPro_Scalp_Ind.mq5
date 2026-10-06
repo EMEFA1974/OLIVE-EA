@@ -1,6 +1,6 @@
 #property copyright "Mt.ZionPro Scalp Ind"
 #property link      ""
-#property version   "1.97"
+#property version   "1.98"
 #property indicator_chart_window
 #property indicator_buffers 4
 #property indicator_plots   4
@@ -115,8 +115,10 @@ input bool       InpShowFiltered = true;          // grey grade letter on signal
 input color      InpFiltColor    = clrSilver;
 
 input group "=== Scalp mode (set the same as the EA) ==="
-input bool   InpScalpOn         = true;   // on = zone / stats / alerts use the EA's scalp levels: target at InpScalpPct % of the way to TP1, no TP2, SL not widened (signals unchanged)
+input bool   InpScalpOn         = true;   // on = zone / stats / alerts use the EA's scalp levels: target at InpScalpPct % of the way to TP1, no TP2, SL widened only by InpScalpWidenPct (signals unchanged)
 input double InpScalpPct        = 50.0;   // target = this % of the entry -> TP1 distance
+input bool   InpScalpWidenOn    = true;   // widen the scalp SL (target unchanged)
+input double InpScalpWidenPct   = 50.0;   // widen the scalp SL by this % of the entry -> SL distance
 input int    InpScalpReMax      = 2;      // re-entries per signal after the target is hit (price back at the entry, signal still valid)
 input int    InpTP1ReBars       = 24;     // re-entry only within this many bars after the target
 input bool   InpTP1ReTrendAgree = false;  // true = EMA trend (filter TF1 + TF2) must point with the trade; false = must not be against it
@@ -612,7 +614,7 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int tren
 //+------------------------------------------------------------------+
 //| Scalp mode: the EA's scalp trades, followed bar by bar for the   |
 //| zone and the stats. One target at InpScalpPct % of the way to    |
-//| TP1, original SL; after the target, re-entries when price comes  |
+//| TP1, SL widened per InpScalpWidenPct; re-entries when price comes|
 //| back to the entry while the signal is still valid. It does NOT   |
 //| change the signal engine, so signals still match the EA.         |
 //+------------------------------------------------------------------+
@@ -633,6 +635,15 @@ void ScalpReset()
    gs.active = gs.waitRe = false;
    gs.dir = 0; gs.sigT = 0; gs.count = 0; gs.until = 0;
    gs.entry = gs.sl = gs.tp = 0;
+  }
+
+// scalp SL: the original SL, optionally widened by InpScalpWidenPct % of the entry -> SL distance
+// (the target is still measured from the original SL, so it does not move)
+double ScalpSL(const int dir, const double entry, const double slR)
+  {
+   if(!InpScalpWidenOn || InpScalpWidenPct <= 0) return slR;
+   double ext = MathAbs(entry - slR) * InpScalpWidenPct / 100.0;
+   return (dir > 0 ? slR - ext : slR + ext);
   }
 
 double ScalpTP(const double from, const double tp1)
@@ -697,7 +708,7 @@ void ScalpAfterSignals(const Candle &bar, const bool newSignal)
       gs.sigT   = idea.signalTime;
       gs.dir    = idea.dir;
       gs.entry  = idea.entry;
-      gs.sl     = idea.slR;           // SL not widened
+      gs.sl     = ScalpSL(idea.dir, idea.entry, idea.slR);   // scalp SL (own widening toggle)
       gs.tp     = ScalpTP(idea.entry, idea.tp1);
       gs.count  = 0;
       gs.active = true;
@@ -1238,7 +1249,7 @@ void DrawLiveZone()
    if(InpScalpOn)
      {
       // scalp: original SL and one target; no TP2
-      double zsl = (gz.slR > 0 ? gz.slR : gz.sl);
+      double zsl = (gz.slR > 0 ? ScalpSL(gz.dir, gz.entry, gz.slR) : gz.sl);
       double ztp = ScalpTP(gz.entry, gz.tp1);
       PutRect(ZPRE+"ZSL0", t1, gz.entry, t2, zsl, Faint(InpZoneSL,  InpZoneOpacity));
       PutRect(ZPRE+"ZT10", t1, gz.entry, t2, ztp, Faint(InpZoneTP1, InpZoneOpacity));
@@ -1451,7 +1462,7 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "MT.ZIONPRO SCALP IND", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.97  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.98  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -1516,7 +1527,7 @@ void DrawPanel(const bool force = false)
       PRow("Entry", Px(idea.entry), C_TXT);
       if(InpScalpOn)
         {
-         PRow("SL", Px(idea.slR), InpLineSL);
+         PRow("SL", Px(ScalpSL(idea.dir, idea.entry, idea.slR)), InpLineSL);
          PRow(StringFormat("TP (%.0f%% of TP1)", MathMax(1.0, MathMin(100.0, InpScalpPct))), Px(ScalpTP(idea.entry, idea.tp1)), InpLineTP1);
         }
       else
@@ -1835,7 +1846,7 @@ void FireAlert(const string side, const datetime barTime, const double barClose)
    if(idea.state != IDEA_IDLE && InpScalpOn)
       extra = StringFormat(" | EN %s SL %s TP %s (scalp)",
                            DoubleToString(idea.entry, _Digits),
-                           DoubleToString(idea.slR, _Digits),
+                           DoubleToString(ScalpSL(idea.dir, idea.entry, idea.slR), _Digits),
                            DoubleToString(ScalpTP(idea.entry, idea.tp1), _Digits));
    else if(idea.state != IDEA_IDLE)
       extra = StringFormat(" | EN %s SL %s TP1 %s TP2 %s",
