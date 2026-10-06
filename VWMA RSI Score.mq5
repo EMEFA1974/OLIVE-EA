@@ -4,23 +4,23 @@
 //| 5-point bull/bear score built from four VWMAs (on High, tick     |
 //| volume) and three RSIs, plus session / day / week levels.        |
 //|                                                                  |
-//| Score checks (BUY votes; SELL is the mirror, bear = 5 - bull):   |
-//|   1. RSI1 (14) > RsiMid                                          |
-//|   2. RSI2 (9)  > RsiMid                                          |
-//|   3. RSI3 (7)  > RsiMid                                          |
-//|   4. Close (or High) > VWMA1 (85, red)                           |
-//|   5. VWMA3 (18, yellow) > VWMA2 (37, orange)                     |
-//| VWMA4 (6, green) is not scored, but by default it gates signals: |
-//| a BUY also needs green > yellow, a SELL green < yellow.          |
-//| An arrow prints on the first bar where score >= MinScore and the |
-//| gate agrees. The same direction cannot fire again until its      |
-//| score has dropped to ReArmScore or lower.                        |
+//| Score checks (bull and bear are counted separately):             |
+//|   1-3. RSI 14 / 9 / 7:  bull > RsiMid, bear < RsiSellBelow       |
+//|        (bear < RsiMid when the neutral zone is off)              |
+//|   4.   Red VWMA1 (85): bull = whole bar above (Low > red),       |
+//|        bear = whole bar below (High < red); or Close/High vs red |
+//|        when UseWholeBarCheck is off                              |
+//|   5.   Yellow VWMA3 (18) vs orange VWMA2 (37)                    |
+//| Signal = score >= MinScore plus optional gates: green VWMA4 vs   |
+//| yellow, red line slope, RSI14 not overbought/oversold. The same  |
+//| direction re-arms only after its score fell to ReArmScore.       |
+//| The panel scores every past signal (TP/SL in ATR multiples).     |
 //+------------------------------------------------------------------+
-#property version     "1.00"
+#property version     "1.10"
 #property description "Four VWMAs on High + three RSIs -> 5-point bull/bear score."
 #property description "Arrow on the bar where the score first reaches MinScore."
 #property indicator_chart_window
-#property indicator_buffers 13
+#property indicator_buffers 15
 #property indicator_plots   6
 
 #property indicator_label1  "VWMA High 1"
@@ -73,9 +73,11 @@ input int               VWMA4             = 6;     // VWMA4 period (green, displ
 input int               RSI1              = 14;    // RSI1 period
 input int               RSI2              = 9;     // RSI2 period
 input int               RSI3              = 7;     // RSI3 period
-input double            RsiOB             = 80.0;  // RSI overbought (used by OB/OS filter)
-input double            RsiMid            = 55.0;  // RSI bull/bear threshold
-input double            RsiOS             = 20.0;  // RSI oversold (used by OB/OS filter)
+input double            RsiOB             = 70.0;  // RSI14 overbought: no buys above (OB/OS filter)
+input double            RsiMid            = 55.0;  // RSI bull threshold (votes bull above)
+input double            RsiOS             = 30.0;  // RSI14 oversold: no sells below (OB/OS filter)
+input bool              UseRsiNeutralZone = true;  // Bear vote needs RSI < RsiSellBelow (else < RsiMid)
+input double            RsiSellBelow      = 45.0;  // RSI bear threshold when neutral zone is on
 input int               SydS              = 21;    // Sydney start hour (UTC)
 input int               SydE              = 6;     // Sydney end hour (UTC)
 input int               AsiS              = 0;     // Asian start hour (UTC)
@@ -84,10 +86,18 @@ input int               LonS              = 7;     // London start hour (UTC)
 input int               LonE              = 16;    // London end hour (UTC)
 input int               NyS               = 12;    // New York start hour (UTC)
 input int               NyE               = 21;    // New York end hour (UTC)
-input ENUM_CHECK4_PRICE Check4Price       = CHECK4_CLOSE; // Price compared with VWMA1 (check 4)
+input bool              UseWholeBarCheck  = true;  // Check 4: whole bar beyond red (Low > red / High < red)
+input ENUM_CHECK4_PRICE Check4Price       = CHECK4_CLOSE; // Check 4 price when whole-bar check is off
 input bool              UseFastGate       = true;  // Signal also needs green VWMA4 vs yellow VWMA3 to agree
-input int               ReArmScore        = 3;     // Repeat same-direction signal only after its score fell to this
-input bool              UseObOsFilter     = false; // Block buys if any RSI > RsiOB, sells if any RSI < RsiOS
+input bool              UseRedSlope       = true;  // Buy only while red VWMA1 rises, sell only while it falls
+input int               RedSlopeBars      = 5;     // Bars back for the red slope comparison
+input int               ReArmScore        = 2;     // Repeat same-direction signal only after its score fell to this
+input bool              UseObOsFilter     = true;  // Block buys if RSI14 > RsiOB, sells if RSI14 < RsiOS
+input bool              ShowStats         = true;  // Score past signals on the panel
+input int               StatsAtrPeriod    = 14;    // ATR period for stats TP/SL
+input double            StatsTpAtr        = 2.0;   // Stats take profit (x ATR)
+input double            StatsSlAtr        = 1.0;   // Stats stop loss (x ATR)
+input int               StatsMaxBars      = 48;    // Bars to wait for TP/SL before a signal counts as expired
 input bool              SignalOnClosedBar = true;  // Arrows/alerts on closed bars only (no repaint)
 input bool              ShowPanel         = true;  // Show info panel
 input bool              ShowLevels        = true;  // Draw PDH/PDL and PWH/PWL lines
@@ -98,13 +108,17 @@ input int               PanelFontSize     = 9;     // Panel font size
 double V1[], V2[], V3[], V4[];
 double BuyArr[], SellArr[];
 double R1[], R2[], R3[];
-double BullScore[];
+double BullScore[], BearScore[];
 double Sig[], ArmBuy[], ArmSell[];
+double Atr[];
 
 int      hR1 = INVALID_HANDLE, hR2 = INVALID_HANDLE, hR3 = INVALID_HANDLE;
+int      hAtr = INVALID_HANDLE;
 int      gMaxPeriod = 0;
 int      gReArm     = 3;
 datetime gLastAlertBar = 0;
+datetime gLastStatsBar = 0;
+int      gStatWins = 0, gStatLosses = 0, gStatExpired = 0;
 
 const string PFX = "VRS_";
 
@@ -114,6 +128,16 @@ int OnInit()
    if(VWMA1 < 1 || VWMA2 < 1 || VWMA3 < 1 || VWMA4 < 1 || RSI1 < 1 || RSI2 < 1 || RSI3 < 1)
      {
       Print("All periods must be >= 1");
+      return INIT_PARAMETERS_INCORRECT;
+     }
+   if(StatsAtrPeriod < 1 || RedSlopeBars < 1 || StatsMaxBars < 1 || StatsTpAtr <= 0 || StatsSlAtr <= 0)
+     {
+      Print("Stats/slope settings must be positive");
+      return INIT_PARAMETERS_INCORRECT;
+     }
+   if(UseRsiNeutralZone && RsiSellBelow > RsiMid)
+     {
+      Print("RsiSellBelow must not be above RsiMid");
       return INIT_PARAMETERS_INCORRECT;
      }
    if(MinScore < 1 || MinScore > 5)
@@ -135,6 +159,8 @@ int OnInit()
    SetIndexBuffer(10, Sig,      INDICATOR_CALCULATIONS);
    SetIndexBuffer(11, ArmBuy,   INDICATOR_CALCULATIONS);
    SetIndexBuffer(12, ArmSell,  INDICATOR_CALCULATIONS);
+   SetIndexBuffer(13, BearScore, INDICATOR_CALCULATIONS);
+   SetIndexBuffer(14, Atr,      INDICATOR_CALCULATIONS);
 
    for(int p = 0; p < 6; p++)
       PlotIndexSetDouble(p, PLOT_EMPTY_VALUE, EMPTY_VALUE);
@@ -153,14 +179,16 @@ int OnInit()
    hR1 = iRSI(_Symbol, _Period, RSI1, PRICE_CLOSE);
    hR2 = iRSI(_Symbol, _Period, RSI2, PRICE_CLOSE);
    hR3 = iRSI(_Symbol, _Period, RSI3, PRICE_CLOSE);
-   if(hR1 == INVALID_HANDLE || hR2 == INVALID_HANDLE || hR3 == INVALID_HANDLE)
+   hAtr = iATR(_Symbol, _Period, StatsAtrPeriod);
+   if(hR1 == INVALID_HANDLE || hR2 == INVALID_HANDLE || hR3 == INVALID_HANDLE || hAtr == INVALID_HANDLE)
      {
-      Print("Failed to create RSI handles");
+      Print("Failed to create RSI/ATR handles");
       return INIT_FAILED;
      }
 
    gMaxPeriod = MathMax(MathMax(VWMA1, VWMA2), MathMax(VWMA3, VWMA4));
    gMaxPeriod = MathMax(gMaxPeriod, MathMax(RSI1, MathMax(RSI2, RSI3)));
+   gMaxPeriod = MathMax(gMaxPeriod, MathMax(StatsAtrPeriod, VWMA1 - 1 + RedSlopeBars));
    gReArm     = MathMax(0, MathMin(ReArmScore, MinScore - 1));
    return INIT_SUCCEEDED;
   }
@@ -172,6 +200,7 @@ void OnDeinit(const int reason)
    if(hR1 != INVALID_HANDLE) IndicatorRelease(hR1);
    if(hR2 != INVALID_HANDLE) IndicatorRelease(hR2);
    if(hR3 != INVALID_HANDLE) IndicatorRelease(hR3);
+   if(hAtr != INVALID_HANDLE) IndicatorRelease(hAtr);
   }
 
 //+------------------------------------------------------------------+
@@ -192,16 +221,35 @@ double Vwma(const int i, const int period, const double &high[], const long &vol
   }
 
 //+------------------------------------------------------------------+
-int BullCount(const int i, const double &high[], const double &close[])
+//| Count bull and bear votes for bar i. With the neutral RSI zone   |
+//| or the whole-bar check a check can vote for neither side.        |
+//+------------------------------------------------------------------+
+void CountVotes(const int i, const double &high[], const double &low[], const double &close[],
+                int &bull, int &bear)
   {
-   int bull = 0;
-   if(R1[i] > RsiMid) bull++;
-   if(R2[i] > RsiMid) bull++;
-   if(R3[i] > RsiMid) bull++;
-   double price = (Check4Price == CHECK4_HIGH) ? high[i] : close[i];
-   if(price > V1[i]) bull++;
-   if(V3[i] > V2[i]) bull++;
-   return bull;
+   double sellLvl = UseRsiNeutralZone ? RsiSellBelow : RsiMid;
+   double rsi[3];
+   rsi[0] = R1[i]; rsi[1] = R2[i]; rsi[2] = R3[i];
+   bull = 0;
+   bear = 0;
+   for(int k = 0; k < 3; k++)
+     {
+      if(rsi[k] > RsiMid)       bull++;
+      else if(rsi[k] < sellLvl) bear++;
+     }
+   if(UseWholeBarCheck)
+     {
+      if(low[i] > V1[i])       bull++;
+      else if(high[i] < V1[i]) bear++;
+     }
+   else
+     {
+      double price = (Check4Price == CHECK4_HIGH) ? high[i] : close[i];
+      if(price > V1[i])      bull++;
+      else if(price < V1[i]) bear++;
+     }
+   if(V3[i] > V2[i])      bull++;
+   else if(V3[i] < V2[i]) bear++;
   }
 
 //+------------------------------------------------------------------+
@@ -209,10 +257,10 @@ int BullCount(const int i, const double &high[], const double &close[])
 //+------------------------------------------------------------------+
 int DirScore(const int i, const int dir)
   {
-   if(i < 0 || BullScore[i] == EMPTY_VALUE)
+   if(i < 0)
       return 0;
-   int bull = (int)BullScore[i];
-   return (dir > 0) ? bull : 5 - bull;
+   double v = (dir > 0) ? BullScore[i] : BearScore[i];
+   return (v == EMPTY_VALUE) ? 0 : (int)v;
   }
 
 //+------------------------------------------------------------------+
@@ -224,13 +272,14 @@ bool Aligned(const int i, const int dir)
       return false;
    if(UseFastGate && (dir > 0 ? V4[i] <= V3[i] : V4[i] >= V3[i]))
       return false;
-   if(UseObOsFilter)
+   if(UseRedSlope)
      {
-      if(dir > 0 && (R1[i] > RsiOB || R2[i] > RsiOB || R3[i] > RsiOB))
-         return false;
-      if(dir < 0 && (R1[i] < RsiOS || R2[i] < RsiOS || R3[i] < RsiOS))
+      int j = i - RedSlopeBars;
+      if(j < VWMA1 - 1 || (dir > 0 ? V1[i] <= V1[j] : V1[i] >= V1[j]))
          return false;
      }
+   if(UseObOsFilter && (dir > 0 ? R1[i] > RsiOB : R1[i] < RsiOS))
+      return false;
    return true;
   }
 
@@ -260,7 +309,7 @@ int OnCalculate(const int rates_total,
    if(rates_total < gMaxPeriod + 2)
       return 0;
    if(BarsCalculated(hR1) < rates_total || BarsCalculated(hR2) < rates_total ||
-      BarsCalculated(hR3) < rates_total)
+      BarsCalculated(hR3) < rates_total || BarsCalculated(hAtr) < rates_total)
       return prev_calculated;
 
    bool full = (prev_calculated <= 0 || prev_calculated > rates_total);
@@ -268,6 +317,7 @@ int OnCalculate(const int rates_total,
    if(CopyBuffer(hR1, 0, 0, to_copy, R1) <= 0) return 0;
    if(CopyBuffer(hR2, 0, 0, to_copy, R2) <= 0) return 0;
    if(CopyBuffer(hR3, 0, 0, to_copy, R3) <= 0) return 0;
+   if(CopyBuffer(hAtr, 0, 0, to_copy, Atr) <= 0) return 0;
 
    int start = full ? 0 : prev_calculated - 1;
    for(int i = start; i < rates_total; i++)
@@ -283,11 +333,15 @@ int OnCalculate(const int rates_total,
       if(i < gMaxPeriod)
         {
          BullScore[i] = EMPTY_VALUE;
+         BearScore[i] = EMPTY_VALUE;
          ArmBuy[i]    = 1;
          ArmSell[i]   = 1;
          continue;
         }
-      BullScore[i] = BullCount(i, high, close);
+      int bull, bear;
+      CountVotes(i, high, low, close, bull, bear);
+      BullScore[i] = bull;
+      BearScore[i] = bear;
 
       //--- one signal per move: fire when armed and aligned, re-arm once the score has faded
       bool armB = (ArmBuy[i - 1] > 0.5);
@@ -321,8 +375,14 @@ int OnCalculate(const int rates_total,
       if(sig != 0)
         {
          gLastAlertBar = time[ab];
-         SendAlerts(sig, (int)BullScore[ab]);
+         SendAlerts(sig, DirScore(ab, sig));
         }
+     }
+
+   if(ShowStats && (full || time[rates_total - 1] != gLastStatsBar))
+     {
+      gLastStatsBar = time[rates_total - 1];
+      ComputeStats(rates_total, high, low, close);
      }
 
    if(ShowLevels)
@@ -333,15 +393,52 @@ int OnCalculate(const int rates_total,
   }
 
 //+------------------------------------------------------------------+
-void SendAlerts(const int sig, const int bull)
+void SendAlerts(const int sig, const int score)
   {
-   int score = (sig > 0) ? bull : 5 - bull;
    string msg = StringFormat("%s %s: %s signal (score %d/5)",
                              _Symbol, StringSubstr(EnumToString((ENUM_TIMEFRAMES)_Period), 7),
                              (sig > 0) ? "BUY" : "SELL", score);
    if(AlertPopup) Alert(msg);
    if(AlertPush)  SendNotification(msg);
    if(AlertEmail) SendMail("VWMA RSI Score", msg);
+  }
+
+//+------------------------------------------------------------------+
+//| Replay every closed-bar signal: entry at the signal bar's close, |
+//| TP/SL in ATR multiples. If both are hit in one bar, count a loss.|
+//| Spread and commission are ignored.                               |
+//+------------------------------------------------------------------+
+void ComputeStats(const int total, const double &high[], const double &low[], const double &close[])
+  {
+   gStatWins = 0;
+   gStatLosses = 0;
+   gStatExpired = 0;
+   for(int i = gMaxPeriod; i < total - 1; i++)
+     {
+      int dir = (int)Sig[i];
+      if(dir == 0 || Atr[i] <= 0.0 || Atr[i] == EMPTY_VALUE)
+         continue;
+      double entry = close[i];
+      double tp = entry + dir * StatsTpAtr * Atr[i];
+      double sl = entry - dir * StatsSlAtr * Atr[i];
+      int outcome = 0;
+      int last = MathMin(total - 1, i + StatsMaxBars);
+      for(int j = i + 1; j <= last && outcome == 0; j++)
+        {
+         bool hitSl = (dir > 0) ? low[j] <= sl : high[j] >= sl;
+         bool hitTp = (dir > 0) ? high[j] >= tp : low[j] <= tp;
+         if(hitSl)
+            outcome = -1;
+         else if(hitTp)
+            outcome = 1;
+        }
+      if(outcome > 0)
+         gStatWins++;
+      else if(outcome < 0)
+         gStatLosses++;
+      else if(i + StatsMaxBars <= total - 1)
+         gStatExpired++;
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -433,7 +530,6 @@ void DrawPanel(const int total, const datetime &time[], const double &high[], co
   {
    int rowH = PanelFontSize * 2;
    int colW = PanelFontSize * 14;
-   int rows = 15;
    string bg = PFX + "BG";
    if(ObjectFind(0, bg) < 0)
      {
@@ -448,11 +544,10 @@ void DrawPanel(const int total, const datetime &time[], const double &high[], co
    ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, PanelX);
    ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, PanelY);
    ObjectSetInteger(0, bg, OBJPROP_XSIZE, colW + PanelFontSize * 24);
-   ObjectSetInteger(0, bg, OBJPROP_YSIZE, rows * rowH + PanelFontSize);
 
-   string names[16];
-   string vals[16];
-   color  cols[16];
+   string names[20];
+   string vals[20];
+   color  cols[20];
    int r = 0;
    double hi, lo;
 
@@ -481,13 +576,18 @@ void DrawPanel(const int total, const datetime &time[], const double &high[], co
    int    pers[3];
    rsis[0] = R1[last]; rsis[1] = R2[last]; rsis[2] = R3[last];
    pers[0] = RSI1;     pers[1] = RSI2;     pers[2] = RSI3;
-   string mid = DoubleToString(RsiMid, 0);
+   double sellLvl = UseRsiNeutralZone ? RsiSellBelow : RsiMid;
    for(int k = 0; k < 3; k++)
      {
-      bool above = rsis[k] > RsiMid;
       names[r] = "RSI " + IntegerToString(pers[k]);
-      vals[r]  = DoubleToString(rsis[k], 1) + (above ? " >" : " <") + mid;
-      cols[r++] = above ? clrLime : clrOrange;
+      vals[r]  = DoubleToString(rsis[k], 1);
+      if(rsis[k] > RsiMid)
+        { vals[r] += " >" + DoubleToString(RsiMid, 0); cols[r] = clrLime; }
+      else if(rsis[k] < sellLvl)
+        { vals[r] += " <" + DoubleToString(sellLvl, 0); cols[r] = clrOrange; }
+      else
+        { vals[r] += " neutral"; cols[r] = clrGray; }
+      r++;
      }
 
    //--- basket of open positions on this symbol
@@ -530,8 +630,8 @@ void DrawPanel(const int total, const datetime &time[], const double &high[], co
    cols[r++] = clrWhite;
 
    //--- score and bias
-   int bull = (BullScore[last] == EMPTY_VALUE) ? 0 : (int)BullScore[last];
-   int bear = 5 - bull;
+   int bull = DirScore(last, 1);
+   int bear = DirScore(last, -1);
    string bias = "NEUTRAL";
    color  bc   = clrGray;
    if(bull >= MinScore)
@@ -547,6 +647,24 @@ void DrawPanel(const int total, const datetime &time[], const double &high[], co
    names[r] = "Bear Score";
    vals[r]  = IntegerToString(bear) + " / 5";
    cols[r++] = (bear >= MinScore) ? clrRed : clrGray;
+
+   if(ShowStats)
+     {
+      int done = gStatWins + gStatLosses;
+      double rr = StatsTpAtr / StatsSlAtr;
+      names[r] = "Signals W/L/exp";
+      vals[r]  = StringFormat("%d / %d / %d", gStatWins, gStatLosses, gStatExpired);
+      cols[r++] = clrWhite;
+      names[r] = "Win rate";
+      vals[r]  = (done > 0) ? DoubleToString(100.0 * gStatWins / done, 1) + "%  (TP " +
+                 DoubleToString(StatsTpAtr, 1) + " / SL " + DoubleToString(StatsSlAtr, 1) + " ATR)" : "-";
+      cols[r++] = clrWhite;
+      double avgR = (done > 0) ? (gStatWins * rr - gStatLosses) / done : 0.0;
+      names[r] = "Avg R per trade";
+      vals[r]  = (done > 0) ? StringFormat("%+.2f R", avgR) : "-";
+      cols[r++] = (avgR > 0) ? clrLime : (avgR < 0 ? clrRed : clrGray);
+     }
+   ObjectSetInteger(0, bg, OBJPROP_YSIZE, r * rowH + PanelFontSize);
 
    for(int k = 0; k < r; k++)
      {
