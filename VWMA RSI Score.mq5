@@ -10,14 +10,17 @@
 //|   3. RSI3 (7)  > RsiMid                                          |
 //|   4. Close (or High) > VWMA1 (85, red)                           |
 //|   5. VWMA3 (18, yellow) > VWMA2 (37, orange)                     |
-//| VWMA4 (6, green) is drawn but not scored.                        |
-//| An arrow prints on the first bar where the score reaches MinScore|
+//| VWMA4 (6, green) is not scored, but by default it gates signals: |
+//| a BUY also needs green > yellow, a SELL green < yellow.          |
+//| An arrow prints on the first bar where score >= MinScore and the |
+//| gate agrees. The same direction cannot fire again until its      |
+//| score has dropped to ReArmScore or lower.                        |
 //+------------------------------------------------------------------+
 #property version     "1.00"
 #property description "Four VWMAs on High + three RSIs -> 5-point bull/bear score."
 #property description "Arrow on the bar where the score first reaches MinScore."
 #property indicator_chart_window
-#property indicator_buffers 10
+#property indicator_buffers 13
 #property indicator_plots   6
 
 #property indicator_label1  "VWMA High 1"
@@ -61,7 +64,8 @@ input bool              ShowSignals       = true;  // Draw signal arrows
 input bool              AlertPopup        = true;  // Popup alert on signal
 input bool              AlertPush         = false; // Push notification on signal
 input bool              AlertEmail        = false; // Email on signal
-input int               ServerUtcOffset   = 3;     // broker server time minus UTC, in hours
+input bool              AutoServerOffset  = true;  // Detect broker server time offset automatically
+input int               ServerUtcOffset   = 3;     // broker server time minus UTC, in hours (if not auto)
 input int               VWMA1             = 85;    // VWMA1 period (red, scored vs price)
 input int               VWMA2             = 37;    // VWMA2 period (orange)
 input int               VWMA3             = 18;    // VWMA3 period (yellow)
@@ -81,6 +85,8 @@ input int               LonE              = 16;    // London end hour (UTC)
 input int               NyS               = 12;    // New York start hour (UTC)
 input int               NyE               = 21;    // New York end hour (UTC)
 input ENUM_CHECK4_PRICE Check4Price       = CHECK4_CLOSE; // Price compared with VWMA1 (check 4)
+input bool              UseFastGate       = true;  // Signal also needs green VWMA4 vs yellow VWMA3 to agree
+input int               ReArmScore        = 3;     // Repeat same-direction signal only after its score fell to this
 input bool              UseObOsFilter     = false; // Block buys if any RSI > RsiOB, sells if any RSI < RsiOS
 input bool              SignalOnClosedBar = true;  // Arrows/alerts on closed bars only (no repaint)
 input bool              ShowPanel         = true;  // Show info panel
@@ -93,9 +99,11 @@ double V1[], V2[], V3[], V4[];
 double BuyArr[], SellArr[];
 double R1[], R2[], R3[];
 double BullScore[];
+double Sig[], ArmBuy[], ArmSell[];
 
 int      hR1 = INVALID_HANDLE, hR2 = INVALID_HANDLE, hR3 = INVALID_HANDLE;
 int      gMaxPeriod = 0;
+int      gReArm     = 3;
 datetime gLastAlertBar = 0;
 
 const string PFX = "VRS_";
@@ -124,6 +132,9 @@ int OnInit()
    SetIndexBuffer(7, R2,        INDICATOR_CALCULATIONS);
    SetIndexBuffer(8, R3,        INDICATOR_CALCULATIONS);
    SetIndexBuffer(9, BullScore, INDICATOR_CALCULATIONS);
+   SetIndexBuffer(10, Sig,      INDICATOR_CALCULATIONS);
+   SetIndexBuffer(11, ArmBuy,   INDICATOR_CALCULATIONS);
+   SetIndexBuffer(12, ArmSell,  INDICATOR_CALCULATIONS);
 
    for(int p = 0; p < 6; p++)
       PlotIndexSetDouble(p, PLOT_EMPTY_VALUE, EMPTY_VALUE);
@@ -150,6 +161,7 @@ int OnInit()
 
    gMaxPeriod = MathMax(MathMax(VWMA1, VWMA2), MathMax(VWMA3, VWMA4));
    gMaxPeriod = MathMax(gMaxPeriod, MathMax(RSI1, MathMax(RSI2, RSI3)));
+   gReArm     = MathMax(0, MathMin(ReArmScore, MinScore - 1));
    return INIT_SUCCEEDED;
   }
 
@@ -193,15 +205,24 @@ int BullCount(const int i, const double &high[], const double &close[])
   }
 
 //+------------------------------------------------------------------+
-//| dir: +1 buy, -1 sell                                             |
+//| Score for a direction: +1 buy, -1 sell                           |
 //+------------------------------------------------------------------+
-bool Qualifies(const int i, const int dir)
+int DirScore(const int i, const int dir)
   {
    if(i < 0 || BullScore[i] == EMPTY_VALUE)
-      return false;
+      return 0;
    int bull = (int)BullScore[i];
-   int score = (dir > 0) ? bull : 5 - bull;
-   if(score < MinScore)
+   return (dir > 0) ? bull : 5 - bull;
+  }
+
+//+------------------------------------------------------------------+
+//| Score reached, fast gate agrees and OB/OS filter passes          |
+//+------------------------------------------------------------------+
+bool Aligned(const int i, const int dir)
+  {
+   if(DirScore(i, dir) < MinScore)
+      return false;
+   if(UseFastGate && (dir > 0 ? V4[i] <= V3[i] : V4[i] >= V3[i]))
       return false;
    if(UseObOsFilter)
      {
@@ -214,15 +235,14 @@ bool Qualifies(const int i, const int dir)
   }
 
 //+------------------------------------------------------------------+
-int SignalAt(const int i)
+//| Broker server time minus UTC, in seconds                         |
+//+------------------------------------------------------------------+
+long ServerOffsetSec()
   {
-   if(i < 1)
-      return 0;
-   if(Qualifies(i, 1) && !Qualifies(i - 1, 1))
-      return 1;
-   if(Qualifies(i, -1) && !Qualifies(i - 1, -1))
-      return -1;
-   return 0;
+   if(!AutoServerOffset)
+      return (long)ServerUtcOffset * 3600;
+   long d = (long)TimeTradeServer() - (long)TimeGMT();
+   return (long)MathRound(d / 1800.0) * 1800;
   }
 
 //+------------------------------------------------------------------+
@@ -259,19 +279,35 @@ int OnCalculate(const int rates_total,
       BuyArr[i]  = EMPTY_VALUE;
       SellArr[i] = EMPTY_VALUE;
 
+      Sig[i] = 0;
       if(i < gMaxPeriod)
         {
          BullScore[i] = EMPTY_VALUE;
+         ArmBuy[i]    = 1;
+         ArmSell[i]   = 1;
          continue;
         }
       BullScore[i] = BullCount(i, high, close);
 
+      //--- one signal per move: fire when armed and aligned, re-arm once the score has faded
+      bool armB = (ArmBuy[i - 1] > 0.5);
+      bool armS = (ArmSell[i - 1] > 0.5);
+      if(armB && Aligned(i, 1))
+        { Sig[i] = 1; armB = false; }
+      else if(armS && Aligned(i, -1))
+        { Sig[i] = -1; armS = false; }
+      if(DirScore(i, 1) <= gReArm)
+         armB = true;
+      if(DirScore(i, -1) <= gReArm)
+         armS = true;
+      ArmBuy[i]  = armB ? 1 : 0;
+      ArmSell[i] = armS ? 1 : 0;
+
       if(!ShowSignals || (SignalOnClosedBar && i == rates_total - 1))
          continue;
-      int sig = SignalAt(i);
-      if(sig > 0)
+      if(Sig[i] > 0)
          BuyArr[i] = low[i];
-      else if(sig < 0)
+      else if(Sig[i] < 0)
          SellArr[i] = high[i];
      }
 
@@ -281,7 +317,7 @@ int OnCalculate(const int rates_total,
       gLastAlertBar = time[ab];
    else if(time[ab] != gLastAlertBar)
      {
-      int sig = SignalAt(ab);
+      int sig = (int)Sig[ab];
       if(sig != 0)
         {
          gLastAlertBar = time[ab];
@@ -315,7 +351,7 @@ void SendAlerts(const int sig, const int bull)
 bool SessionHL(const int total, const datetime &time[], const double &high[], const double &low[],
                const int sH, const int eH, double &hi, double &lo)
   {
-   long off    = (long)ServerUtcOffset * 3600;
+   long off    = ServerOffsetSec();
    long nowUtc = (long)time[total - 1] - off;
    long st     = nowUtc - nowUtc % 86400 + (long)sH * 3600;
    if(st > nowUtc)
@@ -498,9 +534,9 @@ void DrawPanel(const int total, const datetime &time[], const double &high[], co
    int bear = 5 - bull;
    string bias = "NEUTRAL";
    color  bc   = clrGray;
-   if(Qualifies(last, 1))
+   if(bull >= MinScore)
      { bias = "STRONG BULLISH"; bc = clrLime; }
-   else if(Qualifies(last, -1))
+   else if(bear >= MinScore)
      { bias = "STRONG BEARISH"; bc = clrRed; }
    names[r] = "Bias";
    vals[r]  = bias;
