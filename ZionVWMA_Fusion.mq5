@@ -128,7 +128,7 @@ input bool   InpAutoDigits      = true;            // 3-digit gold: point inputs
 input group "=== Grades / signals ==="
 input bool   InpGradeA       = true;               // A grade (passes every filter) becomes a signal
 input bool   InpGradeB       = true;               // B grade (fails one filter) becomes a signal
-input bool   InpGradeC       = true;               // C grade (fails two or more) becomes a signal
+input bool   InpGradeC       = false;              // C grade (fails two or more) becomes a signal
 input bool   InpShowFiltered = true;               // grey grade letter where a toggled-off grade fired (hover = failed filters)
 input color  InpFiltColor    = clrSilver;
 input int    InpCooldown     = 8;                  // bars between signals in the same direction
