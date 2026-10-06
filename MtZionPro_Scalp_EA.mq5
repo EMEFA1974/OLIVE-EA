@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Mt.ZionPro Scalp EA"
 #property link      ""
-#property version   "1.61"
+#property version   "1.70"
 
 #include <Trade/Trade.mqh>
 
@@ -13,7 +13,8 @@ enum ENUM_ENTRY_TYPE
   {
    ENTRY_MARKET  = 0,  // MARKET: whole lot at market price on the signal
    ENTRY_PENDING = 1,  // PENDING: whole lot as a pending order at the indicator Entry
-   ENTRY_HYBRID  = 2   // HYBRID: whole lot at market now, TP1/TP2 from its own fill
+   ENTRY_HYBRID  = 2,  // HYBRID: whole lot at market now, TP1/TP2 from its own fill
+   ENTRY_SMART   = 3   // SMART: limit on a shallow pullback; chases at market if price runs away
   };
 
 enum ENUM_GRADE
@@ -25,7 +26,7 @@ enum ENUM_GRADE
 #define GRADE_NONE 3
 
 input group "=== EA ==="
-input ENUM_ENTRY_TYPE InpEntryType   = ENTRY_HYBRID;    // Entry type (MARKET / PENDING / HYBRID = 1 market trade, TP from its fill)
+input ENUM_ENTRY_TYPE InpEntryType   = ENTRY_HYBRID;    // Entry type (MARKET / PENDING / HYBRID = 1 market trade, TP from its fill / SMART)
 input long            InpMagic       = 26100401;
 input string          InpComment     = "Mt.ZionPro Scalp";
 input int             InpSlippagePts = 30;       // max slippage (points)
@@ -125,6 +126,12 @@ input bool   InpMoveBE         = true;    // move SL to entry after TP1
 input int    InpBELockPts      = 0;       // break-even SL = entry +/- this many points (covers costs)
 input bool   InpRunnerTrailOn  = false;   // after TP1 trail the runner by ATR
 input double InpRunnerTrailATR = 1.5;     // runner trail distance in ATR (chart timeframe)
+
+input group "=== SMART entry (Entry type = SMART) ==="
+input double InpSmartPullPct  = 25.0;     // limit at this % of the signal candle's range back from its close (toward the SL)
+input bool   InpSmartChase    = true;     // price runs away before the fill: cancel the limit and enter at market
+input double InpSmartRunPct   = 30.0;     // "runs away" = price moves this % of the way from the placing price to the TP
+input int    InpSmartBars     = 3;        // cancel an unfilled limit after this many bars
 
 input group "=== Scalp mode (reduced TP1, no TP2) ==="
 input bool   InpScalpOn       = true;     // on = one target at InpScalpPct % of the way to TP1; no TP2 / partial / runner; SL widened only by InpScalpWidenPct (toggle)
@@ -1226,8 +1233,12 @@ double ScalpTP(const double from, const double tp1)
 
 // One order. wantPending = pending at the indicator Entry (falls back to market when price is
 // already there); fromFill = TP1/TP2 measured from this order's own fill price (same R multiples).
+bool   gLastPending = false;   // last OpenEntryAs placed a pending order (not a market fill)
+ulong  gLastTicket  = 0;       // its order ticket
+double gLastTP      = 0;       // its TP
+
 bool OpenEntryAs(const int dir, const double lotIn, const string tag,
-                 const bool wantPending, const bool fromFill)
+                 const bool wantPending, const bool fromFill, const double entryAt = 0.0)
   {
    double lot = NormLot(lotIn);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -1238,20 +1249,20 @@ bool OpenEntryAs(const int dir, const double lotIn, const string tag,
    string cmt = TradeComment(IntegerToString((long)idea.signalTime), (idea.re ? "|RE" : ""));
 
    bool pending = wantPending;
-   double entry = NormalizeDouble(idea.entry, _Digits);
+   double entry = NormalizeDouble(entryAt > 0 ? entryAt : idea.entry, _Digits);   // SMART: own limit price
    ENUM_ORDER_TYPE otype = ORDER_TYPE_BUY;
    if(pending)
      {
       if(dir > 0)
         {
          if(entry < ask - ms)      otype = ORDER_TYPE_BUY_LIMIT;
-         else if(entry > ask + ms) otype = ORDER_TYPE_BUY_STOP;
-         else pending = false;     // price is at the entry already
+         else if(entry > ask + ms && entryAt <= 0) otype = ORDER_TYPE_BUY_STOP;
+         else pending = false;     // price is at (SMART: or better than) the entry already
         }
       else
         {
          if(entry > bid + ms)      otype = ORDER_TYPE_SELL_LIMIT;
-         else if(entry < bid - ms) otype = ORDER_TYPE_SELL_STOP;
+         else if(entry < bid - ms && entryAt <= 0) otype = ORDER_TYPE_SELL_STOP;
          else pending = false;
         }
      }
@@ -1263,7 +1274,8 @@ bool OpenEntryAs(const int dir, const double lotIn, const string tag,
       Log("SKIP", StringFormat("%s: price %s already beyond SL %s", tag, Px(price), Px(sl)));
       return false;
      }
-   double tp1 = (pending ? NormalizeDouble(idea.tp1, _Digits) : MarketTP1(dir, price, slR, fromFill));
+   // fromFill: TPs measured from this order's own price (HYBRID, SMART), else the signal's
+   double tp1 = ((pending && !fromFill) ? NormalizeDouble(idea.tp1, _Digits) : MarketTP1(dir, price, slR, fromFill));
 
    // trade management: the broker TP is TP2, TP1 is handled by ManageRunner (partial + BE)
    // scalp mode: the broker TP is the reduced target, part of the way to TP1
@@ -1278,7 +1290,7 @@ bool OpenEntryAs(const int dir, const double lotIn, const string tag,
         }
      }
    else if(InpManageOn)
-      tpOrder = (pending ? NormalizeDouble(idea.tp2, _Digits) : MarketTP2(dir, price, slR, fromFill));
+      tpOrder = ((pending && !fromFill) ? NormalizeDouble(idea.tp2, _Digits) : MarketTP2(dir, price, slR, fromFill));
 
    bool ok;
    if(pending)
@@ -1318,6 +1330,9 @@ bool OpenEntryAs(const int dir, const double lotIn, const string tag,
                               Px(sl), Px(tpOrder));
    Log("OPEN", what);
    if(InpAlertTrades) Notify("OPEN " + what);
+   gLastPending = pending;
+   gLastTicket  = trade.ResultOrder();
+   gLastTP      = tpOrder;
    return true;
   }
 
@@ -1328,13 +1343,96 @@ bool OpenEntry(const int dir, const double lotIn, const string tag)
   {
    if(InpEntryType == ENTRY_MARKET)  return OpenEntryAs(dir, lotIn, tag, false, false);
    if(InpEntryType == ENTRY_PENDING) return OpenEntryAs(dir, lotIn, tag, true,  false);
+   if(InpEntryType == ENTRY_SMART)   return OpenSmart(dir, lotIn, tag);
    return OpenEntryAs(dir, lotIn, tag + " hybrid", false, true);
+  }
+
+//+------------------------------------------------------------------+
+//| SMART entry                                                      |
+//| A limit order on a shallow pullback of the signal candle (better |
+//| price than at market). If price runs away towards the target     |
+//| before the fill, the limit is cancelled and the trade is opened  |
+//| at market (the move is not missed). Unfilled after N bars: gone. |
+//| TPs are measured from the trade's own price, like HYBRID.        |
+//+------------------------------------------------------------------+
+struct SmartOrder
+  {
+   bool     active;
+   ulong    ticket;     // the limit order
+   int      dir;
+   datetime sig;        // signal time
+   double   limit;
+   double   runLvl;     // price that counts as "ran away"
+   datetime expire;
+   string   tag;
+  };
+SmartOrder gSm;
+
+bool OpenSmart(const int dir, const double lotIn, const string tag)
+  {
+   gSm.active = false;
+   int sh = iBarShift(_Symbol, _Period, idea.signalTime, true);
+   double h = (sh >= 0 ? iHigh(_Symbol, _Period, sh) : 0), l = (sh >= 0 ? iLow(_Symbol, _Period, sh) : 0);
+   double c = (sh >= 0 ? iClose(_Symbol, _Period, sh) : 0);
+   if(c <= 0 || h <= l)   // signal candle not found: plain market entry
+      return OpenEntryAs(dir, lotIn, tag + " smart mkt", false, true);
+
+   double pull  = (h - l) * MathMax(0.0, MathMin(100.0, InpSmartPullPct)) / 100.0;
+   double limit = c - dir * pull;
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK), bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double px  = (dir > 0 ? ask : bid);
+   // price already at / beyond the limit: OpenEntryAs fills at market
+   if(!OpenEntryAs(dir, lotIn, tag + " smart", true, true, limit)) return false;
+   if(!gLastPending) return true;
+
+   gSm.active = true;
+   gSm.ticket = gLastTicket;
+   gSm.dir    = dir;
+   gSm.sig    = idea.signalTime;
+   gSm.limit  = NormalizeDouble(limit, _Digits);
+   gSm.runLvl = px + (gLastTP - px) * MathMax(1.0, MathMin(100.0, InpSmartRunPct)) / 100.0;
+   gSm.expire = iTime(_Symbol, _Period, 0) + (datetime)MathMax(1, InpSmartBars) * PeriodSeconds(_Period);
+   gSm.tag    = tag;
+   Log("SMART", StringFormat("%s limit %s, chase at market if price reaches %s, cancel after %d bars",
+                             tag, Px(gSm.limit), Px(gSm.runLvl), InpSmartBars));
+   return true;
+  }
+
+// each tick: filled / expired / ran away
+void ManageSmart()
+  {
+   if(!gSm.active) return;
+   if(!OrderSelect(gSm.ticket)) { gSm.active = false; return; }   // filled, or deleted elsewhere
+
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID), ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   bool expired = (TimeCurrent() >= gSm.expire);
+   bool ran     = (gSm.dir > 0 ? bid >= gSm.runLvl : ask <= gSm.runLvl);
+   if(!expired && !ran) return;
+
+   if(!trade.OrderDelete(gSm.ticket)) return;   // retried next tick
+   gSm.active = false;
+   if(expired)
+     {
+      Log("SMART", gSm.tag + ": limit " + Px(gSm.limit) + " not filled in time, cancelled");
+      return;
+     }
+   Log("SMART", gSm.tag + ": price ran away before the limit filled");
+   if(!InpSmartChase) return;
+   bool valid = (idea.signalTime == gSm.sig && (idea.state == IDEA_PENDING || idea.state == IDEA_LIVE));
+   if(!valid || GetBasket().count > 0 || TradeBlocker() != "" || gClosing)
+     {
+      Log("SMART", gSm.tag + ": no chase (signal no longer running, a trade is open or trading is off)");
+      return;
+     }
+   OpenEntryAs(gSm.dir, InpSingleLot, gSm.tag + " chase", false, true);
   }
 
 string EntryName()
   {
    if(InpEntryType == ENTRY_MARKET)  return "Market";
    if(InpEntryType == ENTRY_PENDING) return "Pending";
+   if(InpEntryType == ENTRY_SMART)
+      return StringFormat("Smart (limit %.0f%%%s)", InpSmartPullPct, (InpSmartChase ? " + chase" : ""));
    return "Hybrid (1 market trade)";
   }
 
@@ -1477,7 +1575,7 @@ void ManageRunner()
             risk /= (1.0 + MathMax(0.0, InpSLWidenPct) / 100.0);
          double tp1 = op + d * risk * InpRR1;
          // MARKET / PENDING entries keep the signal's own TP1 (the order's TP2 is the signal's too)
-         if(InpEntryType != ENTRY_HYBRID && !InpTPFromFill)
+         if((InpEntryType == ENTRY_MARKET || InpEntryType == ENTRY_PENDING) && !InpTPFromFill)
            {
             double st = SignalTP1(PositionGetString(POSITION_COMMENT));
             if(st > 0 && (d > 0 ? st > op : st < op)) tp1 = st;
@@ -1785,6 +1883,7 @@ void ManageTrades()
       Basket nb = GetBasket();   // fresh: the runner may just have closed at break-even
       ManageTP1Re(nb);
      }
+   if(InpEntryType == ENTRY_SMART) ManageSmart();
    if(InpTrailOn) Trail();
   }
 
@@ -2118,7 +2217,7 @@ void UpdatePanel(const bool force = false)
    else if(b.count > 0)             { st = "IN TRADE";     sc = C_UP; }
    else                             { st = "WAITING";      sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "Mt.ZionPro Scalp EA", C_TXT, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.61  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v1.70  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -2147,6 +2246,8 @@ void UpdatePanel(const bool force = false)
    PSection("EA");
    PRow("Mode", ModeName(), C_TXT);
    PRow("Entry", EntryName(), C_TXT);
+   if(InpEntryType == ENTRY_SMART && gSm.active)
+      PRow("Smart limit", Px(gSm.limit) + "  chase @ " + Px(gSm.runLvl), C_WARN);
    PRow("Grades / re-entry", GradesText(false) + " / " + GradesText(true), C_INFO);
    if(InpScalpOn)
      {
@@ -2327,6 +2428,7 @@ int OnInit()
    gWarm = false;
    gClosing = false;
    gQueuedSig = 0; gQueuedT = 0;
+   gSm.active = false;
    gRe.armed = false; gRe.sig = ""; gRe.count = 0; gRe.dir = 0;
    ResetIdea();
    ResetCounts();
