@@ -25,6 +25,9 @@
 //|   - no RSI exhaustion (fast RSI beyond OB / OS)                  |
 //|   - strict trigger: close through a real swing, or a pin bar     |
 //|     that sweeps the last bars                                    |
+//| C signals must also pass the "C rules": max fails, full momentum,|
+//| no counter-trend, no trend+D1 miss, good candle, room to TP1,    |
+//| no exhaustion, London/NY only. Failing C = grey "C-" (no trade). |
 //| Arrows: buys Aqua, sells Magenta (all grades).                   |
 //| Each signal is tracked (pending -> fill -> TP1 / TP2 / SL) so the|
 //| panel shows a running win rate for the loaded history.           |
@@ -72,6 +75,17 @@ enum ENUM_PEND_TYPE
 #define GRADE_B    1
 #define GRADE_C    2
 #define GRADE_NONE 3
+#define GRADE_CX   4   // C that failed the C rules: never traded, shown grey as "C-"
+
+// quality filter failure flags
+#define F_TREND   1
+#define F_COUNTER 2    // H1/H4 trend actively against the trade (also sets F_TREND)
+#define F_D1      4
+#define F_RANGE   8
+#define F_EXT     16
+#define F_ROOM    32
+#define F_EXH     64
+#define F_CANDLE  128
 
 input group "=== Momentum score (VWMA RSI Score) ==="
 input int                InpVwmaSlow    = 85;            // VWMA slow (red): close must be beyond it
@@ -128,7 +142,18 @@ input bool   InpAutoDigits      = true;            // 3-digit gold: point inputs
 input group "=== Grades / signals ==="
 input bool   InpGradeA       = true;               // A grade (passes every filter) becomes a signal
 input bool   InpGradeB       = true;               // B grade (fails one filter) becomes a signal
-input bool   InpGradeC       = false;              // C grade (fails two or more) becomes a signal
+input bool   InpGradeC       = true;               // C grade (fails 2+ filters AND passes the C rules) becomes a signal
+input group "=== Grade C rules (C = fails two or more filters) ==="
+input int    InpCMaxFails    = 2;                  // C may fail at most this many filters (more = rejected)
+input int    InpCMinScore    = 5;                  // C needs this momentum score (1-5)
+input bool   InpCNoCounter   = true;               // reject C when H1+H4 trend is against the trade (no trend is OK)
+input bool   InpCNoTrendD1   = true;               // reject C when the trend AND D1 filters both fail
+input bool   InpCNeedCandle  = true;               // reject C when the strict trigger candle failed
+input bool   InpCNeedRoom    = true;               // reject C when PDH/PDL/PWH/PWL blocks the way to TP1
+input bool   InpCNoExhaust   = true;               // reject C when the fast RSI is exhausted
+input bool   InpCSessionOnly = true;               // C only between InpSessStartUTC and InpSessEndUTC (London/NY)
+
+input group "=== Signal display ==="
 input bool   InpShowFiltered = true;               // grey grade letter where a toggled-off grade fired (hover = failed filters)
 input color  InpFiltColor    = clrSilver;
 input int    InpCooldown     = 8;                  // bars between signals in the same direction
@@ -215,6 +240,7 @@ uint     gLastPanelMs = 0;
 
 //--- outcome stats
 int gCntBuy = 0, gCntSell = 0, gCntTP1 = 0, gCntTP2 = 0, gCntSL = 0, gCntLoss = 0, gCntBE = 0;
+int gWinG[3], gLossG[3];   // TP1 wins / losses per grade A, B, C
 #define EV_SIG  0
 #define EV_TP1  1
 #define EV_TP2  2
@@ -393,6 +419,8 @@ void ResetZone()
 void ResetCounts()
   {
    gCntBuy = gCntSell = gCntTP1 = gCntTP2 = gCntSL = gCntLoss = gCntBE = 0;
+   ArrayInitialize(gWinG, 0);
+   ArrayInitialize(gLossG, 0);
    ArrayResize(gEvT, 0);
    ArrayResize(gEvK, 0);
   }
@@ -541,6 +569,13 @@ int UtcHour(const datetime t)
   {
    long u = (long)t - (long)gOffset * 3600;
    return (int)(((u % 86400) + 86400) % 86400 / 3600);
+  }
+
+bool InWindow(const datetime t)
+  {
+   int h = UtcHour(t);
+   if(InpSessStartUTC <= InpSessEndUTC) return (h >= InpSessStartUTC && h < InpSessEndUTC);
+   return (h >= InpSessStartUTC || h < InpSessEndUTC);
   }
 
 bool InSession(const datetime t)
@@ -703,29 +738,49 @@ bool RoomBlocked(const int dir, const datetime t, const double entry, const doub
   }
 
 //+------------------------------------------------------------------+
-//| Grade: A = passes every enabled filter, B = fails one, C = more  |
+//| Grade: A = passes every enabled filter, B = fails one, C = more. |
+//| A C must also pass the C rules, otherwise it becomes C- (grey).  |
 //+------------------------------------------------------------------+
 int SignalGrade(const int dir, const Candle &k, const int sh, const int trendDir,
-                const double entry, const double tp1, string &why)
+                const double entry, const double tp1, const int score, string &why)
   {
-   int fails = 0;
+   int fails = 0, mask = 0;
    why = "";
-   if(InpTrendOn && trendDir != dir)  { fails++; why += " trend"; }
-   if(InpD1On && D1Against(dir, k.t)) { fails++; why += " D1"; }
+   if(InpTrendOn && trendDir != dir)
+     {
+      fails++; mask |= F_TREND;
+      if(trendDir == -dir) { mask |= F_COUNTER; why += " trend(against)"; }
+      else why += " trend(none)";
+     }
+   if(InpD1On && D1Against(dir, k.t)) { fails++; mask |= F_D1; why += " D1"; }
    double atr = ATRAt(sh);
    if(InpATROn)
      {
       double rng = k.h - k.l;
-      if(atr <= 0 || rng < atr * InpMinRangeATR || rng > atr * InpMaxRangeATR) { fails++; why += " range"; }
+      if(atr <= 0 || rng < atr * InpMinRangeATR || rng > atr * InpMaxRangeATR) { fails++; mask |= F_RANGE; why += " range"; }
      }
    if(InpLocationOn)
      {
-      if(atr <= 0 || VM[sh] == EMPTY_VALUE || MathAbs(k.c - VM[sh]) > atr * InpMaxExtATR) { fails++; why += " extended"; }
+      if(atr <= 0 || VM[sh] == EMPTY_VALUE || MathAbs(k.c - VM[sh]) > atr * InpMaxExtATR) { fails++; mask |= F_EXT; why += " extended"; }
      }
-   if(InpRoomOn && RoomBlocked(dir, k.t, entry, tp1)) { fails++; why += " room"; }
-   if(InpExhaustOn && (dir > 0 ? R7[sh] > InpRsiOB : R7[sh] < 100.0 - InpRsiOB)) { fails++; why += " exhausted"; }
-   if(InpStrictOn && !StrictTrigger(dir, k, sh)) { fails++; why += " candle"; }
-   return (fails >= 2 ? GRADE_C : fails);
+   if(InpRoomOn && RoomBlocked(dir, k.t, entry, tp1)) { fails++; mask |= F_ROOM; why += " room"; }
+   if(InpExhaustOn && (dir > 0 ? R7[sh] > InpRsiOB : R7[sh] < 100.0 - InpRsiOB)) { fails++; mask |= F_EXH; why += " exhausted"; }
+   if(InpStrictOn && !StrictTrigger(dir, k, sh)) { fails++; mask |= F_CANDLE; why += " candle"; }
+   if(fails < 2) return fails;
+
+   //--- C rules: only "context" misses are tolerated, never the execution ones
+   string rule = "";
+   if(fails > InpCMaxFails)                                   rule += " too-many-fails";
+   if(score < InpCMinScore)                                   rule += " score<" + IntegerToString(InpCMinScore);
+   if(InpCNoCounter  && (mask & F_COUNTER) != 0)              rule += " counter-trend";
+   if(InpCNoTrendD1  && (mask & F_TREND) != 0 && (mask & F_D1) != 0) rule += " trend+D1";
+   if(InpCNeedCandle && (mask & F_CANDLE) != 0)               rule += " weak-candle";
+   if(InpCNeedRoom   && (mask & F_ROOM) != 0)                 rule += " no-room";
+   if(InpCNoExhaust  && (mask & F_EXH) != 0)                  rule += " exhausted";
+   if(InpCSessionOnly && !InWindow(k.t))                      rule += " off-session";
+   if(rule == "") return GRADE_C;
+   why += " | C rules:" + rule;
+   return GRADE_CX;
   }
 
 string GradeName(const int g)
@@ -733,6 +788,7 @@ string GradeName(const int g)
    if(g == GRADE_A) return "A";
    if(g == GRADE_B) return "B";
    if(g == GRADE_C) return "C";
+   if(g == GRADE_CX) return "C-";
    return "-";
   }
 
@@ -790,7 +846,7 @@ void StopOut(const Candle &bar)
   {
    if(idea.tp1Done && InpMoveBE) { gCntBE++; EndIdea(" [BE]"); return; }
    gCntSL++; AddEv(EV_SL, bar.t);
-   if(!idea.tp1Done) { gCntLoss++; AddEv(EV_LOSS, bar.t); }
+   if(!idea.tp1Done) { gCntLoss++; AddEv(EV_LOSS, bar.t); if(idea.grade <= GRADE_C) gLossG[idea.grade]++; }
    EndIdea(" [SL HIT]");
   }
 
@@ -838,7 +894,7 @@ void ManageIdea(const Candle &bar, const int trendDir)
 
    if(hitTP2)
      {
-      if(!idea.tp1Done) { gCntTP1++; AddEv(EV_TP1, bar.t); }
+      if(!idea.tp1Done) { gCntTP1++; AddEv(EV_TP1, bar.t); if(idea.grade <= GRADE_C) gWinG[idea.grade]++; }
       gCntTP2++; AddEv(EV_TP2, bar.t);
       EndIdea(" [TP2 HIT]");
       return;
@@ -848,6 +904,7 @@ void ManageIdea(const Candle &bar, const int trendDir)
    if(hitTP1 && !idea.tp1Done)
      {
       gCntTP1++; AddEv(EV_TP1, bar.t);
+      if(idea.grade <= GRADE_C) gWinG[idea.grade]++;
       idea.tp1Done = true;
       tp1Now = true;
      }
@@ -1184,6 +1241,9 @@ void DrawPanel()
    PRow("Signals B / S", StringFormat("%d  (%d / %d)", gCntBuy + gCntSell, gCntBuy, gCntSell), C_INFO);
    PRow("TP1 / TP2 / SL / BE", StringFormat("%d / %d / %d / %d", gCntTP1, gCntTP2, gCntSL, gCntBE), C_TXT);
    v = WinRate(gCntTP1, gCntLoss, c); PRow("Win rate (TP1)", v, c);
+   v = WinRate(gWinG[GRADE_A], gLossG[GRADE_A], c); PRow("  grade A", v, c);
+   v = WinRate(gWinG[GRADE_B], gLossG[GRADE_B], c); PRow("  grade B", v, c);
+   v = WinRate(gWinG[GRADE_C], gLossG[GRADE_C], c); PRow("  grade C", v, c);
 
    PSection("CURRENT SIGNAL");
    if(idea.state == IDEA_IDLE)
@@ -1362,8 +1422,8 @@ int OnCalculate(const int rates_total,
       if(trigS && !CalcLevels(-1, bar, buf, eS, sS, t1S, t2S)) trigS = false;
 
       string whyB = "", whyS = "";
-      int gB = (trigB ? SignalGrade(1,  bar, i, trendDir, eB, t1B, whyB) : GRADE_NONE);
-      int gS = (trigS ? SignalGrade(-1, bar, i, trendDir, eS, t1S, whyS) : GRADE_NONE);
+      int gB = (trigB ? SignalGrade(1,  bar, i, trendDir, eB, t1B, (int)ScoreB[i], whyB) : GRADE_NONE);
+      int gS = (trigS ? SignalGrade(-1, bar, i, trendDir, eS, t1S, (int)ScoreS[i], whyS) : GRADE_NONE);
 
       bool free  = (idea.state == IDEA_IDLE);
       bool coolB = Cooled(bar.t, gLastBuy,  InpCooldown) && Cooled(bar.t, gLastSell, 3);
