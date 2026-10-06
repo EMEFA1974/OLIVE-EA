@@ -14,7 +14,7 @@
 //|      - close beyond the slow VWMA                                |
 //|      - fast VWMA beyond the mid VWMA                             |
 //|      - slow VWMA sloping in the trade direction                  |
-//|   3. Trading session (London/NY for gold) and max spread         |
+//|   3. Max spread (session window optional, off = all sessions)    |
 //|   4. No running idea, cooldown since the last signal             |
 //|  QUALITY FILTERS (each failure lowers the grade A -> B -> C)     |
 //|   - H1 + H4 EMA 50/200 trend agrees with the trade               |
@@ -25,7 +25,7 @@
 //|   - no RSI exhaustion (fast RSI beyond OB / OS)                  |
 //|   - strict trigger: close through a real swing, or a pin bar     |
 //|     that sweeps the last bars                                    |
-//| Arrows: bright = A, darker = B, grey-blue = C.                   |
+//| Arrows: buys Aqua, sells Magenta (all grades).                   |
 //| Each signal is tracked (pending -> fill -> TP1 / TP2 / SL) so the|
 //| panel shows a running win rate for the loaded history.           |
 //+------------------------------------------------------------------+
@@ -54,12 +54,12 @@
 
 #property indicator_label4  "Buy"
 #property indicator_type4   DRAW_COLOR_ARROW
-#property indicator_color4  clrAqua,clrDeepSkyBlue,clrSteelBlue
+#property indicator_color4  clrAqua,clrAqua,clrAqua
 #property indicator_width4  2
 
 #property indicator_label5  "Sell"
 #property indicator_type5   DRAW_COLOR_ARROW
-#property indicator_color5  clrMagenta,clrOrchid,clrRosyBrown
+#property indicator_color5  clrMagenta,clrMagenta,clrMagenta
 #property indicator_width5  2
 
 enum ENUM_PEND_TYPE
@@ -118,7 +118,7 @@ input bool   InpExhaustOn   = true;                // fast RSI not beyond OB (bu
 input double InpRsiOB       = 80.0;
 
 input group "=== Session / spread (hard gates) ==="
-input bool   InpSessionOn       = true;            // signals only inside the UTC window below
+input bool   InpSessionOn       = false;           // true = signals only inside the UTC window below (false = all sessions)
 input int    InpSessStartUTC    = 7;               // London open
 input int    InpSessEndUTC      = 20;              // late New York
 input int    InpServerUtcOffset = 99;              // broker server time minus UTC in hours (99 = auto)
@@ -176,11 +176,11 @@ input int    InpLineOpacity    = 80;
 input bool   InpAutoChartShift = true;
 input int    InpChartShiftPct  = 25;
 input color  InpBuyColorA      = clrAqua;
-input color  InpBuyColorB      = clrDeepSkyBlue;
-input color  InpBuyColorC      = clrSteelBlue;
+input color  InpBuyColorB      = clrAqua;
+input color  InpBuyColorC      = clrAqua;
 input color  InpSellColorA     = clrMagenta;
-input color  InpSellColorB     = clrOrchid;
-input color  InpSellColorC     = clrRosyBrown;
+input color  InpSellColorB     = clrMagenta;
+input color  InpSellColorC     = clrMagenta;
 input color  InpZoneSL         = C'220,50,50';
 input color  InpZoneTP1        = C'30,170,100';
 input color  InpZoneTP2        = C'40,100,230';
