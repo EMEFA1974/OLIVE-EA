@@ -27,8 +27,9 @@
 //|     that sweeps the last bars                                    |
 //| C signals must also pass the "C rules" (defaults): at most 3     |
 //| fails (3 only with momentum 5/5), momentum >= 4, not counter-    |
-//| trend, room to TP1, no RSI exhaustion, strict candle unless      |
-//| momentum is 5/5. Failing C =                                     |
+//| trend, not trend+D1 both missed, no chasing, room to TP1, no RSI |
+//| exhaustion, strict candle unless momentum is 5/5, 12-bar C       |
+//| cooldown and max 2 C per direction per day. Failing C =          |
 //| grey "C-" (no trade). Each rule can be toggled in the inputs.    |
 //| Panel: click its title to hide it, double-click chart to restore.|
 //| Arrows: buys Aqua, sells Magenta (all grades).                   |
@@ -151,10 +152,13 @@ input int    InpCMaxFails    = 3;                  // C may fail at most this ma
 input int    InpCMinScore    = 4;                  // C needs this momentum score (1-5)
 input int    InpCMaxFailScore = 5;                 // a C at the max fail count needs this momentum score
 input bool   InpCNoCounter   = true;               // reject C when H1+H4 trend is against the trade (no trend is OK)
-input bool   InpCNoTrendD1   = false;              // reject C when the trend AND D1 filters both fail
+input bool   InpCNoTrendD1   = true;               // reject C when the trend AND D1 filters both fail
 input bool   InpCNeedCandle  = true;               // reject C when the strict candle failed AND momentum is below 5/5
 input bool   InpCNeedRoom    = true;               // reject C when PDH/PDL/PWH/PWL blocks the way to TP1
 input bool   InpCNoExhaust   = true;               // reject C when the fast RSI is exhausted
+input bool   InpCNoChase     = true;               // reject C when price is stretched from the mid VWMA (no chasing)
+input int    InpCCooldown    = 12;                 // bars between C signals in the same direction
+input int    InpCMaxPerDay   = 2;                  // max C signals per direction per day (0 = no limit)
 input bool   InpCSessionOnly = false;              // C only between InpSessStartUTC and InpSessEndUTC (London/NY)
 
 input group "=== Signal display ==="
@@ -240,6 +244,9 @@ datetime gLastBar     = 0;
 datetime gLastAlert   = 0;
 datetime gLastFill    = 0;
 datetime gLastBuy     = 0, gLastSell = 0;
+datetime gLastCBuy    = 0, gLastCSell = 0;   // last C signal per direction
+datetime gCDay        = 0;                   // day the C counters belong to
+int      gCDayBuy     = 0, gCDaySell = 0;
 datetime gLastFiltB   = 0, gLastFiltS = 0;
 uint     gLastPanelMs = 0;
 
@@ -786,9 +793,20 @@ int SignalGrade(const int dir, const Candle &k, const int sh, const int trendDir
    if(InpCNeedRoom   && (mask & F_ROOM) != 0)                 rule += " no-room";
    if(InpCNoExhaust  && (mask & F_EXH) != 0)                  rule += " exhausted";
    if(InpCSessionOnly && !InWindow(k.t))                      rule += " off-session";
+   if(InpCNoChase    && (mask & F_EXT) != 0)                  rule += " chasing";
    if(rule == "") return GRADE_C;
    why += " | C rules:" + rule;
    return GRADE_CX;
+  }
+
+bool CFreqOK(const datetime t, const datetime lastC, const int today, string &why)
+  {
+   string rule = "";
+   if(!Cooled(t, lastC, InpCCooldown))           rule += " C-cooldown";
+   if(InpCMaxPerDay > 0 && today >= InpCMaxPerDay) rule += " C-daily-cap";
+   if(rule == "") return true;
+   why += " | C limits:" + rule;
+   return false;
   }
 
 string GradeName(const int g)
@@ -1431,6 +1449,8 @@ int OnCalculate(const int rates_total,
       ResetCounts();
       gLastBar = 0;
       gLastBuy = gLastSell = gLastFiltB = gLastFiltS = 0;
+      gLastCBuy = gLastCSell = gCDay = 0;
+      gCDayBuy = gCDaySell = 0;
       limit = maxSh;
      }
    else
@@ -1489,6 +1509,12 @@ int OnCalculate(const int rates_total,
       int gB = (trigB ? SignalGrade(1,  bar, i, trendDir, eB, t1B, (int)ScoreB[i], whyB) : GRADE_NONE);
       int gS = (trigS ? SignalGrade(-1, bar, i, trendDir, eS, t1S, (int)ScoreS[i], whyS) : GRADE_NONE);
 
+      //--- C frequency limits: per-direction cooldown and daily cap
+      datetime day = bar.t - bar.t % 86400;
+      if(day != gCDay) { gCDay = day; gCDayBuy = gCDaySell = 0; }
+      if(gB == GRADE_C && !CFreqOK(bar.t, gLastCBuy, gCDayBuy, whyB))   gB = GRADE_CX;
+      if(gS == GRADE_C && !CFreqOK(bar.t, gLastCSell, gCDaySell, whyS)) gS = GRADE_CX;
+
       bool free  = (idea.state == IDEA_IDLE || (InpReplacePending && idea.state == IDEA_PENDING));
       bool coolB = Cooled(bar.t, gLastBuy,  InpCooldown) && Cooled(bar.t, gLastSell, 3);
       bool coolS = Cooled(bar.t, gLastSell, InpCooldown) && Cooled(bar.t, gLastBuy,  3);
@@ -1499,6 +1525,7 @@ int OnCalculate(const int rates_total,
          BuyBuf[i] = low[i];
          BuyClr[i] = gB;
          gLastBuy  = bar.t;
+         if(gB == GRADE_C) { gLastCBuy = bar.t; gCDayBuy++; }
          ArmIdea(1, bar, gB, trendDir, eB, sB, t1B, t2B);
          gCntBuy++; AddEv(EV_SIG, bar.t);
         }
@@ -1508,6 +1535,7 @@ int OnCalculate(const int rates_total,
          SellBuf[i] = high[i];
          SellClr[i] = gS;
          gLastSell  = bar.t;
+         if(gS == GRADE_C) { gLastCSell = bar.t; gCDaySell++; }
          ArmIdea(-1, bar, gS, trendDir, eS, sS, t1S, t2S);
          gCntSell++; AddEv(EV_SIG, bar.t);
         }
