@@ -18,7 +18,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Mt.ZionPro Fusion"
 #property link      ""
-#property version   "2.00"
+#property version   "2.01"
 #property description "Mt.ZionPro engine + VWMA/RSI score. Grade A/B/C toggles, filtered Grade C, hollow arrows."
 #property indicator_chart_window
 #property indicator_buffers 10
@@ -114,7 +114,8 @@ input double         InpPendingRetrace  = 0.40;  // fraction of signal candle ra
 input bool           InpPendingUseRange = true;  // use max(points, range*retrace)
 input int            InpPendingExpire   = 12;    // cancel pending after N closed bars
 input int            InpMinSLGapPts     = 15;    // keep pending entry this far from SL
-input bool           InpConfirmBar      = true;  // the bar after the signal must close its way (buy: bullish, above the signal mid) before the order is placed; arrow appears then
+input bool           InpConfirmBar      = true;  // the bar after the signal must close its way (buy: bullish, above the signal mid) before the order is placed
+input bool           InpSetupAlert      = true;  // with the confirmation bar: arrow + alert as soon as the zone appears (signal close), not one bar later
 input bool           InpCancelAtTP1     = true;  // cancel an unfilled pending if price reaches TP1 first (a limit that only fills on the way back is a losing fill)
 
 input group "=== Re-entry after SL ==="
@@ -296,6 +297,11 @@ datetime lastBuyTime   = 0;
 datetime lastSellTime  = 0;
 datetime lastAlertBar  = 0;
 datetime lastFillAlert = 0;
+datetime lastSetupAlert = 0;
+datetime lastMissAlert  = 0;
+datetime gMissT = 0;      // confirmation bar that already reached TP1 (setup missed)
+int      gMissDir = 0, gMissGrade = 0;
+bool     gMissRe = false;
 bool     allowAlerts   = false;
 datetime gLastBar      = 0;      // last closed bar fed to the signal engine
 datetime lastFiltB     = 0;      // last grey (grade toggled off) markers, for their own cooldown
@@ -458,6 +464,9 @@ int OnInit()
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
    lastAlertBar = 0;
    lastFillAlert = 0;
+   lastSetupAlert = 0;
+   lastMissAlert = 0;
+   gMissT = 0;
    allowAlerts  = InpAlertOnLoad;
    ResetIdea();
    ResetZone();
@@ -550,6 +559,8 @@ void ResetIdea()
 // finish the running idea but keep its levels as the current zone
 void EndIdea(const string status, const datetime t)
   {
+   if(idea.state == IDEA_PENDING && idea.needConfirm)
+      SetupArrow(idea.signalTime, idea.dir, idea.re, false);   // setup never confirmed: arrow goes
    if(idea.state != IDEA_IDLE && idea.signalTime != 0)
      {
       gz.valid  = true;
@@ -676,6 +687,8 @@ void ArmIdea(const int dir, const Candle &bar, const bool re, const double buf,
    idea.state = (InpPendingOn ? IDEA_PENDING : IDEA_LIVE);
    if(idea.state == IDEA_LIVE)
       idea.fillTime = bar.t;
+   if(idea.needConfirm)
+      SetupArrow(bar.t, dir, re, true);
   }
 
 // shift = spread for prices the broker checks on the ask (chart bars are bid)
@@ -702,6 +715,17 @@ void StopOut(const Candle &bar)
    idea.state = IDEA_SL_WAIT;
    idea.slTime = bar.t;
    idea.slBarAge = 0;
+  }
+
+// arrow only (no counters / tag) while a setup waits for its confirmation bar
+void SetupArrow(const datetime t, const int dir, const bool re, const bool on)
+  {
+   if(!InpSetupAlert) return;
+   int sh = iBarShift(_Symbol, _Period, t, true);
+   if(sh < 0) return;
+   double price = (on ? (dir > 0 ? iLow(_Symbol, _Period, sh) : iHigh(_Symbol, _Period, sh)) : EMPTY_VALUE);
+   if(dir > 0) { if(re) ReBuyBuf[sh]  = price; else BuyBuf[sh]  = price; }
+   else        { if(re) ReSellBuf[sh] = price; else SellBuf[sh] = price; }
   }
 
 // arrow + grade tag + counters for a signal on the bar that opened at t
@@ -746,6 +770,13 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int tren
          idea.needConfirm = false;
          idea.confirmTime = bar.t;
          MarkSignal(idea.signalTime, idea.dir, idea.re, idea.grade, idea.why);
+         // the confirmation bar itself may already have reached TP1. The order is placed only
+         // now, so the zone must not show a live [LIMIT] trade that is already "in profit"
+         if(InpCancelAtTP1 && (idea.dir > 0 ? bar.h >= idea.tp1 : bar.l + xs <= idea.tp1))
+           {
+            gMissT = bar.t; gMissDir = idea.dir; gMissGrade = idea.grade; gMissRe = idea.re;
+            EndIdea(" [MISSED]", bar.t);
+           }
          return;
         }
       idea.pendAge++;
@@ -2258,6 +2289,28 @@ void CheckAlerts(const datetime barTime, const double barClose)
      {
       lastFillAlert = barTime;
       FireAlert(idea.dir > 0 ? "PENDING FILLED BUY" : "PENDING FILLED SELL", barTime, barClose);
+     }
+
+   if(InpConfirmBar && InpPendingOn && InpSetupAlert)
+     {
+      // setup alert on the signal bar, together with the zone and the arrow
+      if(idea.state == IDEA_PENDING && idea.needConfirm && idea.signalTime == barTime && lastSetupAlert != barTime)
+        {
+         lastSetupAlert = barTime;
+         if(!(idea.re && !InpAlertReentry))
+            FireAlert((idea.dir > 0 ? (idea.re ? "RE-ENTRY BUY" : "BUY") : (idea.re ? "RE-ENTRY SELL" : "SELL"))
+                      + " " + GradeName(idea.grade) + " SETUP (confirms at next close)", barTime, barClose);
+         return;
+        }
+      // the move reached TP1 during the confirmation bar: tell the user not to chase it
+      if(gMissT == barTime && lastMissAlert != barTime)
+        {
+         lastMissAlert = barTime;
+         if(!(gMissRe && !InpAlertReentry))
+            FireAlert((gMissDir > 0 ? "BUY" : "SELL") + string(" ") + GradeName(gMissGrade)
+                      + " MISSED (TP1 reached before confirmation, no order)", barTime, barClose);
+         return;
+        }
      }
 
    if(barTime == lastAlertBar) return;
