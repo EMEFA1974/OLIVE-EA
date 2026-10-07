@@ -14,7 +14,7 @@
 //| that fails it is shown as a grey "Cx" mark and never armed.      |
 //|                                                                  |
 //| Buffers 0-3 (Buy / Sell / ReBuy / ReSell) keep the Mt.ZionPro    |
-//| layout; buffers 4-7 are the VWMA lines.                          |
+//| layout; buffers 4-7 hold the VWMAs (calculated, not drawn).      |
 //+------------------------------------------------------------------+
 #property copyright "Mt.ZionPro Fusion"
 #property link      ""
@@ -45,22 +45,22 @@
 #property indicator_width4  3
 
 #property indicator_label5  "VWMA High 1"
-#property indicator_type5   DRAW_LINE
+#property indicator_type5   DRAW_NONE
 #property indicator_color5  clrRed
 #property indicator_width5  2
 
 #property indicator_label6  "VWMA High 2"
-#property indicator_type6   DRAW_LINE
+#property indicator_type6   DRAW_NONE
 #property indicator_color6  clrOrange
 #property indicator_width6  2
 
 #property indicator_label7  "VWMA High 3"
-#property indicator_type7   DRAW_LINE
+#property indicator_type7   DRAW_NONE
 #property indicator_color7  clrYellow
 #property indicator_width7  1
 
 #property indicator_label8  "VWMA High 4"
-#property indicator_type8   DRAW_LINE
+#property indicator_type8   DRAW_NONE
 #property indicator_color8  clrLime
 #property indicator_width8  1
 
@@ -173,7 +173,11 @@ input int               InpRSI3        = 7;             // RSI3 period (fast, us
 input double            InpRsiMid      = 55.0;          // bull vote RSI > this, bear vote RSI < 100 - this
 input double            InpRsiOB       = 80.0;          // RSI overbought
 input double            InpRsiOS       = 20.0;          // RSI oversold
-input bool              InpShowVWMA    = true;          // draw the four VWMA lines
+
+input group "=== Signal Flow ==="
+input bool       InpOppOverride = true;            // a fresh opposite signal cancels a pending order or an SL re-entry wait (live trades still block)
+input bool       InpSoftChase   = true;            // range / extended / exhausted together count as at most ONE failed filter
+input bool       InpShowDiag    = true;            // buy / sell diagnostics on the panel
 
 input group "=== Signal Grade ==="
 input bool       InpGradeA   = true;               // A-grade signals (pass every filter) become signals (zone / alert / EA trade)
@@ -420,9 +424,8 @@ int OnInit()
    PlotIndexSetInteger(3, PLOT_LINE_WIDTH, MathMax(1, aw - 1));
    for(int p = 0; p < 8; p++)
       PlotIndexSetDouble(p, PLOT_EMPTY_VALUE, EMPTY_VALUE);
-   if(!InpShowVWMA)
-      for(int p = 4; p < 8; p++)
-         PlotIndexSetInteger(p, PLOT_DRAW_TYPE, DRAW_NONE);
+   for(int p = 4; p < 8; p++)                   // VWMAs are used by the score only, not drawn
+      PlotIndexSetInteger(p, PLOT_DRAW_TYPE, DRAW_NONE);
 
    IndicatorSetString(INDICATOR_SHORTNAME, "Mt.ZionPro Fusion");
    gEmaFast = iMA(_Symbol, InpTrendTF, InpTrendFast, 0, MODE_EMA, PRICE_CLOSE);
@@ -465,8 +468,42 @@ void ClearZones()
    ObjectsDeleteAll(0, ZPRE);
   }
 
+// buy / sell diagnostics: index 0 = buy, 1 = sell
+#define DIAG_NF 7
+string gFailName[DIAG_NF] = {"trend", "D1", "range", "extended", "candle", "score", "exhausted"};
+int    gDTrig[2], gDBusy[2], gDGrade[10], gDFail[14];   // gDGrade[d*5 + grade], gDFail[d*DIAG_NF + f]
+
+void DiagRecord(const int d, const int grade, const string why)
+  {
+   if(grade == GRADE_NONE) return;
+   gDTrig[d]++;
+   gDGrade[d * 5 + grade]++;
+   int cut = StringFind(why, "  |");
+   string w = (cut >= 0 ? StringSubstr(why, 0, cut) : why) + " ";
+   for(int f = 0; f < DIAG_NF; f++)
+      if(StringFind(w, " " + gFailName[f] + " ") >= 0) gDFail[d * DIAG_NF + f]++;
+  }
+
+string DiagTop(const int d)
+  {
+   int a = -1, b = -1;
+   for(int f = 0; f < DIAG_NF; f++)
+     {
+      int n = gDFail[d * DIAG_NF + f];
+      if(n <= 0) continue;
+      if(a < 0 || n > gDFail[d * DIAG_NF + a]) { b = a; a = f; }
+      else if(b < 0 || n > gDFail[d * DIAG_NF + b]) b = f;
+     }
+   if(a < 0) return "-";
+   string s = gFailName[a] + " " + IntegerToString(gDFail[d * DIAG_NF + a]);
+   if(b >= 0) s += ", " + gFailName[b] + " " + IntegerToString(gDFail[d * DIAG_NF + b]);
+   return s;
+  }
+
 void ResetCounts()
   {
+   ArrayInitialize(gDTrig, 0); ArrayInitialize(gDBusy, 0);
+   ArrayInitialize(gDGrade, 0); ArrayInitialize(gDFail, 0);
    gCntBuy = gCntSell = gCntTP1 = gCntTP2 = gCntSL = gCntLoss = 0;
    ArrayResize(gEvT, 0);
    ArrayResize(gEvK, 0);
@@ -1094,20 +1131,23 @@ int SignalGrade(const int dir, const Candle &k, const int sh, const int trendDir
    why = "";
    if(InpFiltOn && trendDir != dir)          { fails++; why += " trend"; }
    if(InpD1FilterOn && D1Against(dir, k.t))  { fails++; why += " D1"; }
+   // "chasing" filters: a strong trend candle often trips several of them at once
+   int chase = 0;
    double atr = ATRAt(sh);
    if(InpATROn)
      {
       double rng = k.h - k.l;
-      if(atr <= 0 || rng < atr * InpMinRangeATR || rng > atr * InpMaxRangeATR) { fails++; why += " range"; }
+      if(atr <= 0 || rng < atr * InpMinRangeATR || rng > atr * InpMaxRangeATR) { chase++; why += " range"; }
      }
    if(InpLocationOn)
      {
       double e = BufAt(gHLoc, sh);
-      if(atr <= 0 || e <= 0 || MathAbs(k.c - e) > atr * InpMaxExtATR) { fails++; why += " extended"; }
+      if(atr <= 0 || e <= 0 || MathAbs(k.c - e) > atr * InpMaxExtATR) { chase++; why += " extended"; }
      }
    if(InpStrictOn && !StrictTrigger(dir, k, sh)) { fails++; why += " candle"; }
    if(InpScoreOn && ScoreAt(sh, dir) < InpMinScore) { fails++; why += " score"; }
-   if(InpObOsOn && RsiExhausted(sh, dir))           { fails++; why += " exhausted"; }
+   if(InpObOsOn && RsiExhausted(sh, dir))           { chase++; why += " exhausted"; }
+   fails += (InpSoftChase ? (int)MathMin(chase, 1) : chase);
    if(fails >= 2) return GRADE_C;
    return fails;
   }
@@ -1568,7 +1608,7 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "MT.ZIONPRO FUSION", C_TXT, InpPanelTitleFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.02  " + ShortToString((ushort)0x25B2), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.03  " + ShortToString((ushort)0x25B2), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -1621,6 +1661,17 @@ void DrawPanel(const bool force = false)
       PRow("NY H / L",     SessionHL(InpNyS,  InpNyE,  hi, lo2) ? Px(hi) + " / " + Px(lo2) : "-", C_TXT);
       PRow("PDH / PDL", Px(iHigh(_Symbol, PERIOD_D1, 1)) + " / " + Px(iLow(_Symbol, PERIOD_D1, 1)), InpPDColor);
       PRow("PWH / PWL", Px(iHigh(_Symbol, PERIOD_W1, 1)) + " / " + Px(iLow(_Symbol, PERIOD_W1, 1)), InpPWColor);
+     }
+
+   if(InpShowDiag)
+     {
+      PSection("DIAGNOSTICS  (BUY / SELL)");
+      PRow("Triggers graded", StringFormat("%d / %d", gDTrig[0], gDTrig[1]), C_INFO);
+      PRow("Buy  A / B / C / Cx", StringFormat("%d / %d / %d / %d", gDGrade[0], gDGrade[1], gDGrade[2], gDGrade[4]), InpBuyColor);
+      PRow("Sell A / B / C / Cx", StringFormat("%d / %d / %d / %d", gDGrade[5], gDGrade[6], gDGrade[7], gDGrade[9]), InpSellColor);
+      PRow("Busy / cooldown", StringFormat("%d / %d", gDBusy[0], gDBusy[1]), C_MUTE);
+      PRow("Buy blockers", DiagTop(0), InpBuyColor);
+      PRow("Sell blockers", DiagTop(1), InpSellColor);
      }
 
    datetime d = DayStart();
@@ -1943,6 +1994,8 @@ int OnCalculate(const int rates_total,
         { gradeB = GRADE_CX; whyB += "  | C filter:" + rej; }
       if(gradeS == GRADE_C && !CFilterPass(-1, bar, i, failsS, trendDir, rej))
         { gradeS = GRADE_CX; whyS += "  | C filter:" + rej; }
+      DiagRecord(0, gradeB, whyB);
+      DiagRecord(1, gradeS, whyS);
       double buf = StopBuffer(i);
 
       bool didRe = false;
@@ -1979,8 +2032,18 @@ int OnCalculate(const int rates_total,
          bool coolB = Cooled(bar.t, lastBuyTime, InpCooldown) && Cooled(bar.t, lastSellTime, 3);
          bool coolS = Cooled(bar.t, lastSellTime, InpCooldown) && Cooled(bar.t, lastBuyTime, 3);
          bool free = (idea.state == IDEA_IDLE);
+         // an opposite signal may replace an unfilled pending order or an SL re-entry wait;
+         // without this a stopped-out sell blocks every buy for the whole re-entry window
+         bool oppB = (InpOppOverride && idea.dir < 0 && (idea.state == IDEA_PENDING || idea.state == IDEA_SL_WAIT));
+         bool oppS = (InpOppOverride && idea.dir > 0 && (idea.state == IDEA_PENDING || idea.state == IDEA_SL_WAIT));
+         bool takeB = ((free || oppB) && FreshOK(gradeB) && coolB);
+         bool takeS = (!takeB && (free || oppS) && FreshOK(gradeS) && coolS);
+         if(FreshOK(gradeB) && !takeB) gDBusy[0]++;
+         if(FreshOK(gradeS) && !takeS) gDBusy[1]++;
+         if((takeB && oppB) || (takeS && oppS))
+            EndIdea(idea.state == IDEA_SL_WAIT ? " [SL HIT]" : " [REVERSED]", bar.t);
 
-         if(free && FreshOK(gradeB) && coolB)
+         if(takeB)
            {
             BuyBuf[i] = low[i];
             lastBuyTime = bar.t;
@@ -1989,7 +2052,7 @@ int OnCalculate(const int rates_total,
             GradeTag(i, time[i], low[i], 1, gradeB, false, whyB);
             armed = true;
            }
-         else if(free && FreshOK(gradeS) && coolS)
+         else if(takeS)
            {
             SellBuf[i] = high[i];
             lastSellTime = bar.t;
