@@ -21,7 +21,7 @@
 #property version   "2.00"
 #property description "Mt.ZionPro engine + VWMA/RSI score. Grade A/B/C toggles, filtered Grade C, hollow arrows."
 #property indicator_chart_window
-#property indicator_buffers 8
+#property indicator_buffers 10
 #property indicator_plots   8
 
 #property indicator_label1  "Buy"
@@ -160,7 +160,8 @@ input int    InpPinSweep    = 3;                   // and the wick takes out the
 input group "=== VWMA / RSI Score ==="
 input bool              InpScoreOn     = true;          // score below InpMinScore counts as a failed grade filter
 input int               InpMinScore    = 4;             // score needed in the trade direction (0-5)
-input bool              InpObOsOn      = true;          // any RSI beyond OB (buy) / OS (sell) counts as a failed grade filter
+input bool              InpObOsOn      = true;          // RSI beyond OB (buy) / OS (sell) counts as a failed grade filter
+input bool              InpObOsAllRsi  = false;         // false = only the slow RSI1 is checked (fast RSIs spike on every strong trigger candle)
 input int               InpVWMA1       = 85;            // VWMA1 period (red, scored vs price)
 input int               InpVWMA2       = 37;            // VWMA2 period (orange)
 input int               InpVWMA3       = 18;            // VWMA3 period (yellow, scored vs VWMA2)
@@ -177,7 +178,7 @@ input bool              InpShowVWMA    = true;          // draw the four VWMA li
 input group "=== Signal Grade ==="
 input bool       InpGradeA   = true;               // A-grade signals (pass every filter) become signals (zone / alert / EA trade)
 input bool       InpGradeB   = true;               // B-grade signals (fail one filter) become signals
-input bool       InpGradeC   = true;               // C-grade signals (fail two or more) become signals - only if they pass the Grade C filter
+input bool       InpGradeC   = false;              // allow Grade C trades (fail two or more filters); they must also pass the Grade C filter
 input bool       InpReNeedA  = false;              // true = re-entries only on a fresh A-grade trigger (false = same grades as the toggles)
 input bool       InpShowFiltered = true;          // grey grade letter on signals whose grade is toggled off / rejected (no zone, no alert)
 input color      InpFiltColor    = clrSilver;
@@ -267,7 +268,8 @@ double BuyBuf[];
 double SellBuf[];
 double ReBuyBuf[];
 double ReSellBuf[];
-double V1[], V2[], V3[], V4[];   // VWMA lines (series indexing, like the arrow buffers)
+double V1[], V2[], V3[], V4[];   // VWMA lines on High (series indexing, like the arrow buffers)
+double VL1[], VL4[];             // VWMA1 / VWMA4 on Low: sells are measured against these (mirror of buys vs High)
 
 int gHR1 = INVALID_HANDLE, gHR2 = INVALID_HANDLE, gHR3 = INVALID_HANDLE;   // RSI handles
 
@@ -385,6 +387,8 @@ int OnInit()
    SetIndexBuffer(5, V2,        INDICATOR_DATA);
    SetIndexBuffer(6, V3,        INDICATOR_DATA);
    SetIndexBuffer(7, V4,        INDICATOR_DATA);
+   SetIndexBuffer(8, VL1,       INDICATOR_CALCULATIONS);
+   SetIndexBuffer(9, VL4,       INDICATOR_CALCULATIONS);
    ArraySetAsSeries(BuyBuf, true);
    ArraySetAsSeries(SellBuf, true);
    ArraySetAsSeries(ReBuyBuf, true);
@@ -393,6 +397,8 @@ int OnInit()
    ArraySetAsSeries(V2, true);
    ArraySetAsSeries(V3, true);
    ArraySetAsSeries(V4, true);
+   ArraySetAsSeries(VL1, true);
+   ArraySetAsSeries(VL4, true);
 
    // hollow outline arrows: aqua buys, magenta sells
    PlotIndexSetInteger(0, PLOT_ARROW, ARROW_UP_HOLLOW);
@@ -1003,7 +1009,8 @@ bool StrictTrigger(const int dir, const Candle &k, const int sh)
 //+------------------------------------------------------------------+
 //| VWMA / RSI score (from VWMA RSI Score), evaluated at chart bar sh |
 //|   1-3. RSI1/2/3 > RsiMid (buy)  /  < 100 - RsiMid (sell)          |
-//|   4.   Close (or High) above (buy) / below (sell) VWMA1           |
+//|   4.   Close (or High) above VWMA1 of highs (buy) /               |
+//|        Close (or Low) below VWMA1 of lows (sell)                  |
 //|   5.   VWMA3 above (buy) / below (sell) VWMA2                     |
 //+------------------------------------------------------------------+
 double VwmaAt(const int i, const int period, const int total, const double &high[], const long &vol[])
@@ -1022,7 +1029,8 @@ double VwmaAt(const int i, const int period, const int total, const double &high
 bool VOk(const int sh)
   {
    return (sh >= 0 && sh < ArraySize(V1) && V1[sh] != EMPTY_VALUE && V2[sh] != EMPTY_VALUE
-           && V3[sh] != EMPTY_VALUE && V4[sh] != EMPTY_VALUE);
+           && V3[sh] != EMPTY_VALUE && V4[sh] != EMPTY_VALUE
+           && VL1[sh] != EMPTY_VALUE && VL4[sh] != EMPTY_VALUE);
   }
 
 bool RsiAt(const int sh, double &r1, double &r2, double &r3)
@@ -1035,7 +1043,7 @@ int ScoreAt(const int sh, const int dir)
   {
    double r1, r2, r3;
    if(!VOk(sh) || !RsiAt(sh, r1, r2, r3)) return 0;
-   double price = (InpCheck4Price == CHECK4_HIGH ? iHigh(_Symbol, _Period, sh) : iClose(_Symbol, _Period, sh));
+   bool useHL = (InpCheck4Price == CHECK4_HIGH);
    int s = 0;
    if(dir > 0)
      {
@@ -1043,7 +1051,8 @@ int ScoreAt(const int sh, const int dir)
       if(r1 > m) s++;
       if(r2 > m) s++;
       if(r3 > m) s++;
-      if(price > V1[sh]) s++;
+      double price = (useHL ? iHigh(_Symbol, _Period, sh) : iClose(_Symbol, _Period, sh));
+      if(price > V1[sh]) s++;      // above the VWMA of highs
       if(V3[sh] > V2[sh]) s++;
      }
    else
@@ -1052,28 +1061,30 @@ int ScoreAt(const int sh, const int dir)
       if(r1 < m) s++;
       if(r2 < m) s++;
       if(r3 < m) s++;
-      if(price < V1[sh]) s++;
+      double price = (useHL ? iLow(_Symbol, _Period, sh) : iClose(_Symbol, _Period, sh));
+      if(price < VL1[sh]) s++;     // below the VWMA of lows (mirror of the buy check)
       if(V3[sh] < V2[sh]) s++;
      }
    return s;
   }
 
-// buy into overbought / sell into oversold
+// buy into overbought / sell into oversold (slow RSI1 only unless InpObOsAllRsi)
 bool RsiExhausted(const int sh, const int dir)
   {
    double r1, r2, r3;
    if(!RsiAt(sh, r1, r2, r3)) return false;
+   if(!InpObOsAllRsi) return (dir > 0 ? r1 > InpRsiOB : r1 < InpRsiOS);
    if(dir > 0) return (r1 > InpRsiOB || r2 > InpRsiOB || r3 > InpRsiOB);
    return (r1 < InpRsiOS || r2 < InpRsiOS || r3 < InpRsiOS);
   }
 
-// fast RSI turning the trade's way and close beyond the fast VWMA
+// fast RSI turning the trade's way and close beyond the fast VWMA (highs for buys, lows for sells)
 bool Momentum(const int sh, const int dir)
   {
    double now = BufAt(gHR3, sh), prev = BufAt(gHR3, sh + 1);
    if(now <= 0.0 || prev <= 0.0 || !VOk(sh)) return false;
    double c = iClose(_Symbol, _Period, sh);
-   return (dir > 0 ? (now > prev && c > V4[sh]) : (now < prev && c < V4[sh]));
+   return (dir > 0 ? (now > prev && c > V4[sh]) : (now < prev && c < VL4[sh]));
   }
 
 // A = passes every enabled filter, B = fails one, C = fails two or more
@@ -1557,7 +1568,7 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "MT.ZIONPRO FUSION", C_TXT, InpPanelTitleFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.01  " + ShortToString((ushort)0x25B2), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.02  " + ShortToString((ushort)0x25B2), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -1594,8 +1605,9 @@ void DrawPanel(const bool force = false)
    if(VOk(1))
      {
       double px = iClose(_Symbol, _Period, 1);
-      bool above = (px > V1[1]), stackUp = (V3[1] > V2[1]);
-      PRow("Price vs VWMA" + IntegerToString(InpVWMA1), (above ? "ABOVE" : "BELOW"), (above ? C_UP : C_DN));
+      bool above = (px > V1[1]), below = (px < VL1[1]), stackUp = (V3[1] > V2[1]);
+      PRow("Price vs VWMA" + IntegerToString(InpVWMA1), (above ? "ABOVE" : (below ? "BELOW" : "INSIDE")),
+           (above ? C_UP : (below ? C_DN : C_MUTE)));
       PRow("VWMA" + IntegerToString(InpVWMA3) + " vs VWMA" + IntegerToString(InpVWMA2), (stackUp ? "UP" : "DOWN"), (stackUp ? C_UP : C_DN));
      }
 
@@ -1846,6 +1858,8 @@ int OnCalculate(const int rates_total,
       V2[v] = VwmaAt(v, InpVWMA2, rates_total, high, tick_volume);
       V3[v] = VwmaAt(v, InpVWMA3, rates_total, high, tick_volume);
       V4[v] = VwmaAt(v, InpVWMA4, rates_total, high, tick_volume);
+      VL1[v] = VwmaAt(v, InpVWMA1, rates_total, low, tick_volume);
+      VL4[v] = VwmaAt(v, InpVWMA4, rates_total, low, tick_volume);
      }
 
    int start;
