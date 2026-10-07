@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|                                               VWMA RSI Score.mq5 |
+//|                                           VWMA RSI Score Ind.mq5 |
 //|                                                                  |
 //| 5-point bull/bear score built from four VWMAs (on High, tick     |
 //| volume) and three RSIs, plus session / day / week levels.        |
@@ -16,7 +16,7 @@
 //| direction re-arms only after its score fell to ReArmScore.       |
 //| The panel scores every past signal (TP/SL in ATR multiples).     |
 //+------------------------------------------------------------------+
-#property version     "1.10"
+#property version     "1.20"
 #property description "Four VWMAs on High + three RSIs -> 5-point bull/bear score."
 #property description "Arrow on the bar where the score first reaches MinScore."
 #property indicator_chart_window
@@ -99,7 +99,8 @@ input double            StatsTpAtr        = 2.0;   // Stats take profit (x ATR)
 input double            StatsSlAtr        = 1.0;   // Stats stop loss (x ATR)
 input int               StatsMaxBars      = 48;    // Bars to wait for TP/SL before a signal counts as expired
 input bool              SignalOnClosedBar = true;  // Arrows/alerts on closed bars only (no repaint)
-input bool              ShowPanel         = true;  // Show info panel
+input bool              ShowPanel         = true;  // Show info panel (click the triangle to hide/show)
+input bool              ShowVwmaLines     = false; // Draw the four VWMA lines on the chart
 input bool              ShowLevels        = true;  // Draw PDH/PDL and PWH/PWL lines
 input int               PanelX            = 10;    // Panel X offset (px)
 input int               PanelY            = 25;    // Panel Y offset (px)
@@ -118,6 +119,8 @@ int      gMaxPeriod = 0;
 int      gReArm     = 3;
 datetime gLastAlertBar = 0;
 datetime gLastStatsBar = 0;
+bool     gPanelOn = true;
+string   gPanelGv = "";
 int      gStatWins = 0, gStatLosses = 0, gStatExpired = 0;
 
 const string PFX = "VRS_";
@@ -164,6 +167,8 @@ int OnInit()
 
    for(int p = 0; p < 6; p++)
       PlotIndexSetDouble(p, PLOT_EMPTY_VALUE, EMPTY_VALUE);
+   for(int p = 0; p < 4; p++)
+      PlotIndexSetInteger(p, PLOT_DRAW_TYPE, ShowVwmaLines ? DRAW_LINE : DRAW_NONE);
    PlotIndexSetInteger(0, PLOT_DRAW_BEGIN, VWMA1 - 1);
    PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, VWMA2 - 1);
    PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, VWMA3 - 1);
@@ -173,7 +178,7 @@ int OnInit()
    PlotIndexSetInteger(4, PLOT_ARROW_SHIFT, 15);
    PlotIndexSetInteger(5, PLOT_ARROW_SHIFT, -15);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "VWMA RSI Score");
+   IndicatorSetString(INDICATOR_SHORTNAME, "VWMA RSI Score Ind");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
    hR1 = iRSI(_Symbol, _Period, RSI1, PRICE_CLOSE);
@@ -190,6 +195,9 @@ int OnInit()
    gMaxPeriod = MathMax(gMaxPeriod, MathMax(RSI1, MathMax(RSI2, RSI3)));
    gMaxPeriod = MathMax(gMaxPeriod, MathMax(StatsAtrPeriod, VWMA1 - 1 + RedSlopeBars));
    gReArm     = MathMax(0, MathMin(ReArmScore, MinScore - 1));
+   //--- panel open/closed state survives timeframe changes and restarts
+   gPanelGv = "VRS_Panel_" + IntegerToString(ChartID());
+   gPanelOn = !GlobalVariableCheck(gPanelGv) || GlobalVariableGet(gPanelGv) > 0.5;
    return INIT_SUCCEEDED;
   }
 
@@ -197,6 +205,8 @@ int OnInit()
 void OnDeinit(const int reason)
   {
    ObjectsDeleteAll(0, PFX);
+   if(reason == REASON_REMOVE)
+      GlobalVariableDel(gPanelGv);
    if(hR1 != INVALID_HANDLE) IndicatorRelease(hR1);
    if(hR2 != INVALID_HANDLE) IndicatorRelease(hR2);
    if(hR3 != INVALID_HANDLE) IndicatorRelease(hR3);
@@ -388,7 +398,7 @@ int OnCalculate(const int rates_total,
    if(ShowLevels)
       DrawLevels();
    if(ShowPanel)
-      DrawPanel(rates_total, time, high, low);
+      DrawPanel();
    return rates_total;
   }
 
@@ -400,7 +410,7 @@ void SendAlerts(const int sig, const int score)
                              (sig > 0) ? "BUY" : "SELL", score);
    if(AlertPopup) Alert(msg);
    if(AlertPush)  SendNotification(msg);
-   if(AlertEmail) SendMail("VWMA RSI Score", msg);
+   if(AlertEmail) SendMail("VWMA RSI Score Ind", msg);
   }
 
 //+------------------------------------------------------------------+
@@ -526,13 +536,66 @@ string HL(const double hi, const double lo)
   }
 
 //+------------------------------------------------------------------+
-void DrawPanel(const int total, const datetime &time[], const double &high[], const double &low[])
+//| Triangle that collapses / expands the panel                      |
+//+------------------------------------------------------------------+
+void DrawToggle()
   {
+   string n = PFX + "TOGGLE";
+   if(ObjectFind(0, n) < 0)
+     {
+      ObjectCreate(0, n, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, n, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, n, OBJPROP_SELECTABLE, false);
+      ObjectSetString(0, n, OBJPROP_FONT, "Arial");
+      ObjectSetInteger(0, n, OBJPROP_FONTSIZE, PanelFontSize + 2);
+      ObjectSetInteger(0, n, OBJPROP_COLOR, clrGold);
+      ObjectSetInteger(0, n, OBJPROP_ZORDER, 10);
+      ObjectSetString(0, n, OBJPROP_TOOLTIP, "Show / hide panel");
+     }
+   ObjectSetInteger(0, n, OBJPROP_XDISTANCE, PanelX + 4);
+   ObjectSetInteger(0, n, OBJPROP_YDISTANCE, PanelY + 1);
+   ObjectSetString(0, n, OBJPROP_TEXT, ShortToString((ushort)(gPanelOn ? 0x25BC : 0x25BA)));
+  }
+
+//+------------------------------------------------------------------+
+void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
+  {
+   if(id != CHARTEVENT_OBJECT_CLICK || sparam != PFX + "TOGGLE" || !ShowPanel)
+      return;
+   gPanelOn = !gPanelOn;
+   GlobalVariableSet(gPanelGv, gPanelOn ? 1.0 : 0.0);
+   DrawPanel();
+   ChartRedraw();
+  }
+
+//+------------------------------------------------------------------+
+void DrawPanel()
+  {
+   if(!gPanelOn)
+     {
+      ObjectsDeleteAll(0, PFX + "P_");
+      DrawToggle();
+      return;
+     }
+
+   int last = ArraySize(BullScore) - 1;
+   if(last < gMaxPeriod)
+      return;
+   datetime time[];
+   double   high[], low[];
+   int total = MathMin(Bars(_Symbol, _Period), 3000);
+   if(CopyTime(_Symbol, _Period, 0, total, time) < total ||
+      CopyHigh(_Symbol, _Period, 0, total, high) < total ||
+      CopyLow(_Symbol, _Period, 0, total, low) < total)
+      return;
+
    int rowH = PanelFontSize * 2;
    int colW = PanelFontSize * 14;
-   string bg = PFX + "BG";
+   string bg = PFX + "P_BG";
    if(ObjectFind(0, bg) < 0)
      {
+      //--- objects draw in creation order: recreate the triangle above the background
+      ObjectDelete(0, PFX + "TOGGLE");
       ObjectCreate(0, bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
       ObjectSetInteger(0, bg, OBJPROP_CORNER, CORNER_LEFT_UPPER);
       ObjectSetInteger(0, bg, OBJPROP_BGCOLOR, clrBlack);
@@ -544,6 +607,8 @@ void DrawPanel(const int total, const datetime &time[], const double &high[], co
    ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, PanelX);
    ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, PanelY);
    ObjectSetInteger(0, bg, OBJPROP_XSIZE, colW + PanelFontSize * 24);
+   DrawToggle();
+   Lbl("P_TITLE", PanelX + 8 + PanelFontSize * 2, PanelY + PanelFontSize / 2, "VWMA RSI Score Ind", clrGold);
 
    string names[20];
    string vals[20];
@@ -571,7 +636,6 @@ void DrawPanel(const int total, const datetime &time[], const double &high[], co
    vals[r]  = HL(iHigh(_Symbol, PERIOD_W1, 1), iLow(_Symbol, PERIOD_W1, 1));
    cols[r++] = clrMagenta;
 
-   int last = total - 1;
    double rsis[3];
    int    pers[3];
    rsis[0] = R1[last]; rsis[1] = R2[last]; rsis[2] = R3[last];
@@ -664,13 +728,13 @@ void DrawPanel(const int total, const datetime &time[], const double &high[], co
       vals[r]  = (done > 0) ? StringFormat("%+.2f R", avgR) : "-";
       cols[r++] = (avgR > 0) ? clrLime : (avgR < 0 ? clrRed : clrGray);
      }
-   ObjectSetInteger(0, bg, OBJPROP_YSIZE, r * rowH + PanelFontSize);
+   ObjectSetInteger(0, bg, OBJPROP_YSIZE, (r + 1) * rowH + PanelFontSize);
 
    for(int k = 0; k < r; k++)
      {
-      int y = PanelY + PanelFontSize / 2 + k * rowH;
-      Lbl("N" + IntegerToString(k), PanelX + 8, y, names[k], clrSilver);
-      Lbl("V" + IntegerToString(k), PanelX + 8 + colW, y, vals[k], cols[k]);
+      int y = PanelY + PanelFontSize / 2 + (k + 1) * rowH;
+      Lbl("P_N" + IntegerToString(k), PanelX + 8, y, names[k], clrSilver);
+      Lbl("P_V" + IntegerToString(k), PanelX + 8 + colW, y, vals[k], cols[k]);
      }
   }
 //+------------------------------------------------------------------+
