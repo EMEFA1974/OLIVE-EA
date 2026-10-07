@@ -63,6 +63,7 @@ enum ENUM_CHECK4_PRICE
 
 input int               MinScore          = 5;     // Score needed for a signal (1-5)
 input bool              ShowSignals       = true;  // Draw signal arrows
+input int               ArrowWidth        = 5;     // Arrow size/outline thickness (1-5)
 input bool              AlertPopup        = true;  // Popup alert on signal
 input bool              AlertPush         = false; // Push notification on signal
 input bool              AlertEmail        = false; // Email on signal
@@ -179,8 +180,11 @@ int OnInit()
    PlotIndexSetInteger(3, PLOT_DRAW_BEGIN, VWMA4 - 1);
    PlotIndexSetInteger(4, PLOT_ARROW, 241);   // hollow up arrow
    PlotIndexSetInteger(5, PLOT_ARROW, 242);   // hollow down arrow
-   PlotIndexSetInteger(4, PLOT_ARROW_SHIFT, 15);
-   PlotIndexSetInteger(5, PLOT_ARROW_SHIFT, -15);
+   int aw = MathMax(1, MathMin(5, ArrowWidth));
+   PlotIndexSetInteger(4, PLOT_LINE_WIDTH, aw);
+   PlotIndexSetInteger(5, PLOT_LINE_WIDTH, aw);
+   PlotIndexSetInteger(4, PLOT_ARROW_SHIFT, 8 + 4 * aw);
+   PlotIndexSetInteger(5, PLOT_ARROW_SHIFT, -(8 + 4 * aw));
 
    IndicatorSetString(INDICATOR_SHORTNAME, "VWMA RSI Score Ind");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
