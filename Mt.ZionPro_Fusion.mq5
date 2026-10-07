@@ -114,6 +114,8 @@ input double         InpPendingRetrace  = 0.40;  // fraction of signal candle ra
 input bool           InpPendingUseRange = true;  // use max(points, range*retrace)
 input int            InpPendingExpire   = 12;    // cancel pending after N closed bars
 input int            InpMinSLGapPts     = 15;    // keep pending entry this far from SL
+input bool           InpConfirmBar      = true;  // the bar after the signal must close its way (buy: bullish, above the signal mid) before the order is placed; arrow appears then
+input bool           InpCancelAtTP1     = true;  // cancel an unfilled pending if price reaches TP1 first (a limit that only fills on the way back is a losing fill)
 
 input group "=== Re-entry after SL ==="
 input bool   InpReentryOn      = true;
@@ -339,6 +341,10 @@ struct Idea
    bool      re;
    int       grade;      // GRADE_A / B / C
    int       armTrend;   // EMA trend when the idea was armed
+   bool      needConfirm;  // waiting for the confirmation bar (order not placed yet)
+   double    sigMid;       // midpoint of the signal candle
+   datetime  confirmTime;  // close of the confirmation bar
+   string    why;          // grade reasons, for the arrow tooltip
   };
 Idea idea;
 
@@ -535,6 +541,10 @@ void ResetIdea()
    idea.re = false;
    idea.grade = GRADE_NONE;
    idea.armTrend = 0;
+   idea.needConfirm = false;
+   idea.sigMid = 0;
+   idea.confirmTime = 0;
+   idea.why = "";
   }
 
 // finish the running idea but keep its levels as the current zone
@@ -659,6 +669,9 @@ void ArmIdea(const int dir, const Candle &bar, const bool re, const double buf,
    idea.re = re;
    idea.grade = grade;
    idea.armTrend = trendDir;
+   idea.sigMid = (bar.h + bar.l) / 2.0;
+   idea.confirmTime = 0;
+   idea.needConfirm = (InpConfirmBar && InpPendingOn);
    ApplyLevels(dir, entry, sl);
    idea.state = (InpPendingOn ? IDEA_PENDING : IDEA_LIVE);
    if(idea.state == IDEA_LIVE)
@@ -691,6 +704,18 @@ void StopOut(const Candle &bar)
    idea.slBarAge = 0;
   }
 
+// arrow + grade tag + counters for a signal on the bar that opened at t
+void MarkSignal(const datetime t, const int dir, const bool re, const int grade, const string why)
+  {
+   int sh = iBarShift(_Symbol, _Period, t, true);
+   if(sh < 0) return;
+   double price = (dir > 0 ? iLow(_Symbol, _Period, sh) : iHigh(_Symbol, _Period, sh));
+   if(dir > 0) { if(re) ReBuyBuf[sh]  = price; else BuyBuf[sh]  = price; gCntBuy++; }
+   else        { if(re) ReSellBuf[sh] = price; else SellBuf[sh] = price; gCntSell++; }
+   AddEv(EV_SIG, t);
+   GradeTag(sh, t, price, dir, grade, re, why);
+  }
+
 void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int trendDir)
   {
    if(idea.state == IDEA_IDLE) return;
@@ -701,10 +726,35 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int tren
 
    if(idea.state == IDEA_PENDING)
      {
+      if(idea.needConfirm)
+        {
+         // the next bar must close the signal's way; the order is placed only after it closes
+         bool ok = (idea.dir > 0 ? (bar.c > idea.sigMid && bar.c >= bar.o)
+                                 : (bar.c < idea.sigMid && bar.c <= bar.o));
+         if(!ok)
+           {
+            if(InpShowFiltered)
+              {
+               int ssh = iBarShift(_Symbol, _Period, idea.signalTime, true);
+               if(ssh >= 0)
+                  FilteredMark(idea.signalTime, (idea.dir > 0 ? iLow(_Symbol, _Period, ssh) : iHigh(_Symbol, _Period, ssh)),
+                               idea.dir, idea.grade, idea.why + "  | not confirmed by the next bar");
+              }
+            EndIdea(" [NOT CONFIRMED]", bar.t);
+            return;
+           }
+         idea.needConfirm = false;
+         idea.confirmTime = bar.t;
+         MarkSignal(idea.signalTime, idea.dir, idea.re, idea.grade, idea.why);
+         return;
+        }
       idea.pendAge++;
       if(idea.pendAge > InpPendingExpire) { EndIdea(" [EXPIRED]", bar.t); return; }
       if(TrendAgainst(idea.dir, d, h4, trendDir)) { EndIdea(" [CANCELLED]", bar.t); return; }
-      if(!TouchedLevel(bar, idea.entry, (idea.dir > 0 ? sp : 0.0))) return;
+      bool touched = TouchedLevel(bar, idea.entry, (idea.dir > 0 ? sp : 0.0));
+      if(InpCancelAtTP1 && !touched && (idea.dir > 0 ? bar.h >= idea.tp1 : bar.l + xs <= idea.tp1))
+        { EndIdea(" [MISSED]", bar.t); return; }   // the move left without us: never chase it back
+      if(!touched) return;
       idea.state = IDEA_LIVE;
       idea.fillTime = bar.t;
       idea.slBarAge = 0;
@@ -1424,7 +1474,7 @@ void DrawLiveZone()
       gz.t1    = idea.signalTime;
       gz.tEnd  = 0;
       gz.status = "";
-      if(idea.state == IDEA_PENDING) gz.status = (InpPendingType == PEND_LIMIT ? " [LIMIT]" : " [STOP]");
+      if(idea.state == IDEA_PENDING) gz.status = (idea.needConfirm ? " [CONFIRMING]" : (InpPendingType == PEND_LIMIT ? " [LIMIT]" : " [STOP]"));
       if(idea.state == IDEA_LIVE)    gz.status = (idea.tp1Done ? " [TP1 HIT]" : " [FILLED]");
       if(idea.state == IDEA_SL_WAIT) gz.status = " [SL HIT]";
      }
@@ -1685,7 +1735,7 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "MT.ZIONPRO FUSION", C_TXT, InpPanelTitleFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.08  " + ShortToString((ushort)0x25B2), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.09  " + ShortToString((ushort)0x25B2), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -2085,24 +2135,22 @@ int OnCalculate(const int rates_total,
         {
          if(idea.dir > 0 && ReOK(gradeB))
            {
-            ReBuyBuf[i] = low[i];
             int rc = idea.reCount + 1;
             ArmIdea(1, bar, true, buf, gradeB, trendDir);
             idea.reCount = rc;
+            idea.why = whyB;
             lastBuyTime = bar.t;
-            gCntBuy++; AddEv(EV_SIG, bar.t);
-            GradeTag(i, time[i], low[i], 1, gradeB, true, whyB);
+            if(idea.state != IDEA_IDLE && !idea.needConfirm) MarkSignal(bar.t, 1, true, gradeB, whyB);
             didRe = true;
            }
          else if(idea.dir < 0 && ReOK(gradeS))
            {
-            ReSellBuf[i] = high[i];
             int rc = idea.reCount + 1;
             ArmIdea(-1, bar, true, buf, gradeS, trendDir);
             idea.reCount = rc;
+            idea.why = whyS;
             lastSellTime = bar.t;
-            gCntSell++; AddEv(EV_SIG, bar.t);
-            GradeTag(i, time[i], high[i], -1, gradeS, true, whyS);
+            if(idea.state != IDEA_IDLE && !idea.needConfirm) MarkSignal(bar.t, -1, true, gradeS, whyS);
             didRe = true;
            }
         }
@@ -2126,20 +2174,18 @@ int OnCalculate(const int rates_total,
 
          if(takeB)
            {
-            BuyBuf[i] = low[i];
             lastBuyTime = bar.t;
             ArmIdea(1, bar, false, buf, gradeB, trendDir);
-            gCntBuy++; AddEv(EV_SIG, bar.t);
-            GradeTag(i, time[i], low[i], 1, gradeB, false, whyB);
+            idea.why = whyB;
+            if(idea.state != IDEA_IDLE && !idea.needConfirm) MarkSignal(bar.t, 1, false, gradeB, whyB);
             armed = true;
            }
          else if(takeS)
            {
-            SellBuf[i] = high[i];
             lastSellTime = bar.t;
             ArmIdea(-1, bar, false, buf, gradeS, trendDir);
-            gCntSell++; AddEv(EV_SIG, bar.t);
-            GradeTag(i, time[i], high[i], -1, gradeS, false, whyS);
+            idea.why = whyS;
+            if(idea.state != IDEA_IDLE && !idea.needConfirm) MarkSignal(bar.t, -1, false, gradeS, whyS);
             armed = true;
            }
         }
@@ -2215,6 +2261,16 @@ void CheckAlerts(const datetime barTime, const double barClose)
      }
 
    if(barTime == lastAlertBar) return;
+   if(InpConfirmBar && InpPendingOn)
+     {
+      if(idea.state == IDEA_IDLE || idea.confirmTime != barTime) return;
+      lastAlertBar = barTime;
+      if(idea.re && !InpAlertReentry) return;
+      string cs = (idea.dir > 0 ? (idea.re ? "RE-ENTRY BUY" : "BUY") : (idea.re ? "RE-ENTRY SELL" : "SELL"))
+                  + " " + GradeName(idea.grade) + " CONFIRMED PEND";
+      FireAlert(cs, barTime, barClose);
+      return;
+     }
    bool buy    = (BuyBuf[1]    != EMPTY_VALUE);
    bool sell   = (SellBuf[1]   != EMPTY_VALUE);
    bool rebuy  = (ReBuyBuf[1]  != EMPTY_VALUE);
