@@ -18,10 +18,10 @@
 //+------------------------------------------------------------------+
 #property copyright "FusionOliveInd"
 #property link      ""
-#property version   "2.40"
+#property version   "2.50"
 #property description "FusionOliveInd: Mt.ZionPro engine + VWMA/RSI score. Grade A/B/C toggles, filtered Grade C, hollow arrows."
 #property indicator_chart_window
-#property indicator_buffers 10
+#property indicator_buffers 20
 #property indicator_plots   8
 
 #property indicator_label1  "Buy"
@@ -89,6 +89,9 @@ enum ENUM_GRADE
 // hollow (outline) Wingdings arrows
 #define ARROW_UP_HOLLOW 241
 #define ARROW_DN_HOLLOW 242
+
+// first input on purpose: FusionOliveEA loads the indicator with iCustom(..., true)
+input bool InpHeadless = false;   // EA use only: no panel, zones, levels, grade tags or alerts
 
 input group "=== Timeframes ==="
 input ENUM_TIMEFRAMES InpTF_D  = PERIOD_D1;
@@ -292,6 +295,10 @@ double SellBuf[];
 double ReBuyBuf[];
 double ReSellBuf[];
 double V1[], V2[], V3[], V4[];   // VWMA lines on High (series indexing, like the arrow buffers)
+// EA signal buffers (calculations only), one value per closed bar, read by FusionOliveEA:
+// EaSig = dir * (kind + 10 if re-entry); kind 1 = pending orders placed (entry is a LIMIT),
+// 4 = pending orders placed (entry is a STOP), 2 = enter at market now, 3 = cancel the pending orders
+double EaSig[], EaSigT[], EaEntry[], EaBrk[], EaSL[], EaTP1[], EaTP2[], EaBSL[], EaBTP1[], EaBTP2[];
 double VL1[], VL4[];             // VWMA1 / VWMA4 on Low: sells are measured against these (mirror of buys vs High)
 
 int gHR1 = INVALID_HANDLE, gHR2 = INVALID_HANDLE, gHR3 = INVALID_HANDLE;   // RSI handles
@@ -432,6 +439,16 @@ int OnInit()
    SetIndexBuffer(7, V4,        INDICATOR_DATA);
    SetIndexBuffer(8, VL1,       INDICATOR_CALCULATIONS);
    SetIndexBuffer(9, VL4,       INDICATOR_CALCULATIONS);
+   SetIndexBuffer(10, EaSig,    INDICATOR_CALCULATIONS);
+   SetIndexBuffer(11, EaSigT,   INDICATOR_CALCULATIONS);
+   SetIndexBuffer(12, EaEntry,  INDICATOR_CALCULATIONS);
+   SetIndexBuffer(13, EaBrk,    INDICATOR_CALCULATIONS);
+   SetIndexBuffer(14, EaSL,     INDICATOR_CALCULATIONS);
+   SetIndexBuffer(15, EaTP1,    INDICATOR_CALCULATIONS);
+   SetIndexBuffer(16, EaTP2,    INDICATOR_CALCULATIONS);
+   SetIndexBuffer(17, EaBSL,    INDICATOR_CALCULATIONS);
+   SetIndexBuffer(18, EaBTP1,   INDICATOR_CALCULATIONS);
+   SetIndexBuffer(19, EaBTP2,   INDICATOR_CALCULATIONS);
    ArraySetAsSeries(BuyBuf, true);
    ArraySetAsSeries(SellBuf, true);
    ArraySetAsSeries(ReBuyBuf, true);
@@ -442,6 +459,16 @@ int OnInit()
    ArraySetAsSeries(V4, true);
    ArraySetAsSeries(VL1, true);
    ArraySetAsSeries(VL4, true);
+   ArraySetAsSeries(EaSig, true);
+   ArraySetAsSeries(EaSigT, true);
+   ArraySetAsSeries(EaEntry, true);
+   ArraySetAsSeries(EaBrk, true);
+   ArraySetAsSeries(EaSL, true);
+   ArraySetAsSeries(EaTP1, true);
+   ArraySetAsSeries(EaTP2, true);
+   ArraySetAsSeries(EaBSL, true);
+   ArraySetAsSeries(EaBTP1, true);
+   ArraySetAsSeries(EaBTP2, true);
 
    // hollow outline arrows: aqua buys, magenta sells
    PlotIndexSetInteger(0, PLOT_ARROW, ARROW_UP_HOLLOW);
@@ -474,7 +501,7 @@ int OnInit()
       Print("FusionOliveInd: could not create the filter indicators (EMA / ATR / RSI)");
       return(INIT_FAILED);
      }
-   PanelInit();
+   if(!InpHeadless) PanelInit();
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
    lastAlertBar = 0;
    lastFillAlert = 0;
@@ -487,7 +514,7 @@ int OnInit()
    ResetIdea();
    ResetZone();
    ResetCounts();
-   if(InpAutoChartShift)
+   if(InpAutoChartShift && !InpHeadless)
      {
       ChartSetInteger(0, CHART_SHIFT, true);
       ChartSetDouble(0, CHART_SHIFT_SIZE, MathMax(10, MathMin(50, InpChartShiftPct)));
@@ -501,6 +528,7 @@ void OnDeinit(const int reason)
    if(gEmaFast != INVALID_HANDLE) IndicatorRelease(gEmaFast);
    if(gEmaSlow != INVALID_HANDLE) IndicatorRelease(gEmaSlow);
    FiltersRelease();
+   if(InpHeadless) return;   // never touch the objects of a visible copy on the same chart
    ObjectsDeleteAll(0, PREFIX);
    ObjectsDeleteAll(0, ARPRE);
    ObjectsDeleteAll(0, ZPRE);
@@ -509,6 +537,7 @@ void OnDeinit(const int reason)
 
 void ClearZones()
   {
+   if(InpHeadless) return;
    ObjectsDeleteAll(0, ZPRE);
   }
 
@@ -577,6 +606,9 @@ void ResetIdea()
 // finish the running idea but keep its levels as the current zone
 void EndIdea(const string status, const datetime t)
   {
+   // pending orders the EA placed must go when the engine drops them
+   if(idea.state == IDEA_PENDING && !idea.needConfirm)
+      EaPublish(t, 3);
    // a setup or pending order that ends unfilled gets a CANCELLED alert (MISSED has its own)
    if(idea.state == IDEA_PENDING && status != " [MISSED]")
      {
@@ -694,6 +726,40 @@ bool BuildPendingPrices(const int dir, const Candle &bar, const double buf, doub
    return true;
   }
 
+// SL / TP1 / TP2 the engine would use for a fill at entry (same maths as ApplyLevels)
+void LevelsFor(const int dir, const double entry, const double slR, double &sl, double &tp1, double &tp2)
+  {
+   double risk = (dir > 0 ? (entry - slR) : (slR - entry));
+   if(risk <= 0.0) risk = Pt() * 10;
+   double w = 1.0 + MathMax(0.0, InpSLWidenPct) / 100.0;
+   sl  = (dir > 0 ? entry - risk * w : entry + risk * w);
+   tp1 = entry + dir * risk * InpRR1;
+   tp2 = entry + dir * risk * InpRR2;
+  }
+
+// hand a confirmed signal (kind 1 / 2) or a cancel (kind 3) to FusionOliveEA on the bar that closed at t
+int EaPendKind() { return (InpPendingType == PEND_STOP ? 4 : 1); }
+
+void EaPublish(const datetime t, const int kind)
+  {
+   int sh = iBarShift(_Symbol, _Period, t, true);
+   if(sh < 0 || sh >= ArraySize(EaSig) || idea.dir == 0) return;
+   EaSig[sh]   = idea.dir * (kind + (idea.re ? 10 : 0));
+   EaSigT[sh]  = (double)idea.signalTime;
+   EaEntry[sh] = idea.entry;
+   EaBrk[sh]   = idea.brkEntry;
+   EaSL[sh]    = idea.sl;
+   EaTP1[sh]   = idea.tp1;
+   EaTP2[sh]   = idea.tp2;
+   EaBSL[sh] = EaBTP1[sh] = EaBTP2[sh] = 0.0;
+   if(idea.brkEntry > 0.0)
+     {
+      double bsl, b1, b2;
+      LevelsFor(idea.dir, idea.brkEntry, idea.slR, bsl, b1, b2);
+      EaBSL[sh] = bsl; EaBTP1[sh] = b1; EaBTP2[sh] = b2;
+     }
+  }
+
 void ArmIdea(const int dir, const Candle &bar, const bool re, const double buf,
              const int grade, const int trendDir)
   {
@@ -725,6 +791,8 @@ void ArmIdea(const int dir, const Candle &bar, const bool re, const double buf,
       idea.fillTime = bar.t;
    if(idea.needConfirm)
       SetupArrow(bar.t, dir, re, true);
+   else if(idea.state != IDEA_IDLE)
+      EaPublish(bar.t, idea.state == IDEA_LIVE ? 2 : EaPendKind());   // no confirmation bar: orders go in at this close
   }
 
 // shift = spread for prices the broker checks on the ask (chart bars are bid)
@@ -818,11 +886,15 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int tren
             gMissT = bar.t; gMissDir = idea.dir; gMissGrade = idea.grade; gMissRe = idea.re;
             EndIdea(" [MISSED]", bar.t);
            }
+         else
+            EaPublish(bar.t, EaPendKind());   // confirmed: the EA places its orders now
          return;
         }
+      bool brkConfirm = false;
       if(idea.needConfirm)
         {
          // hybrid: price broke the signal candle during the confirmation bar - the break is the confirmation
+         brkConfirm = true;
          idea.needConfirm = false;
          idea.confirmTime = bar.t;
          MarkSignal(idea.signalTime, idea.dir, idea.re, idea.grade, idea.why);
@@ -847,6 +919,7 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int tren
       idea.fillTime = bar.t;
       idea.slBarAge = 0;
       fillBar = true;   // SL / TP are checked on the fill bar too
+      if(brkConfirm) EaPublish(bar.t, 2);   // already filled on the break: the EA enters at market
      }
 
    if(!InpReentryOn && idea.state == IDEA_SL_WAIT)
@@ -1498,6 +1571,7 @@ double RecentSwingLow(const int rates_total, const int i, const double &low[])
 void GradeTag(const int sh, const datetime t, const double price, const int dir, const int grade,
               const bool re, const string why)
   {
+   if(InpHeadless) return;
    if(!InpGradeTag || t == 0) return;
    double atr = ATRAt(sh);
    if(atr <= 0) atr = (iHigh(_Symbol, _Period, sh) - iLow(_Symbol, _Period, sh));
@@ -1522,6 +1596,7 @@ void GradeTag(const int sh, const datetime t, const double price, const int dir,
 // signal whose grade is toggled off: grey grade letter, hover shows the failed filters
 void FilteredMark(const datetime t, const double price, const int dir, const int grade, const string why)
   {
+   if(InpHeadless) return;
    if(t == 0) return;
    string name = ARPRE + "F" + TimeToString(t, TIME_DATE|TIME_MINUTES) + (dir > 0 ? "_U" : "_D");
    if(ObjectFind(0, name) < 0)
@@ -1613,6 +1688,7 @@ color SignalColor(const int dir, const bool re)
 // finished one until a new signal replaces it. Objects are updated in place.
 void DrawLiveZone()
   {
+   if(InpHeadless) return;
    if(idea.state != IDEA_IDLE && idea.signalTime != 0)
      {
       gz.valid = true;
@@ -1843,6 +1919,7 @@ string WinRate(const int wins, const int losses, color &c)
 
 void DrawPanel(const bool force = false)
   {
+   if(InpHeadless) return;
    if(!InpShowPanel) return;
    uint now = GetTickCount();
    if(!force && gLastPanelMs != 0 && now - gLastPanelMs < 500) return;   // redraw at most twice a second
@@ -2084,6 +2161,7 @@ void HLine(const string name, const double price, const color clr, const ENUM_LI
 
 void DrawLevels()
   {
+   if(InpHeadless) return;
    double pdh = iHigh(_Symbol, PERIOD_D1, 1), pdl = iLow(_Symbol, PERIOD_D1, 1);
    double pwh = iHigh(_Symbol, PERIOD_W1, 1), pwl = iLow(_Symbol, PERIOD_W1, 1);
    if(pdh > 0) HLine("PDH", pdh, InpPDColor, STYLE_DOT,  "PDH");
@@ -2170,6 +2248,7 @@ void PanelMouse(const long lparam, const double dparam, const string sparam)
 
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
   {
+   if(InpHeadless) return;
    if(id == CHARTEVENT_MOUSE_MOVE) PanelMouse(lparam, dparam, sparam);
    else if(id == CHARTEVENT_CHART_CHANGE) DrawPanel(true);
   }
@@ -2230,6 +2309,7 @@ int OnCalculate(const int rates_total,
       ArrayInitialize(SellBuf, EMPTY_VALUE);
       ArrayInitialize(ReBuyBuf, EMPTY_VALUE);
       ArrayInitialize(ReSellBuf, EMPTY_VALUE);
+      ArrayInitialize(EaSig, 0.0);
       // arrows are kept (not deleted) so history stays on the chart
       lastBuyTime = lastSellTime = 0;
       lastFiltB = lastFiltS = 0;
@@ -2259,6 +2339,8 @@ int OnCalculate(const int rates_total,
       if(time[i] <= gLastBar) continue;
       gLastBar = time[i];
       BuyBuf[i] = SellBuf[i] = ReBuyBuf[i] = ReSellBuf[i] = EMPTY_VALUE;
+      EaSig[i] = EaSigT[i] = EaEntry[i] = EaBrk[i] = EaSL[i] = EaTP1[i] = EaTP2[i] = 0.0;
+      EaBSL[i] = EaBTP1[i] = EaBTP2[i] = 0.0;
 
       Candle bar;
       bar.o = open[i]; bar.h = high[i]; bar.l = low[i]; bar.c = close[i];
@@ -2389,7 +2471,7 @@ int OnCalculate(const int rates_total,
      }
 
    BuyBuf[0] = SellBuf[0] = ReBuyBuf[0] = ReSellBuf[0] = EMPTY_VALUE;
-   if(prev_calculated <= 0 && InpShowDiag)
+   if(prev_calculated <= 0 && InpShowDiag && !InpHeadless)
      {
       // short lines so the Experts tab does not cut them off
       PrintFormat("FusionOliveInd BUY  taken %d | blockers: %s | A %d B %d C %d Cx %d busy %d of %d", gCntBuy, DiagTop(0),
@@ -2444,6 +2526,7 @@ void FireAlert(const string side, const datetime barTime, const double barClose,
 
 void CheckAlerts(const datetime barTime, const double barClose)
   {
+   if(InpHeadless) return;
    if(barTime == 0) return;
 
    if(InpAlertFill && idea.state == IDEA_LIVE && idea.fillTime == barTime && lastFillAlert != barTime)
