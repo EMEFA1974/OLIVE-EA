@@ -26,8 +26,9 @@
 //|   - strict trigger: close through a real swing, or a pin bar     |
 //|     that sweeps the last bars                                    |
 //| C signals must also pass the "C rules" (defaults): at most 3     |
-//| fails, momentum >= 4, not counter-trend, room to TP1, no RSI     |
-//| exhaustion, strict candle unless momentum is 5/5. Failing C =    |
+//| fails (3 only with momentum 5/5), momentum >= 4, not counter-    |
+//| trend, room to TP1, no RSI exhaustion, strict candle unless      |
+//| momentum is 5/5. Failing C =                                     |
 //| grey "C-" (no trade). Each rule can be toggled in the inputs.    |
 //| Panel: click its title to hide it, double-click chart to restore.|
 //| Arrows: buys Aqua, sells Magenta (all grades).                   |
@@ -115,7 +116,7 @@ input double InpClosePos     = 0.55;               // base trigger: close in the
 input int    InpSwingLook    = 2;                  // base trigger: displacement over the last N bars
 input bool   InpStrictOn     = true;               // strict trigger (graded)
 input double InpStrictBody   = 0.50;
-input double InpStrictClose  = 0.65;
+input double InpStrictClose  = 0.6625;
 input int    InpSwingBars    = 15;                 // swing to break is searched within this many bars
 input int    InpFractalSide  = 2;                  // bars on each side that make a swing point
 input double InpPinWickMult  = 2.0;                // pin bar: rejection wick >= this x body
@@ -125,10 +126,10 @@ input int    InpPinSweep     = 3;                  // and the wick sweeps the pr
 input group "=== Volatility / location filters (graded) ==="
 input int    InpATRPeriod   = 14;
 input bool   InpATROn       = true;                // signal candle range between min and max x ATR
-input double InpMinRangeATR = 0.5;
+input double InpMinRangeATR = 0.525;
 input double InpMaxRangeATR = 2.5;
 input bool   InpLocationOn  = true;                // close within k x ATR of the mid VWMA
-input double InpMaxExtATR   = 2.0;
+input double InpMaxExtATR   = 1.875;
 input bool   InpRoomOn      = true;                // no PDH/PDL/PWH/PWL between entry and TP1
 input bool   InpExhaustOn   = true;                // fast RSI not beyond OB (buys) / 100-OB (sells)
 input double InpRsiOB       = 80.0;
@@ -148,6 +149,7 @@ input bool   InpGradeC       = true;               // C grade (fails 2+ filters 
 input group "=== Grade C rules (C = fails two or more filters) ==="
 input int    InpCMaxFails    = 3;                  // C may fail at most this many filters (more = rejected)
 input int    InpCMinScore    = 4;                  // C needs this momentum score (1-5)
+input int    InpCMaxFailScore = 5;                 // a C at the max fail count needs this momentum score
 input bool   InpCNoCounter   = true;               // reject C when H1+H4 trend is against the trade (no trend is OK)
 input bool   InpCNoTrendD1   = false;              // reject C when the trend AND D1 filters both fail
 input bool   InpCNeedCandle  = true;               // reject C when the strict candle failed AND momentum is below 5/5
@@ -159,7 +161,7 @@ input group "=== Signal display ==="
 input bool   InpShowFiltered = true;               // grey grade letter where a toggled-off grade fired (hover = failed filters)
 input color  InpFiltColor    = clrSilver;
 input bool   InpReplacePending = true;             // a new signal replaces a pending (unfilled) entry
-input int    InpCooldown     = 6;                  // bars between signals in the same direction
+input int    InpCooldown     = 7;                  // bars between signals in the same direction
 input int    InpHistoryBars  = 3000;               // closed bars replayed on load (stats cover these)
 
 input group "=== Entry / exits ==="
@@ -776,6 +778,8 @@ int SignalGrade(const int dir, const Candle &k, const int sh, const int trendDir
    string rule = "";
    if(fails > InpCMaxFails)                                   rule += " too-many-fails";
    if(score < InpCMinScore)                                   rule += " score<" + IntegerToString(InpCMinScore);
+   else if(fails == InpCMaxFails && fails > 2 && score < InpCMaxFailScore)
+                                                              rule += " " + IntegerToString(fails) + "-fails-score<" + IntegerToString(InpCMaxFailScore);
    if(InpCNoCounter  && (mask & F_COUNTER) != 0)              rule += " counter-trend";
    if(InpCNoTrendD1  && (mask & F_TREND) != 0 && (mask & F_D1) != 0) rule += " trend+D1";
    if(InpCNeedCandle && (mask & F_CANDLE) != 0 && score < 5)  rule += " weak-candle";
