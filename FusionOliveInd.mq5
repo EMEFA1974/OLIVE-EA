@@ -18,7 +18,7 @@
 //+------------------------------------------------------------------+
 #property copyright "FusionOliveInd"
 #property link      ""
-#property version   "2.30"
+#property version   "2.31"
 #property description "FusionOliveInd: Mt.ZionPro engine + VWMA/RSI score. Grade A/B/C toggles, filtered Grade C, hollow arrows."
 #property indicator_chart_window
 #property indicator_buffers 10
@@ -230,6 +230,7 @@ input string InpSoundFile    = "alert.wav";
 input bool   InpAlertOnLoad  = false;
 input bool   InpAlertReentry = true;
 input bool   InpAlertFill    = true;    // alert when pending is filled
+input bool   InpAlertCancel  = true;    // alert when a setup / pending order ends without a fill (not confirmed, expired, trend turned, reversed)
 
 input group "=== Visuals ==="
 input bool   InpShowPanel    = true;
@@ -301,6 +302,11 @@ datetime lastAlertBar  = 0;
 datetime lastFillAlert = 0;
 datetime lastSetupAlert = 0;
 datetime lastMissAlert  = 0;
+datetime gCancT = 0;      // bar on which a setup / pending order ended without a fill
+int      gCancDir = 0, gCancGrade = 0;
+bool     gCancRe = false;
+string   gCancWhy = "";
+datetime lastCancAlert = 0;
 datetime gMissT = 0;      // confirmation bar that already reached TP1 (setup missed)
 int      gMissDir = 0, gMissGrade = 0;
 bool     gMissRe = false;
@@ -472,6 +478,8 @@ int OnInit()
    lastFillAlert = 0;
    lastSetupAlert = 0;
    lastMissAlert = 0;
+   gCancT = 0;
+   lastCancAlert = 0;
    gMissT = 0;
    allowAlerts  = InpAlertOnLoad;
    ResetIdea();
@@ -567,6 +575,19 @@ void ResetIdea()
 // finish the running idea but keep its levels as the current zone
 void EndIdea(const string status, const datetime t)
   {
+   // a setup or pending order that ends unfilled gets a CANCELLED alert (MISSED has its own)
+   if(idea.state == IDEA_PENDING && status != " [MISSED]")
+     {
+      string why = "";
+      if(status == " [NOT CONFIRMED]")  why = "not confirmed";
+      else if(status == " [EXPIRED]")   why = "expired, not filled";
+      else if(status == " [CANCELLED]") why = "trend turned against it";
+      else if(status == " [REVERSED]")  why = "opposite signal";
+      if(why != "")
+        {
+         gCancT = t; gCancDir = idea.dir; gCancGrade = idea.grade; gCancRe = idea.re; gCancWhy = why;
+        }
+     }
    if(idea.state == IDEA_PENDING && idea.needConfirm)
       SetupArrow(idea.signalTime, idea.dir, idea.re, false);   // setup never confirmed: arrow goes
    if(idea.state != IDEA_IDLE && idea.signalTime != 0)
@@ -2307,21 +2328,21 @@ int OnCalculate(const int rates_total,
    return(rates_total);
   }
 
-void FireAlert(const string side, const datetime barTime, const double barClose)
+void FireAlert(const string side, const datetime barTime, const double barClose, const bool levels = true)
   {
    string tf = EnumToString(_Period);
    StringReplace(tf, "PERIOD_", "");
    string extra = "";
-   if(idea.state != IDEA_IDLE)
+   if(levels && idea.state != IDEA_IDLE)
       extra = StringFormat(" | EN %s SL %s TP1 %s TP2 %s",
                            DoubleToString(idea.entry, _Digits),
                            DoubleToString(idea.sl, _Digits),
                            DoubleToString(idea.tp1, _Digits),
                            DoubleToString(idea.tp2, _Digits));
 
-   if(idea.state == IDEA_PENDING && idea.brkEntry > 0.0)
+   if(levels && idea.state == IDEA_PENDING && idea.brkEntry > 0.0)
       extra += " BRK " + DoubleToString(idea.brkEntry, _Digits);
-   if(idea.state != IDEA_IDLE)
+   if(levels && idea.state != IDEA_IDLE)
       extra += StringFormat(" | score %d/5", ScoreAt(1, idea.dir));
 
    string msg = StringFormat("FusionOliveInd %s %s | %s | close %s | %s%s",
@@ -2343,6 +2364,15 @@ void CheckAlerts(const datetime barTime, const double barClose)
       lastFillAlert = barTime;
       FireAlert((idea.dir > 0 ? "PENDING FILLED BUY" : "PENDING FILLED SELL")
                 + (idea.brkEntry > 0.0 ? (idea.fillIsStop ? " (BREAKOUT)" : " (PULLBACK)") : ""), barTime, barClose);
+     }
+
+   // setup / pending order ended without a fill (no return: a new setup on the same bar still alerts)
+   if(InpAlertCancel && InpPendingOn && gCancT == barTime && lastCancAlert != barTime)
+     {
+      lastCancAlert = barTime;
+      if(!(gCancRe && !InpAlertReentry))
+         FireAlert((gCancDir > 0 ? (gCancRe ? "RE-ENTRY BUY" : "BUY") : (gCancRe ? "RE-ENTRY SELL" : "SELL"))
+                   + string(" ") + GradeName(gCancGrade) + " CANCELLED (" + gCancWhy + ")", barTime, barClose, false);
      }
 
    if(InpConfirmBar && InpPendingOn && InpSetupAlert)
