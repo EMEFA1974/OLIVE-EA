@@ -179,6 +179,7 @@ input double            InpRsiOS       = 20.0;          // RSI oversold
 input group "=== Signal Flow ==="
 input bool       InpOppOverride = true;            // a fresh opposite signal cancels a pending order or an SL re-entry wait (live trades still block)
 input bool       InpSoftChase   = true;            // range / extended / exhausted together count as at most ONE failed filter
+input bool       InpSoftHTF     = true;            // EMA trend + D1 together count as at most ONE failed filter (so a strong M5 move against the H4/D1 trend can still be B)
 input bool       InpShowDiag    = true;            // buy / sell diagnostics on the panel (also printed to the Experts log on load)
 input int        InpHistoryBars = 5000;            // closed bars replayed on load (signals, arrows and stats cover this many bars)
 
@@ -1138,8 +1139,11 @@ int SignalGrade(const int dir, const Candle &k, const int sh, const int trendDir
   {
    fails = 0;
    why = "";
-   if(InpFiltOn && trendDir != dir)          { fails++; why += " trend"; }
-   if(InpD1FilterOn && D1Against(dir, k.t) && !(InpD1SkipIfTrend && trendDir == dir)) { fails++; why += " D1"; }
+   // higher-timeframe filters: in an H4 / D1 downtrend every buy fails both, which alone made it a C
+   int htf = 0;
+   if(InpFiltOn && trendDir != dir)          { htf++; why += " trend"; }
+   if(InpD1FilterOn && D1Against(dir, k.t) && !(InpD1SkipIfTrend && trendDir == dir)) { htf++; why += " D1"; }
+   fails += (InpSoftHTF ? (int)MathMin(htf, 1) : htf);
    // "chasing" filters: a strong trend candle often trips several of them at once
    int chase = 0;
    double atr = ATRAt(sh);
@@ -1619,7 +1623,7 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "MT.ZIONPRO FUSION", C_TXT, InpPanelTitleFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.05  " + ShortToString((ushort)0x25B2), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.06  " + ShortToString((ushort)0x25B2), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -2092,11 +2096,13 @@ int OnCalculate(const int rates_total,
 
    BuyBuf[0] = SellBuf[0] = ReBuyBuf[0] = ReSellBuf[0] = EMPTY_VALUE;
    if(prev_calculated <= 0 && InpShowDiag)
-      PrintFormat("Mt.ZionPro Fusion %s %s, %d bars: BUY triggers %d (A %d B %d C %d Cx %d, busy %d, taken %d) blockers: %s | "
-                  "SELL triggers %d (A %d B %d C %d Cx %d, busy %d, taken %d) blockers: %s",
-                  _Symbol, StringSubstr(EnumToString(_Period), 7), start,
-                  gDTrig[0], gDGrade[0], gDGrade[1], gDGrade[2], gDGrade[4], gDBusy[0], gCntBuy, DiagTop(0),
-                  gDTrig[1], gDGrade[5], gDGrade[6], gDGrade[7], gDGrade[9], gDBusy[1], gCntSell, DiagTop(1));
+     {
+      // short lines so the Experts tab does not cut them off
+      PrintFormat("Fusion BUY  taken %d | blockers: %s | A %d B %d C %d Cx %d busy %d of %d", gCntBuy, DiagTop(0),
+                  gDGrade[0], gDGrade[1], gDGrade[2], gDGrade[4], gDBusy[0], gDTrig[0]);
+      PrintFormat("Fusion SELL taken %d | blockers: %s | A %d B %d C %d Cx %d busy %d of %d", gCntSell, DiagTop(1),
+                  gDGrade[5], gDGrade[6], gDGrade[7], gDGrade[9], gDBusy[1], gDTrig[1]);
+     }
    if(InpShowLevels) DrawLevels();
    DrawPanel();
    DrawLiveZone();
