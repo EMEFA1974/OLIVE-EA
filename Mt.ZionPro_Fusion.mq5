@@ -134,6 +134,7 @@ input int             InpFiltFast   = 50;          // TF trend up = EMA fast > E
 input int             InpFiltSlow   = 200;
 input bool            InpD1FilterOn = true;        // D1 must not be against the trade
 input int             InpD1EmaP     = 50;          // D1 against a buy = last D1 close below this D1 EMA
+input bool            InpD1SkipIfTrend = true;     // D1 is not counted when the H1 + H4 EMA trend already agrees with the trade (D1 lags turns)
 
 input group "=== ATR / Location Filter ==="
 input int    InpATRPeriod   = 14;                  // ATR on the chart timeframe
@@ -142,15 +143,16 @@ input double InpMinRangeATR = 0.6;                 // smaller = noise
 input double InpMaxRangeATR = 2.5;                 // larger = exhaustion
 input bool   InpLocationOn  = true;                // skip signals that chase price far from value
 input int    InpLocEmaP     = 21;                  // chart-TF EMA used as value
-input double InpMaxExtATR   = 1.5;                 // max distance close <-> EMA in ATR
+input double InpMaxExtATR   = 2.0;                 // max distance close <-> EMA in ATR
 input bool   InpATRStopOn   = true;                // SL buffer = max(InpSLBufferPts, ATR x k, spread x m)
 input double InpSLBufATR    = 0.3;
 input double InpSLBufSpread = 2.0;
 
 input group "=== Strict Trigger ==="
 input bool   InpStrictOn    = true;                // strong displacement through a real swing, or a real pin bar
-input double InpStrictBody  = 0.50;                // min body / range
-input double InpStrictClose = 0.70;                // close in the top (buy) / bottom (sell) 30% of the candle
+input double InpStrictBody  = 0.40;                // min body / range
+input double InpStrictClose = 0.65;                // close in the top (buy) / bottom (sell) 35% of the candle
+input int    InpBreakBars   = 2;                   // swing break counts if price was still on the other side within this many bars
 input int    InpSwingBars   = 15;                  // swing to break is searched within this many bars
 input int    InpFractalSide = 2;                   // bars on each side that make a swing point
 input double InpPinWickMult = 2.0;                 // pin bar: rejection wick >= this x body
@@ -159,7 +161,7 @@ input int    InpPinSweep    = 3;                   // and the wick takes out the
 
 input group "=== VWMA / RSI Score ==="
 input bool              InpScoreOn     = true;          // score below InpMinScore counts as a failed grade filter
-input int               InpMinScore    = 4;             // score needed in the trade direction (0-5)
+input int               InpMinScore    = 3;             // score needed in the trade direction (0-5)
 input bool              InpObOsOn      = true;          // RSI beyond OB (buy) / OS (sell) counts as a failed grade filter
 input bool              InpObOsAllRsi  = false;         // false = only the slow RSI1 is checked (fast RSIs spike on every strong trigger candle)
 input int               InpVWMA1       = 85;            // VWMA1 period (red, scored vs price)
@@ -1028,8 +1030,14 @@ bool StrictTrigger(const int dir, const Candle &k, const int sh)
    bool strongClose = (cp >= InpStrictClose);
 
    double lvl  = SwingLevel(sh, dir);
-   double prev = iClose(_Symbol, _Period, sh + 1);
-   bool breaks = (dir > 0 ? (k.c > lvl && prev <= lvl) : (k.c < lvl && prev >= lvl));
+   // close through the swing, with price still on the other side within the last InpBreakBars bars
+   bool before = false;
+   for(int b = 1; b <= MathMax(1, InpBreakBars) && !before; b++)
+     {
+      double pc = iClose(_Symbol, _Period, sh + b);
+      if(pc > 0 && (dir > 0 ? pc <= lvl : pc >= lvl)) before = true;
+     }
+   bool breaks = (dir > 0 ? k.c > lvl : k.c < lvl) && before;
    if(BodyRatio(k) >= InpStrictBody && strongClose && breaks) return true;
 
    double wick = (dir > 0 ? MathMin(k.o, k.c) - k.l : k.h - MathMax(k.o, k.c));
@@ -1130,7 +1138,7 @@ int SignalGrade(const int dir, const Candle &k, const int sh, const int trendDir
    fails = 0;
    why = "";
    if(InpFiltOn && trendDir != dir)          { fails++; why += " trend"; }
-   if(InpD1FilterOn && D1Against(dir, k.t))  { fails++; why += " D1"; }
+   if(InpD1FilterOn && D1Against(dir, k.t) && !(InpD1SkipIfTrend && trendDir == dir)) { fails++; why += " D1"; }
    // "chasing" filters: a strong trend candle often trips several of them at once
    int chase = 0;
    double atr = ATRAt(sh);
@@ -1608,7 +1616,7 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "MT.ZIONPRO FUSION", C_TXT, InpPanelTitleFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.03  " + ShortToString((ushort)0x25B2), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.04  " + ShortToString((ushort)0x25B2), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
