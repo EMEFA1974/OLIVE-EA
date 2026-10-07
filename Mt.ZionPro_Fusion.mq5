@@ -18,7 +18,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Mt.ZionPro Fusion"
 #property link      ""
-#property version   "2.10"
+#property version   "2.20"
 #property description "Mt.ZionPro engine + VWMA/RSI score. Grade A/B/C toggles, filtered Grade C, hollow arrows."
 #property indicator_chart_window
 #property indicator_buffers 10
@@ -110,6 +110,7 @@ input bool   InpAutoDigits   = true;   // 3/5-digit brokers: point inputs are sc
 input group "=== Pending Entry ==="
 input bool           InpPendingOn       = true;
 input ENUM_PEND_TYPE InpPendingType     = PEND_HYBRID;
+input bool           InpEnterAtOpen     = false; // market entry at the OPEN of the bar after the signal (no limit/stop); with the confirmation bar on, the trade is closed at that bar's close if it does not confirm
 input int            InpHybridBreakPts  = 10;    // hybrid: breakout stop this many points beyond the signal candle low (sell) / high (buy)
 input int            InpPendingPts      = 40;    // minimum distance in points
 input double         InpPendingRetrace  = 0.40;  // fraction of signal candle range
@@ -302,6 +303,10 @@ datetime lastFillAlert = 0;
 datetime lastSetupAlert = 0;
 datetime lastMissAlert  = 0;
 datetime gMissT = 0;      // confirmation bar that already reached TP1 (setup missed)
+datetime gExitT = 0;      // at-open entry closed because its bar did not confirm
+int      gExitDir = 0, gExitGrade = 0;
+bool     gExitRe = false;
+datetime lastExitAlert = 0;
 int      gMissDir = 0, gMissGrade = 0;
 bool     gMissRe = false;
 bool     allowAlerts   = false;
@@ -355,6 +360,7 @@ struct Idea
    string    why;          // grade reasons, for the arrow tooltip
    double    brkEntry;     // hybrid: breakout stop price (0 = none)
    bool      fillIsStop;   // the fill came from a stop order (fill-bar SL/TP order rules)
+   bool      atOpen;       // market entry at the next bar's open (InpEnterAtOpen)
   };
 Idea idea;
 
@@ -473,6 +479,8 @@ int OnInit()
    lastSetupAlert = 0;
    lastMissAlert = 0;
    gMissT = 0;
+   gExitT = 0;
+   lastExitAlert = 0;
    allowAlerts  = InpAlertOnLoad;
    ResetIdea();
    ResetZone();
@@ -562,6 +570,7 @@ void ResetIdea()
    idea.why = "";
    idea.brkEntry = 0;
    idea.fillIsStop = false;
+   idea.atOpen = false;
   }
 
 // finish the running idea but keep its levels as the current zone
@@ -671,6 +680,16 @@ bool BuildPendingPrices(const int dir, const Candle &bar, const double buf, doub
    return true;
   }
 
+// the bar after the signal is a confirmation bar (pending orders wait for it / at-open entries exit on it)
+bool ConfirmMode() { return (InpConfirmBar && (InpPendingOn || InpEnterAtOpen)); }
+
+// the bar closed the signal's way: buy bullish above the signal mid, sell bearish below it
+bool ConfirmedBy(const Candle &bar)
+  {
+   return (idea.dir > 0 ? (bar.c > idea.sigMid && bar.c >= bar.o)
+                        : (bar.c < idea.sigMid && bar.c <= bar.o));
+  }
+
 void ArmIdea(const int dir, const Candle &bar, const bool re, const double buf,
              const int grade, const int trendDir)
   {
@@ -691,13 +710,16 @@ void ArmIdea(const int dir, const Candle &bar, const bool re, const double buf,
    idea.armTrend = trendDir;
    idea.sigMid = (bar.h + bar.l) / 2.0;
    idea.confirmTime = 0;
-   idea.needConfirm = (InpConfirmBar && InpPendingOn);
-   idea.fillIsStop = (InpPendingOn && InpPendingType == PEND_STOP);
+   idea.needConfirm = ConfirmMode();
+   idea.atOpen = InpEnterAtOpen;
+   idea.fillIsStop = (!idea.atOpen && InpPendingOn && InpPendingType == PEND_STOP);
    idea.brkEntry = 0;
-   if(InpPendingOn && InpPendingType == PEND_HYBRID)
+   if(!idea.atOpen && InpPendingOn && InpPendingType == PEND_HYBRID)
       idea.brkEntry = (dir > 0 ? bar.h : bar.l) + dir * (double)MathMax(0, InpHybridBreakPts) * Pt();
+   if(idea.atOpen)
+      entry = bar.c;   // preview only: the real entry is the next bar's open
    ApplyLevels(dir, entry, sl);
-   idea.state = (InpPendingOn ? IDEA_PENDING : IDEA_LIVE);
+   idea.state = ((InpPendingOn || idea.atOpen) ? IDEA_PENDING : IDEA_LIVE);
    if(idea.state == IDEA_LIVE)
       idea.fillTime = bar.t;
    if(idea.needConfirm)
@@ -757,11 +779,33 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int tren
   {
    if(idea.state == IDEA_IDLE) return;
    bool fillBar = false;
+   bool marketFill = false;    // at-open market entry: no limit/stop ordering rules on the fill bar
+   bool confirmExit = false;   // at-open entry whose bar is also the confirmation bar
    // buys are filled at the ask, sells are closed (SL / TP) at the ask
    double sp = (InpSpreadAware ? bar.spr : 0.0);
    double xs = (idea.dir < 0 ? sp : 0.0);
 
-   if(idea.state == IDEA_PENDING)
+   if(idea.state == IDEA_PENDING && idea.atOpen)
+     {
+      // market entry at the open of the bar after the signal (buys at the ask)
+      double e = bar.o + (idea.dir > 0 ? sp : 0.0);
+      if(idea.dir > 0 ? e <= idea.slR : e + sp >= idea.slR)
+        { EndIdea(" [CANCELLED]", bar.t); return; }   // opened beyond the stop
+      ApplyLevels(idea.dir, e, idea.slR);
+      if(idea.needConfirm)
+        {
+         // the trade is on from the open; this bar still has to confirm it (checked at its close)
+         idea.needConfirm = false;
+         confirmExit = true;
+         MarkSignal(idea.signalTime, idea.dir, idea.re, idea.grade, idea.why);
+        }
+      idea.state = IDEA_LIVE;
+      idea.fillTime = bar.t;
+      idea.slBarAge = 0;
+      fillBar = true;
+      marketFill = true;
+     }
+   else if(idea.state == IDEA_PENDING)
      {
       // hybrid: the breakout stop is live from the signal close; the pullback limit only after confirmation
       bool hyb    = (InpPendingOn && InpPendingType == PEND_HYBRID && idea.brkEntry > 0.0);
@@ -838,7 +882,7 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int tren
    bool hitTP1 = (idea.dir > 0 ? (bar.h >= idea.tp1) : (bar.l + xs <= idea.tp1));
    bool hitSL  = (idea.dir > 0 ? (bar.l <= idea.sl)  : (bar.h + xs >= idea.sl));
 
-   if(fillBar)
+   if(fillBar && !marketFill)
      {
       // the order of prices inside the fill bar is unknown. A limit is filled coming from
       // the TP side, so only a close beyond a TP proves it came after the fill; a stop is
@@ -886,6 +930,16 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int tren
      }
 
    if(tp1Now && EngineBE()) idea.sl = idea.entry;   // from the next bar the runner is at break-even
+
+   // at-open entry: SL/TP not reached in its first bar, and that bar did not confirm -> close at its close
+   if(confirmExit && idea.state == IDEA_LIVE && !idea.tp1Done && !ConfirmedBy(bar))
+     {
+      double pl = (idea.dir > 0 ? bar.c - idea.entry : idea.entry - (bar.c + xs));
+      if(pl < 0.0) { gCntLoss++; AddEv(EV_LOSS, bar.t); }
+      gExitT = bar.t; gExitDir = idea.dir; gExitGrade = idea.grade; gExitRe = idea.re;
+      EndIdea(" [EXIT: NOT CONFIRMED]", bar.t);
+      return;
+     }
 
    if(idea.state == IDEA_SL_WAIT)
      {
@@ -1544,6 +1598,7 @@ void DrawLiveZone()
       if(idea.state == IDEA_PENDING)
         {
          if(hybP) gz.status = (idea.needConfirm ? " [CONFIRMING, BREAK LIVE]" : " [LIMIT + BREAK]");
+         else if(idea.atOpen) gz.status = " [ENTER AT NEXT OPEN]";
          else     gz.status = (idea.needConfirm ? " [CONFIRMING]" : (InpPendingType == PEND_LIMIT ? " [LIMIT]" : " [STOP]"));
         }
       if(idea.state == IDEA_LIVE)
@@ -2341,11 +2396,12 @@ void CheckAlerts(const datetime barTime, const double barClose)
    if(InpAlertFill && idea.state == IDEA_LIVE && idea.fillTime == barTime && lastFillAlert != barTime)
      {
       lastFillAlert = barTime;
-      FireAlert((idea.dir > 0 ? "PENDING FILLED BUY" : "PENDING FILLED SELL")
+      FireAlert((idea.atOpen ? (idea.dir > 0 ? "FILLED BUY AT OPEN" : "FILLED SELL AT OPEN")
+                             : (idea.dir > 0 ? "PENDING FILLED BUY" : "PENDING FILLED SELL"))
                 + (idea.brkEntry > 0.0 ? (idea.fillIsStop ? " (BREAKOUT)" : " (PULLBACK)") : ""), barTime, barClose);
      }
 
-   if(InpConfirmBar && InpPendingOn && InpSetupAlert)
+   if(ConfirmMode() && InpSetupAlert)
      {
       // setup alert on the signal bar, together with the zone and the arrow
       if(idea.state == IDEA_PENDING && idea.needConfirm && idea.signalTime == barTime && lastSetupAlert != barTime)
@@ -2353,7 +2409,9 @@ void CheckAlerts(const datetime barTime, const double barClose)
          lastSetupAlert = barTime;
          if(!(idea.re && !InpAlertReentry))
             FireAlert((idea.dir > 0 ? (idea.re ? "RE-ENTRY BUY" : "BUY") : (idea.re ? "RE-ENTRY SELL" : "SELL"))
-                      + " " + GradeName(idea.grade) + " SETUP (confirms at next close)", barTime, barClose);
+                      + " " + GradeName(idea.grade)
+                      + (idea.atOpen ? " ENTER AT NEXT OPEN (exit at its close if not confirmed)" : " SETUP (confirms at next close)"),
+                      barTime, barClose);
          return;
         }
       // the move reached TP1 during the confirmation bar: tell the user not to chase it
@@ -2365,10 +2423,19 @@ void CheckAlerts(const datetime barTime, const double barClose)
                       + " MISSED (TP1 reached before confirmation, no order)", barTime, barClose);
          return;
         }
+      // at-open entry closed because its first bar did not confirm
+      if(gExitT == barTime && lastExitAlert != barTime)
+        {
+         lastExitAlert = barTime;
+         if(!(gExitRe && !InpAlertReentry))
+            FireAlert((gExitDir > 0 ? "BUY" : "SELL") + string(" ") + GradeName(gExitGrade)
+                      + " EXIT NOW (entry bar did not confirm)", barTime, barClose);
+         return;
+        }
      }
 
    if(barTime == lastAlertBar) return;
-   if(InpConfirmBar && InpPendingOn)
+   if(ConfirmMode())
      {
       if(idea.state == IDEA_IDLE || idea.confirmTime != barTime) return;
       lastAlertBar = barTime;
