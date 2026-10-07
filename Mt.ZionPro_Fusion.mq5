@@ -184,10 +184,13 @@ input bool       InpShowDiag    = true;            // buy / sell diagnostics on 
 input int        InpHistoryBars = 5000;            // closed bars replayed on load (signals, arrows and stats cover this many bars)
 
 input group "=== Hard Vetoes (cannot be averaged away by the soft filters) ==="
-input bool       InpLateOn      = true;            // veto late entries: price already ran too far in the trade direction
+input bool       InpRoomOn      = true;            // veto when TP1 lies beyond the nearest opposing swing (sell just above a fresh low / buy just under a fresh high)
+input int        InpRoomBars    = 36;              // bars searched for that swing low (sell) / swing high (buy)
+input double     InpMinRoomR    = 1.0;             // room from entry to that swing must be at least this many R (TP1 = InpRR1 R)
+input bool       InpLateOn      = false;           // veto late entries: price already ran too far in the trade direction
 input int        InpLegBars     = 12;              // leg = signal close vs lowest low (buy) / highest high (sell) of this many bars
 input double     InpMaxLegATR   = 3.0;             // veto when that leg is longer than this many ATR (entering at the end of the impulse)
-input bool       InpCounterConfirm = true;         // A/B signals against the EMA trend or D1 must also have score >= InpCMinScore and momentum
+input bool       InpCounterConfirm = true;         // A/B signals against the EMA trend or D1 must also show momentum (fast RSI turning + close beyond VWMA4)
 
 input group "=== Signal Grade ==="
 input bool       InpGradeA   = true;               // A-grade signals (pass every filter) become signals (zone / alert / EA trade)
@@ -480,7 +483,7 @@ void ClearZones()
 
 // buy / sell diagnostics: index 0 = buy, 1 = sell
 #define DIAG_NF 9
-string gFailName[DIAG_NF] = {"trend", "D1", "range", "extended", "candle", "score", "exhausted", "late", "unconfirmed"};
+string gFailName[DIAG_NF] = {"trend", "D1", "range", "extended", "candle", "score", "exhausted", "no room", "unconfirmed"};
 int    gDTrig[2], gDBusy[2], gDGrade[10], gDFail[18];   // gDGrade[d*5 + grade], gDFail[d*DIAG_NF + f]
 
 void DiagRecord(const int d, const int grade, const string why)
@@ -492,7 +495,7 @@ void DiagRecord(const int d, const int grade, const string why)
    string w = (cut >= 0 ? StringSubstr(why, 0, cut) : why) + " ";
    for(int f = 0; f < 7; f++)
       if(StringFind(w, " " + gFailName[f] + " ") >= 0) gDFail[d * DIAG_NF + f]++;
-   if(StringFind(why, "veto: late") >= 0)        gDFail[d * DIAG_NF + 7]++;   // vetoes sit after the "|"
+   if(StringFind(why, "veto: no room") >= 0)     gDFail[d * DIAG_NF + 7]++;   // vetoes sit after the "|"
    if(StringFind(why, "unconfirmed") >= 0)       gDFail[d * DIAG_NF + 8]++;
   }
 
@@ -1207,9 +1210,30 @@ double LegATR(const int sh, const int dir)
   }
 
 // hard vetoes for signals that would otherwise arm; returns the reason, "" = keep
-string VetoReason(const int dir, const int sh, const int grade, const string why)
+// room from the planned entry to the nearest opposing swing, in R. A close already
+// through that swing (breakout / breakdown) has open room.
+double RoomR(const int dir, const int sh, const Candle &bar, const double buf)
+  {
+   double entry = 0, sl = 0;
+   if(!BuildPendingPrices(dir, bar, buf, entry, sl)) return 99.0;
+   double risk = MathAbs(entry - sl);
+   if(risk <= 0) return 99.0;
+   int n = (int)MathMax(3, InpRoomBars);
+   int ix = (dir > 0 ? iHighest(_Symbol, _Period, MODE_HIGH, n, sh + 1) : iLowest(_Symbol, _Period, MODE_LOW, n, sh + 1));
+   if(ix < 0) return 99.0;
+   double lvl = (dir > 0 ? iHigh(_Symbol, _Period, ix) : iLow(_Symbol, _Period, ix));
+   if(dir > 0 ? bar.c > lvl : bar.c < lvl) return 99.0;   // already through it
+   return (dir > 0 ? lvl - entry : entry - lvl) / risk;
+  }
+
+string VetoReason(const int dir, const int sh, const int grade, const string why, const Candle &bar, const double buf)
   {
    if(grade == GRADE_NONE || grade == GRADE_CX) return "";
+   if(InpRoomOn)
+     {
+      double room = RoomR(dir, sh, bar, buf);
+      if(room < InpMinRoomR) return StringFormat(" no room (%.1fR to %s)", room, dir > 0 ? "swing high" : "swing low");
+     }
    if(InpLateOn)
      {
       double leg = LegATR(sh, dir);
@@ -1217,7 +1241,7 @@ string VetoReason(const int dir, const int sh, const int grade, const string why
      }
    if(InpCounterConfirm && grade != GRADE_C
       && (StringFind(why + " ", " trend ") >= 0 || StringFind(why + " ", " D1 ") >= 0)
-      && (ScoreAt(sh, dir) < InpCMinScore || !Momentum(sh, dir)))
+      && !Momentum(sh, dir))
       return " counter-trend unconfirmed";
    return "";
   }
@@ -1661,7 +1685,7 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "MT.ZIONPRO FUSION", C_TXT, InpPanelTitleFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.07  " + ShortToString((ushort)0x25B2), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.08  " + ShortToString((ushort)0x25B2), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -2047,13 +2071,13 @@ int OnCalculate(const int rates_total,
         { gradeB = GRADE_CX; whyB += "  | C filter:" + rej; }
       if(gradeS == GRADE_C && !CFilterPass(-1, bar, i, failsS, trendDir, rej))
         { gradeS = GRADE_CX; whyS += "  | C filter:" + rej; }
-      string veto = VetoReason(1, i, gradeB, whyB);
+      double buf = StopBuffer(i);
+      string veto = VetoReason(1, i, gradeB, whyB, bar, buf);
       if(veto != "") { gradeB = GRADE_CX; whyB += "  | veto:" + veto; }
-      veto = VetoReason(-1, i, gradeS, whyS);
+      veto = VetoReason(-1, i, gradeS, whyS, bar, buf);
       if(veto != "") { gradeS = GRADE_CX; whyS += "  | veto:" + veto; }
       DiagRecord(0, gradeB, whyB);
       DiagRecord(1, gradeS, whyS);
-      double buf = StopBuffer(i);
 
       bool didRe = false;
       if(InpReentryOn && idea.state == IDEA_SL_WAIT && idea.reCount < InpMaxReentry
