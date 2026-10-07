@@ -95,8 +95,8 @@ input bool              UseRedSlope       = true;  // Buy only while red VWMA1 r
 input int               RedSlopeBars      = 5;     // Bars back for the red slope comparison
 input int               ReArmScore        = 2;     // Repeat same-direction signal only after its score fell to this
 input bool              UseObOsFilter     = true;  // Block buys if RSI14 > RsiOB, sells if RSI14 < RsiOS
-input bool              UseCandleConfirm  = true;  // Buy bar must close up, sell bar must close down
-input double            MaxExtensionAtr   = 1.5;   // Skip if close is further than this x ATR from yellow VWMA3 (0 = off)
+input bool              UseCandleConfirm  = false; // Buy bar must close up, sell bar must close down
+input double            MaxExtensionAtr   = 0.0;   // Skip if close is further than this x ATR from yellow VWMA3 (0 = off)
 input bool              ShowStats         = true;  // Score past signals on the panel
 input int               StatsAtrPeriod    = 14;    // ATR period for stats TP/SL
 input double            StatsTpAtr        = 2.0;   // Stats take profit (x ATR)
