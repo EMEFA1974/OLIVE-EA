@@ -1,8 +1,8 @@
 //+------------------------------------------------------------------+
-//|                                           Mt.ZionPro_Fusion.mq5  |
+//|                                             FusionOlive_Ind.mq5  |
 //|                                                                  |
-//| Mt.ZionPro signal engine (MTF bias, EMA trend, ATR / location,   |
-//| strict trigger, pending / hybrid entry, re-entry, zones, panel)  |
+//| FusionOlive: Mt.ZionPro signal engine (MTF bias, EMA trend, ATR, |
+//| location, strict trigger, pending / hybrid entry, re-entry, zones|
 //| fused with the VWMA RSI Score (four VWMAs on High weighted by    |
 //| tick volume + three RSIs -> 5-point score, OB/OS exhaustion,     |
 //| session / day / week levels).                                    |
@@ -16,10 +16,10 @@
 //| Buffers 0-3 (Buy / Sell / ReBuy / ReSell) keep the Mt.ZionPro    |
 //| layout; buffers 4-7 hold the VWMAs (calculated, not drawn).      |
 //+------------------------------------------------------------------+
-#property copyright "Mt.ZionPro Fusion"
+#property copyright "FusionOlive_Ind"
 #property link      ""
-#property version   "2.20"
-#property description "Mt.ZionPro engine + VWMA/RSI score. Grade A/B/C toggles, filtered Grade C, hollow arrows."
+#property version   "2.21"
+#property description "FusionOlive_Ind: Mt.ZionPro engine + VWMA/RSI score. Grade A/B/C toggles, filtered Grade C, hollow arrows."
 #property indicator_chart_window
 #property indicator_buffers 10
 #property indicator_plots   8
@@ -411,12 +411,12 @@ int OnInit()
   {
    if(InpVWMA1 < 1 || InpVWMA2 < 1 || InpVWMA3 < 1 || InpVWMA4 < 1 || InpRSI1 < 1 || InpRSI2 < 1 || InpRSI3 < 1)
      {
-      Print("Mt.ZionPro Fusion: all VWMA / RSI periods must be >= 1");
+      Print("FusionOlive_Ind: all VWMA / RSI periods must be >= 1");
       return(INIT_PARAMETERS_INCORRECT);
      }
    if(InpMinScore < 0 || InpMinScore > 5 || InpCMinScore < 0 || InpCMinScore > 5)
      {
-      Print("Mt.ZionPro Fusion: InpMinScore and InpCMinScore must be between 0 and 5");
+      Print("FusionOlive_Ind: InpMinScore and InpCMinScore must be between 0 and 5");
       return(INIT_PARAMETERS_INCORRECT);
      }
 
@@ -464,12 +464,12 @@ int OnInit()
    for(int p = 4; p < 8; p++)                   // VWMAs are used by the score only, not drawn
       PlotIndexSetInteger(p, PLOT_DRAW_TYPE, DRAW_NONE);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "Mt.ZionPro Fusion");
+   IndicatorSetString(INDICATOR_SHORTNAME, "FusionOlive_Ind");
    gEmaFast = iMA(_Symbol, InpTrendTF, InpTrendFast, 0, MODE_EMA, PRICE_CLOSE);
    gEmaSlow = iMA(_Symbol, InpTrendTF, InpTrendSlow, 0, MODE_EMA, PRICE_CLOSE);
    if(!FiltersInit())
      {
-      Print("Mt.ZionPro Fusion: could not create the filter indicators (EMA / ATR / RSI)");
+      Print("FusionOlive_Ind: could not create the filter indicators (EMA / ATR / RSI)");
       return(INIT_FAILED);
      }
    PanelInit();
@@ -1871,7 +1871,7 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_LIVE)    { st = (idea.dir > 0 ? "LIVE BUY" : "LIVE SELL"); sc = (idea.dir > 0 ? InpBuyColor : InpSellColor); }
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
-   PText(PPRE + "T1", gPX + 10, gPY + 6, "MT.ZIONPRO FUSION", C_TXT, InpPanelTitleFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
+   PText(PPRE + "T1", gPX + 10, gPY + 6, "FUSIONOLIVE_IND", C_TXT, InpPanelTitleFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
    PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.09  " + ShortToString((ushort)0x25B2), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
@@ -2347,9 +2347,9 @@ int OnCalculate(const int rates_total,
    if(prev_calculated <= 0 && InpShowDiag)
      {
       // short lines so the Experts tab does not cut them off
-      PrintFormat("Fusion BUY  taken %d | blockers: %s | A %d B %d C %d Cx %d busy %d of %d", gCntBuy, DiagTop(0),
+      PrintFormat("FusionOlive BUY  taken %d | blockers: %s | A %d B %d C %d Cx %d busy %d of %d", gCntBuy, DiagTop(0),
                   gDGrade[0], gDGrade[1], gDGrade[2], gDGrade[4], gDBusy[0], gDTrig[0]);
-      PrintFormat("Fusion SELL taken %d | blockers: %s | A %d B %d C %d Cx %d busy %d of %d", gCntSell, DiagTop(1),
+      PrintFormat("FusionOlive SELL taken %d | blockers: %s | A %d B %d C %d Cx %d busy %d of %d", gCntSell, DiagTop(1),
                   gDGrade[5], gDGrade[6], gDGrade[7], gDGrade[9], gDBusy[1], gDTrig[1]);
      }
    if(InpShowLevels) DrawLevels();
@@ -2379,14 +2379,14 @@ void FireAlert(const string side, const datetime barTime, const double barClose)
    if(idea.state != IDEA_IDLE)
       extra += StringFormat(" | score %d/5", ScoreAt(1, idea.dir));
 
-   string msg = StringFormat("Mt.ZionPro Fusion %s %s | %s | close %s | %s%s",
+   string msg = StringFormat("FusionOlive_Ind %s %s | %s | close %s | %s%s",
                              side, _Symbol, tf, DoubleToString(barClose, _Digits),
                              TimeToString(barTime, TIME_DATE|TIME_MINUTES), extra);
 
    if(InpAlertPopup) Alert(msg);
    if(InpAlertSound) PlaySound(InpSoundFile);
    if(InpAlertPush)  SendNotification(msg);
-   if(InpAlertEmail) SendMail("Mt.ZionPro Fusion " + side + " " + _Symbol, msg);
+   if(InpAlertEmail) SendMail("FusionOlive_Ind " + side + " " + _Symbol, msg);
   }
 
 void CheckAlerts(const datetime barTime, const double barClose)
