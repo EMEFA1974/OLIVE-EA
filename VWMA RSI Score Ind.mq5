@@ -12,11 +12,13 @@
 //|        when UseWholeBarCheck is off                              |
 //|   5.   Yellow VWMA3 (18) vs orange VWMA2 (37)                    |
 //| Signal = score >= MinScore plus optional gates: green VWMA4 vs   |
-//| yellow, red line slope, RSI14 not overbought/oversold. The same  |
+//| yellow, red line slope, RSI14 not overbought/oversold, signal    |
+//| bar closing in the signal direction, price not over-extended     |
+//| from yellow. The same                                             |
 //| direction re-arms only after its score fell to ReArmScore.       |
 //| The panel scores every past signal (TP/SL in ATR multiples).     |
 //+------------------------------------------------------------------+
-#property version     "1.20"
+#property version     "1.30"
 #property description "Four VWMAs on High + three RSIs -> 5-point bull/bear score."
 #property description "Arrow on the bar where the score first reaches MinScore."
 #property indicator_chart_window
@@ -45,12 +47,12 @@
 
 #property indicator_label5  "Buy signal"
 #property indicator_type5   DRAW_ARROW
-#property indicator_color5  clrLime
+#property indicator_color5  clrAqua
 #property indicator_width5  3
 
 #property indicator_label6  "Sell signal"
 #property indicator_type6   DRAW_ARROW
-#property indicator_color6  clrRed
+#property indicator_color6  clrMagenta
 #property indicator_width6  3
 
 enum ENUM_CHECK4_PRICE
@@ -93,6 +95,8 @@ input bool              UseRedSlope       = true;  // Buy only while red VWMA1 r
 input int               RedSlopeBars      = 5;     // Bars back for the red slope comparison
 input int               ReArmScore        = 2;     // Repeat same-direction signal only after its score fell to this
 input bool              UseObOsFilter     = true;  // Block buys if RSI14 > RsiOB, sells if RSI14 < RsiOS
+input bool              UseCandleConfirm  = true;  // Buy bar must close up, sell bar must close down
+input double            MaxExtensionAtr   = 1.5;   // Skip if close is further than this x ATR from yellow VWMA3 (0 = off)
 input bool              ShowStats         = true;  // Score past signals on the panel
 input int               StatsAtrPeriod    = 14;    // ATR period for stats TP/SL
 input double            StatsTpAtr        = 2.0;   // Stats take profit (x ATR)
@@ -173,8 +177,8 @@ int OnInit()
    PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, VWMA2 - 1);
    PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, VWMA3 - 1);
    PlotIndexSetInteger(3, PLOT_DRAW_BEGIN, VWMA4 - 1);
-   PlotIndexSetInteger(4, PLOT_ARROW, 233);
-   PlotIndexSetInteger(5, PLOT_ARROW, 234);
+   PlotIndexSetInteger(4, PLOT_ARROW, 241);   // hollow up arrow
+   PlotIndexSetInteger(5, PLOT_ARROW, 242);   // hollow down arrow
    PlotIndexSetInteger(4, PLOT_ARROW_SHIFT, 15);
    PlotIndexSetInteger(5, PLOT_ARROW_SHIFT, -15);
 
@@ -276,7 +280,7 @@ int DirScore(const int i, const int dir)
 //+------------------------------------------------------------------+
 //| Score reached, fast gate agrees and OB/OS filter passes          |
 //+------------------------------------------------------------------+
-bool Aligned(const int i, const int dir)
+bool Aligned(const int i, const int dir, const double &open[], const double &close[])
   {
    if(DirScore(i, dir) < MinScore)
       return false;
@@ -289,6 +293,12 @@ bool Aligned(const int i, const int dir)
          return false;
      }
    if(UseObOsFilter && (dir > 0 ? R1[i] > RsiOB : R1[i] < RsiOS))
+      return false;
+   //--- no entry on a bar that closes against the signal (e.g. a rejection candle)
+   if(UseCandleConfirm && (dir > 0 ? close[i] <= open[i] : close[i] >= open[i]))
+      return false;
+   //--- no late entry when price has already run far from the mean
+   if(MaxExtensionAtr > 0.0 && Atr[i] > 0.0 && dir * (close[i] - V3[i]) > MaxExtensionAtr * Atr[i])
       return false;
    return true;
   }
@@ -356,9 +366,9 @@ int OnCalculate(const int rates_total,
       //--- one signal per move: fire when armed and aligned, re-arm once the score has faded
       bool armB = (ArmBuy[i - 1] > 0.5);
       bool armS = (ArmSell[i - 1] > 0.5);
-      if(armB && Aligned(i, 1))
+      if(armB && Aligned(i, 1, open, close))
         { Sig[i] = 1; armB = false; }
-      else if(armS && Aligned(i, -1))
+      else if(armS && Aligned(i, -1, open, close))
         { Sig[i] = -1; armS = false; }
       if(DirScore(i, 1) <= gReArm)
          armB = true;
