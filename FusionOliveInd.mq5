@@ -18,7 +18,7 @@
 //+------------------------------------------------------------------+
 #property copyright "FusionOliveInd"
 #property link      ""
-#property version   "2.31"
+#property version   "2.40"
 #property description "FusionOliveInd: Mt.ZionPro engine + VWMA/RSI score. Grade A/B/C toggles, filtered Grade C, hollow arrows."
 #property indicator_chart_window
 #property indicator_buffers 10
@@ -312,6 +312,8 @@ int      gMissDir = 0, gMissGrade = 0;
 bool     gMissRe = false;
 bool     allowAlerts   = false;
 datetime gLastBar      = 0;      // last closed bar fed to the signal engine
+datetime gLastDrawBar  = 0;      // panel / zone / levels redraw throttle
+uint     gLastDrawMs   = 0;
 datetime lastFiltB     = 0;      // last grey (grade toggled off) markers, for their own cooldown
 datetime lastFiltS     = 0;
 
@@ -939,15 +941,56 @@ bool Cooled(const datetime now, const datetime lastSig, const int bars)
    return ((now - lastSig) >= (datetime)bars * PeriodSeconds(_Period));
   }
 
+//+------------------------------------------------------------------+
+//| Data caches. The engine reads single values (one bar of a        |
+//| timeframe, one indicator value, one spread) thousands of times   |
+//| during a history replay. Each series is now copied in one block  |
+//| per OnCalculate call (grown on demand) and read from memory.     |
+//| CacheReset() at the start of every call keeps values current.    |
+//+------------------------------------------------------------------+
+struct RateCache { ENUM_TIMEFRAMES tf; int n; MqlRates r[]; };
+struct BufCache  { int h; int n; double v[]; };
+RateCache gRC[8];
+BufCache  gBC[16];
+int       gRCUsed = 0, gBCUsed = 0;
+int       gSpr[];
+int       gSprN = 0;
+
+void CacheReset()
+  {
+   for(int j = 0; j < gRCUsed; j++) gRC[j].n = 0;
+   for(int j = 0; j < gBCUsed; j++) gBC[j].n = 0;
+   gSprN = 0;
+  }
+
+// how many values to copy so that shift sh is covered (grows geometrically, small on live ticks)
+int CacheWant(const int sh, const int have) { return MathMax(64, MathMax(sh + 1, have * 2)); }
+
 Candle CandleAtShift(ENUM_TIMEFRAMES tf, int sh)
   {
    Candle k;
    k.valid = false; k.o = k.h = k.l = k.c = 0; k.spr = 0; k.t = 0;
    if(sh < 0) return k;
-   MqlRates r[];
-   if(CopyRates(_Symbol, tf, sh, 1, r) != 1) return k;
-   k.o = r[0].open; k.h = r[0].high; k.l = r[0].low; k.c = r[0].close;
-   k.t = r[0].time;
+   int c = -1;
+   for(int j = 0; j < gRCUsed; j++) if(gRC[j].tf == tf) { c = j; break; }
+   if(c < 0 && gRCUsed < ArraySize(gRC)) { c = gRCUsed++; gRC[c].tf = tf; gRC[c].n = 0; }
+   if(c < 0)
+     {
+      MqlRates r1[];
+      if(CopyRates(_Symbol, tf, sh, 1, r1) != 1) return k;
+      k.o = r1[0].open; k.h = r1[0].high; k.l = r1[0].low; k.c = r1[0].close; k.t = r1[0].time;
+      k.valid = (k.h > k.l);
+      return k;
+     }
+   if(sh >= gRC[c].n)
+     {
+      ArraySetAsSeries(gRC[c].r, true);
+      int got = CopyRates(_Symbol, tf, 0, CacheWant(sh, gRC[c].n), gRC[c].r);
+      gRC[c].n = MathMax(0, got);
+      if(sh >= gRC[c].n) return k;
+     }
+   k.o = gRC[c].r[sh].open; k.h = gRC[c].r[sh].high; k.l = gRC[c].r[sh].low; k.c = gRC[c].r[sh].close;
+   k.t = gRC[c].r[sh].time;
    k.valid = (k.h > k.l);
    return k;
   }
@@ -1084,10 +1127,29 @@ bool FiltersReady()
 double BufAt(const int h, const int sh)
   {
    if(h == INVALID_HANDLE || sh < 0) return 0.0;
-   double v[1];
-   if(CopyBuffer(h, 0, sh, 1, v) != 1) return 0.0;
-   if(v[0] == EMPTY_VALUE) return 0.0;
-   return v[0];
+   int c = -1;
+   for(int j = 0; j < gBCUsed; j++) if(gBC[j].h == h) { c = j; break; }
+   if(c < 0 && gBCUsed < ArraySize(gBC)) { c = gBCUsed++; gBC[c].h = h; gBC[c].n = 0; }
+   double x = 0.0;
+   if(c < 0)
+     {
+      double v[1];
+      if(CopyBuffer(h, 0, sh, 1, v) != 1) return 0.0;
+      x = v[0];
+     }
+   else
+     {
+      if(sh >= gBC[c].n)
+        {
+         ArraySetAsSeries(gBC[c].v, true);
+         int got = CopyBuffer(h, 0, 0, CacheWant(sh, gBC[c].n), gBC[c].v);
+         gBC[c].n = MathMax(0, got);
+         if(sh >= gBC[c].n) return 0.0;
+        }
+      x = gBC[c].v[sh];
+     }
+   if(x == EMPTY_VALUE) return 0.0;
+   return x;
   }
 
 // trend of one timeframe on its last bar closed at time t: 1 up, -1 down, 0 none
@@ -1123,8 +1185,12 @@ double ATRAt(const int sh) { return BufAt(gHATR, sh); }
 
 double SpreadPriceAt(const int sh)
   {
-   int s[];
-   if(CopySpread(_Symbol, _Period, sh, 1, s) == 1 && s[0] > 0) return s[0] * _Point;
+   if(sh >= 0 && sh >= gSprN)
+     {
+      ArraySetAsSeries(gSpr, true);
+      gSprN = MathMax(0, CopySpread(_Symbol, _Period, 0, CacheWant(sh, gSprN), gSpr));
+     }
+   if(sh >= 0 && sh < gSprN && gSpr[sh] > 0) return gSpr[sh] * _Point;
    return (double)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) * _Point;
   }
 
@@ -2127,12 +2193,25 @@ int OnCalculate(const int rates_total,
    ArraySetAsSeries(low, true);
    ArraySetAsSeries(close, true);
    ArraySetAsSeries(tick_volume, true);
+   CacheReset();
 
    // VWMA lines first: the score used by the engine reads them
-   if(prev_calculated <= 0 || prev_calculated > rates_total)
+   bool fullCalc = (prev_calculated <= 0 || prev_calculated > rates_total);
+   if(fullCalc)
       if(!FiltersReady()) return(0);
-   int vFrom = (prev_calculated <= 0 || prev_calculated > rates_total)
-               ? rates_total - 1 : (int)MathMin(rates_total - 1, rates_total - prev_calculated + 1);
+   // on a full recalculation only the replayed bars (plus look-back room) need VWMAs, not the whole chart
+   int vFrom = fullCalc
+               ? (int)MathMin(rates_total - 1, MathMax(100, InpHistoryBars) + 300)
+               : (int)MathMin(rates_total - 1, rates_total - prev_calculated + 1);
+   if(fullCalc)
+     {
+      ArrayInitialize(V1, EMPTY_VALUE);
+      ArrayInitialize(V2, EMPTY_VALUE);
+      ArrayInitialize(V3, EMPTY_VALUE);
+      ArrayInitialize(V4, EMPTY_VALUE);
+      ArrayInitialize(VL1, EMPTY_VALUE);
+      ArrayInitialize(VL4, EMPTY_VALUE);
+     }
    for(int v = vFrom; v >= 0; v--)
      {
       V1[v] = VwmaAt(v, InpVWMA1, rates_total, high, tick_volume);
@@ -2318,9 +2397,17 @@ int OnCalculate(const int rates_total,
       PrintFormat("FusionOliveInd SELL taken %d | blockers: %s | A %d B %d C %d Cx %d busy %d of %d", gCntSell, DiagTop(1),
                   gDGrade[5], gDGrade[6], gDGrade[7], gDGrade[9], gDBusy[1], gDTrig[1]);
      }
-   if(InpShowLevels) DrawLevels();
-   DrawPanel();
-   DrawLiveZone();
+   // panel / zone / levels: on a full recalc, on a new bar, otherwise at most once a second
+   // (the engine only changes state on closed bars; per-tick redraws only cost time)
+   uint nowMs = GetTickCount();
+   if(fullCalc || time[0] != gLastDrawBar || (uint)(nowMs - gLastDrawMs) >= 1000)
+     {
+      gLastDrawBar = time[0];
+      gLastDrawMs  = nowMs;
+      if(InpShowLevels) DrawLevels();
+      DrawPanel();
+      DrawLiveZone();
+     }
 
    if(allowAlerts) CheckAlerts(time[1], close[1]);
    else allowAlerts = true;
