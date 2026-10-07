@@ -183,6 +183,12 @@ input bool       InpSoftHTF     = true;            // EMA trend + D1 together co
 input bool       InpShowDiag    = true;            // buy / sell diagnostics on the panel (also printed to the Experts log on load)
 input int        InpHistoryBars = 5000;            // closed bars replayed on load (signals, arrows and stats cover this many bars)
 
+input group "=== Hard Vetoes (cannot be averaged away by the soft filters) ==="
+input bool       InpLateOn      = true;            // veto late entries: price already ran too far in the trade direction
+input int        InpLegBars     = 12;              // leg = signal close vs lowest low (buy) / highest high (sell) of this many bars
+input double     InpMaxLegATR   = 3.0;             // veto when that leg is longer than this many ATR (entering at the end of the impulse)
+input bool       InpCounterConfirm = true;         // A/B signals against the EMA trend or D1 must also have score >= InpCMinScore and momentum
+
 input group "=== Signal Grade ==="
 input bool       InpGradeA   = true;               // A-grade signals (pass every filter) become signals (zone / alert / EA trade)
 input bool       InpGradeB   = true;               // B-grade signals (fail one filter) become signals
@@ -473,9 +479,9 @@ void ClearZones()
   }
 
 // buy / sell diagnostics: index 0 = buy, 1 = sell
-#define DIAG_NF 7
-string gFailName[DIAG_NF] = {"trend", "D1", "range", "extended", "candle", "score", "exhausted"};
-int    gDTrig[2], gDBusy[2], gDGrade[10], gDFail[14];   // gDGrade[d*5 + grade], gDFail[d*DIAG_NF + f]
+#define DIAG_NF 9
+string gFailName[DIAG_NF] = {"trend", "D1", "range", "extended", "candle", "score", "exhausted", "late", "unconfirmed"};
+int    gDTrig[2], gDBusy[2], gDGrade[10], gDFail[18];   // gDGrade[d*5 + grade], gDFail[d*DIAG_NF + f]
 
 void DiagRecord(const int d, const int grade, const string why)
   {
@@ -484,8 +490,10 @@ void DiagRecord(const int d, const int grade, const string why)
    gDGrade[d * 5 + grade]++;
    int cut = StringFind(why, "  |");
    string w = (cut >= 0 ? StringSubstr(why, 0, cut) : why) + " ";
-   for(int f = 0; f < DIAG_NF; f++)
+   for(int f = 0; f < 7; f++)
       if(StringFind(w, " " + gFailName[f] + " ") >= 0) gDFail[d * DIAG_NF + f]++;
+   if(StringFind(why, "veto: late") >= 0)        gDFail[d * DIAG_NF + 7]++;   // vetoes sit after the "|"
+   if(StringFind(why, "unconfirmed") >= 0)       gDFail[d * DIAG_NF + 8]++;
   }
 
 string DiagTop(const int d)
@@ -1184,6 +1192,36 @@ bool CFilterPass(const int dir, const Candle &k, const int sh, const int fails, 
    return (rej == "");
   }
 
+// length of the move into the signal, in ATR: close minus the lowest low (buy) /
+// highest high minus close (sell) of the last InpLegBars bars
+double LegATR(const int sh, const int dir)
+  {
+   double atr = ATRAt(sh);
+   if(atr <= 0) return 0.0;
+   int n = (int)MathMax(2, InpLegBars);
+   int ix = (dir > 0 ? iLowest(_Symbol, _Period, MODE_LOW, n, sh) : iHighest(_Symbol, _Period, MODE_HIGH, n, sh));
+   if(ix < 0) return 0.0;
+   double ext = (dir > 0 ? iLow(_Symbol, _Period, ix) : iHigh(_Symbol, _Period, ix));
+   double c   = iClose(_Symbol, _Period, sh);
+   return (dir > 0 ? c - ext : ext - c) / atr;
+  }
+
+// hard vetoes for signals that would otherwise arm; returns the reason, "" = keep
+string VetoReason(const int dir, const int sh, const int grade, const string why)
+  {
+   if(grade == GRADE_NONE || grade == GRADE_CX) return "";
+   if(InpLateOn)
+     {
+      double leg = LegATR(sh, dir);
+      if(leg > InpMaxLegATR) return StringFormat(" late (leg %.1f ATR)", leg);
+     }
+   if(InpCounterConfirm && grade != GRADE_C
+      && (StringFind(why + " ", " trend ") >= 0 || StringFind(why + " ", " D1 ") >= 0)
+      && (ScoreAt(sh, dir) < InpCMinScore || !Momentum(sh, dir)))
+      return " counter-trend unconfirmed";
+   return "";
+  }
+
 string GradeName(const int g)
   {
    if(g == GRADE_A)  return "A";
@@ -1623,7 +1661,7 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "MT.ZIONPRO FUSION", C_TXT, InpPanelTitleFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.06  " + ShortToString((ushort)0x25B2), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.07  " + ShortToString((ushort)0x25B2), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -2009,6 +2047,10 @@ int OnCalculate(const int rates_total,
         { gradeB = GRADE_CX; whyB += "  | C filter:" + rej; }
       if(gradeS == GRADE_C && !CFilterPass(-1, bar, i, failsS, trendDir, rej))
         { gradeS = GRADE_CX; whyS += "  | C filter:" + rej; }
+      string veto = VetoReason(1, i, gradeB, whyB);
+      if(veto != "") { gradeB = GRADE_CX; whyB += "  | veto:" + veto; }
+      veto = VetoReason(-1, i, gradeS, whyS);
+      if(veto != "") { gradeS = GRADE_CX; whyS += "  | veto:" + veto; }
       DiagRecord(0, gradeB, whyB);
       DiagRecord(1, gradeS, whyS);
       double buf = StopBuffer(i);
