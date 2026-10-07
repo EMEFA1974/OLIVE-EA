@@ -2,7 +2,7 @@
 //|                                           Mt.ZionPro_Fusion.mq5  |
 //|                                                                  |
 //| Mt.ZionPro signal engine (MTF bias, EMA trend, ATR / location,   |
-//| strict trigger, pending entry, re-entry, zones, stats panel)     |
+//| strict trigger, pending / hybrid entry, re-entry, zones, panel)  |
 //| fused with the VWMA RSI Score (four VWMAs on High weighted by    |
 //| tick volume + three RSIs -> 5-point score, OB/OS exhaustion,     |
 //| session / day / week levels).                                    |
@@ -18,7 +18,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Mt.ZionPro Fusion"
 #property link      ""
-#property version   "2.01"
+#property version   "2.10"
 #property description "Mt.ZionPro engine + VWMA/RSI score. Grade A/B/C toggles, filtered Grade C, hollow arrows."
 #property indicator_chart_window
 #property indicator_buffers 10
@@ -67,7 +67,8 @@
 enum ENUM_PEND_TYPE
   {
    PEND_LIMIT = 0,   // pullback (buy below / sell above)
-   PEND_STOP  = 1    // confirmation break (buy above / sell below)
+   PEND_STOP  = 1,   // confirmation break (buy above / sell below)
+   PEND_HYBRID = 2   // both: pullback limit + breakout stop, first fill wins (the other is cancelled)
   };
 
 enum ENUM_CHECK4_PRICE
@@ -108,7 +109,8 @@ input bool   InpAutoDigits   = true;   // 3/5-digit brokers: point inputs are sc
 
 input group "=== Pending Entry ==="
 input bool           InpPendingOn       = true;
-input ENUM_PEND_TYPE InpPendingType     = PEND_LIMIT;
+input ENUM_PEND_TYPE InpPendingType     = PEND_HYBRID;
+input int            InpHybridBreakPts  = 10;    // hybrid: breakout stop this many points beyond the signal candle low (sell) / high (buy)
 input int            InpPendingPts      = 40;    // minimum distance in points
 input double         InpPendingRetrace  = 0.40;  // fraction of signal candle range
 input bool           InpPendingUseRange = true;  // use max(points, range*retrace)
@@ -351,6 +353,8 @@ struct Idea
    double    sigMid;       // midpoint of the signal candle
    datetime  confirmTime;  // close of the confirmation bar
    string    why;          // grade reasons, for the arrow tooltip
+   double    brkEntry;     // hybrid: breakout stop price (0 = none)
+   bool      fillIsStop;   // the fill came from a stop order (fill-bar SL/TP order rules)
   };
 Idea idea;
 
@@ -362,6 +366,7 @@ struct ZoneSnap
    bool     re;
    int      grade;
    double   entry, sl, tp1, tp2;
+   double   brk;        // hybrid breakout price while pending (0 = not drawn)
    datetime t1, tEnd;   // tEnd = 0 while the idea is still running
    string   status;
   };
@@ -374,6 +379,7 @@ void ResetZone()
    gz.re = false;
    gz.grade = GRADE_NONE;
    gz.entry = gz.sl = gz.tp1 = gz.tp2 = 0;
+   gz.brk = 0;
    gz.t1 = gz.tEnd = 0;
    gz.status = "";
   }
@@ -554,6 +560,8 @@ void ResetIdea()
    idea.sigMid = 0;
    idea.confirmTime = 0;
    idea.why = "";
+   idea.brkEntry = 0;
+   idea.fillIsStop = false;
   }
 
 // finish the running idea but keep its levels as the current zone
@@ -571,6 +579,7 @@ void EndIdea(const string status, const datetime t)
       gz.sl     = idea.sl;
       gz.tp1    = idea.tp1;
       gz.tp2    = idea.tp2;
+      gz.brk    = 0;
       gz.t1     = idea.signalTime;
       gz.tEnd   = t;
       gz.status = status;
@@ -632,7 +641,7 @@ bool BuildPendingPrices(const int dir, const Candle &bar, const double buf, doub
       sl = bar.l - buf;
       if(InpPendingOn)
         {
-         if(InpPendingType == PEND_LIMIT)
+         if(InpPendingType != PEND_STOP)
             entry = bar.c - dist;
          else
             entry = bar.h + dist;
@@ -648,7 +657,7 @@ bool BuildPendingPrices(const int dir, const Candle &bar, const double buf, doub
       sl = bar.h + buf;
       if(InpPendingOn)
         {
-         if(InpPendingType == PEND_LIMIT)
+         if(InpPendingType != PEND_STOP)
             entry = bar.c + dist;
          else
             entry = bar.l - dist;
@@ -683,6 +692,10 @@ void ArmIdea(const int dir, const Candle &bar, const bool re, const double buf,
    idea.sigMid = (bar.h + bar.l) / 2.0;
    idea.confirmTime = 0;
    idea.needConfirm = (InpConfirmBar && InpPendingOn);
+   idea.fillIsStop = (InpPendingOn && InpPendingType == PEND_STOP);
+   idea.brkEntry = 0;
+   if(InpPendingOn && InpPendingType == PEND_HYBRID)
+      idea.brkEntry = (dir > 0 ? bar.h : bar.l) + dir * (double)MathMax(0, InpHybridBreakPts) * Pt();
    ApplyLevels(dir, entry, sl);
    idea.state = (InpPendingOn ? IDEA_PENDING : IDEA_LIVE);
    if(idea.state == IDEA_LIVE)
@@ -750,7 +763,11 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int tren
 
    if(idea.state == IDEA_PENDING)
      {
-      if(idea.needConfirm)
+      // hybrid: the breakout stop is live from the signal close; the pullback limit only after confirmation
+      bool hyb    = (InpPendingOn && InpPendingType == PEND_HYBRID && idea.brkEntry > 0.0);
+      bool brkNow = (hyb && (idea.dir > 0 ? bar.h + sp >= idea.brkEntry : bar.l <= idea.brkEntry));
+      bool limLive = !idea.needConfirm;
+      if(idea.needConfirm && !brkNow)
         {
          // the next bar must close the signal's way; the order is placed only after it closes
          bool ok = (idea.dir > 0 ? (bar.c > idea.sigMid && bar.c >= bar.o)
@@ -772,20 +789,37 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int tren
          MarkSignal(idea.signalTime, idea.dir, idea.re, idea.grade, idea.why);
          // the confirmation bar itself may already have reached TP1. The order is placed only
          // now, so the zone must not show a live [LIMIT] trade that is already "in profit"
-         if(InpCancelAtTP1 && (idea.dir > 0 ? bar.h >= idea.tp1 : bar.l + xs <= idea.tp1))
+         // (hybrid keeps its breakout stop, which catches that move instead)
+         if(!hyb && InpCancelAtTP1 && (idea.dir > 0 ? bar.h >= idea.tp1 : bar.l + xs <= idea.tp1))
            {
             gMissT = bar.t; gMissDir = idea.dir; gMissGrade = idea.grade; gMissRe = idea.re;
             EndIdea(" [MISSED]", bar.t);
            }
          return;
         }
-      idea.pendAge++;
-      if(idea.pendAge > InpPendingExpire) { EndIdea(" [EXPIRED]", bar.t); return; }
-      if(TrendAgainst(idea.dir, d, h4, trendDir)) { EndIdea(" [CANCELLED]", bar.t); return; }
-      bool touched = TouchedLevel(bar, idea.entry, (idea.dir > 0 ? sp : 0.0));
-      if(InpCancelAtTP1 && !touched && (idea.dir > 0 ? bar.h >= idea.tp1 : bar.l + xs <= idea.tp1))
+      if(idea.needConfirm)
+        {
+         // hybrid: price broke the signal candle during the confirmation bar - the break is the confirmation
+         idea.needConfirm = false;
+         idea.confirmTime = bar.t;
+         MarkSignal(idea.signalTime, idea.dir, idea.re, idea.grade, idea.why);
+        }
+      else
+        {
+         idea.pendAge++;
+         if(idea.pendAge > InpPendingExpire) { EndIdea(" [EXPIRED]", bar.t); return; }
+         if(TrendAgainst(idea.dir, d, h4, trendDir)) { EndIdea(" [CANCELLED]", bar.t); return; }
+        }
+      bool touched = (limLive && TouchedLevel(bar, idea.entry, (idea.dir > 0 ? sp : 0.0)));
+      if(!hyb && InpCancelAtTP1 && !touched && (idea.dir > 0 ? bar.h >= idea.tp1 : bar.l + xs <= idea.tp1))
         { EndIdea(" [MISSED]", bar.t); return; }   // the move left without us: never chase it back
-      if(!touched) return;
+      if(!touched && !brkNow) return;
+      // both legs touched in one bar: the one nearer the open filled first
+      if(brkNow && (!touched || MathAbs(bar.o - idea.brkEntry) <= MathAbs(bar.o - idea.entry)))
+        {
+         ApplyLevels(idea.dir, idea.brkEntry, idea.slR);   // breakout leg: levels measured from its fill
+         idea.fillIsStop = true;
+        }
       idea.state = IDEA_LIVE;
       idea.fillTime = bar.t;
       idea.slBarAge = 0;
@@ -809,7 +843,7 @@ void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int tren
       // the order of prices inside the fill bar is unknown. A limit is filled coming from
       // the TP side, so only a close beyond a TP proves it came after the fill; a stop is
       // filled coming from the SL side, so only a close beyond the SL proves that.
-      if(!InpPendingOn || InpPendingType == PEND_LIMIT)
+      if(!InpPendingOn || !idea.fillIsStop)
         {
          hitTP1 = (idea.dir > 0 ? bar.c >= idea.tp1 : bar.c + xs <= idea.tp1);
          hitTP2 = (idea.dir > 0 ? bar.c >= idea.tp2 : bar.c + xs <= idea.tp2);
@@ -1505,8 +1539,15 @@ void DrawLiveZone()
       gz.t1    = idea.signalTime;
       gz.tEnd  = 0;
       gz.status = "";
-      if(idea.state == IDEA_PENDING) gz.status = (idea.needConfirm ? " [CONFIRMING]" : (InpPendingType == PEND_LIMIT ? " [LIMIT]" : " [STOP]"));
-      if(idea.state == IDEA_LIVE)    gz.status = (idea.tp1Done ? " [TP1 HIT]" : " [FILLED]");
+      bool hybP = (idea.state == IDEA_PENDING && idea.brkEntry > 0.0);
+      gz.brk = (hybP ? idea.brkEntry : 0.0);
+      if(idea.state == IDEA_PENDING)
+        {
+         if(hybP) gz.status = (idea.needConfirm ? " [CONFIRMING, BREAK LIVE]" : " [LIMIT + BREAK]");
+         else     gz.status = (idea.needConfirm ? " [CONFIRMING]" : (InpPendingType == PEND_LIMIT ? " [LIMIT]" : " [STOP]"));
+        }
+      if(idea.state == IDEA_LIVE)
+         gz.status = (idea.tp1Done ? " [TP1 HIT]" : (idea.brkEntry > 0.0 ? (idea.fillIsStop ? " [FILLED BREAK]" : " [FILLED PULLBACK]") : " [FILLED]"));
       if(idea.state == IDEA_SL_WAIT) gz.status = " [SL HIT]";
      }
 
@@ -1550,6 +1591,16 @@ void DrawLiveZone()
    PutLabel(ZPRE+"NSL0", tl, gz.sl,    "SL  "    + DoubleToString(gz.sl,    _Digits), InpLineSL);
    PutLabel(ZPRE+"NT10", tl, gz.tp1,   "TP1  "   + DoubleToString(gz.tp1,   _Digits), InpLineTP1);
    PutLabel(ZPRE+"NT20", tl, gz.tp2,   "TP2  "   + DoubleToString(gz.tp2,   _Digits), InpLineTP2);
+   if(gz.brk > 0.0)
+     {
+      PutLine(ZPRE+"LBK0", t1, t3, gz.brk, Faint(sig, InpLineOpacity));
+      PutLabel(ZPRE+"NBK0", tl, gz.brk, "Break  " + DoubleToString(gz.brk, _Digits) + "  (stop entry)", sig);
+     }
+   else
+     {
+      ObjectDelete(0, ZPRE+"LBK0");
+      ObjectDelete(0, ZPRE+"NBK0");
+     }
    ChartRedraw(0);
   }
 
@@ -2268,6 +2319,8 @@ void FireAlert(const string side, const datetime barTime, const double barClose)
                            DoubleToString(idea.tp1, _Digits),
                            DoubleToString(idea.tp2, _Digits));
 
+   if(idea.state == IDEA_PENDING && idea.brkEntry > 0.0)
+      extra += " BRK " + DoubleToString(idea.brkEntry, _Digits);
    if(idea.state != IDEA_IDLE)
       extra += StringFormat(" | score %d/5", ScoreAt(1, idea.dir));
 
@@ -2288,7 +2341,8 @@ void CheckAlerts(const datetime barTime, const double barClose)
    if(InpAlertFill && idea.state == IDEA_LIVE && idea.fillTime == barTime && lastFillAlert != barTime)
      {
       lastFillAlert = barTime;
-      FireAlert(idea.dir > 0 ? "PENDING FILLED BUY" : "PENDING FILLED SELL", barTime, barClose);
+      FireAlert((idea.dir > 0 ? "PENDING FILLED BUY" : "PENDING FILLED SELL")
+                + (idea.brkEntry > 0.0 ? (idea.fillIsStop ? " (BREAKOUT)" : " (PULLBACK)") : ""), barTime, barClose);
      }
 
    if(InpConfirmBar && InpPendingOn && InpSetupAlert)
