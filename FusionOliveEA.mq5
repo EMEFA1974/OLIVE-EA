@@ -1,25 +1,20 @@
 //+------------------------------------------------------------------+
 //|                                               FusionOliveEA.mq5  |
 //|                                                                  |
-//| Trades the CONFIRMED signals of FusionOliveInd, one trade at a   |
-//| time, every order with SL and TP.                                |
+//| Stand-alone EA: the complete FusionOliveInd signal engine is     |
+//| built in (no indicator file needed). It trades the CONFIRMED     |
+//| signals, one trade at a time, every order with SL and TP.        |
 //|                                                                  |
-//| The indicator stays the single source of the signal logic: the   |
-//| EA loads it with iCustom (headless: no panel, zones or alerts)   |
-//| and reads its EA buffers on every closed bar:                    |
-//|   kind 1/4 = signal confirmed, place the orders (entry LIMIT/STOP)|
-//|   kind 2 = signal already filled on the break, enter at market   |
-//|   kind 3 = the indicator dropped its pending orders, delete ours |
+//| "Signal:" inputs = the indicator's settings (same defaults);     |
+//| "EA:" inputs = lots, entry, SL/TP, trailing, risk, visuals.      |
 //|                                                                  |
-//| The indicator runs with its DEFAULT inputs. To trade other       |
-//| indicator settings, change the defaults in FusionOliveInd.mq5    |
-//| and recompile it.                                                |
+//| Generated from FusionOliveInd + the EA trade layer; keep the     |
+//| engine part in sync when the indicator logic changes.            |
 //+------------------------------------------------------------------+
 #property copyright "FusionOliveEA"
 #property link      ""
-#property version   "1.00"
-#property description "Trades the confirmed FusionOliveInd signals: one trade at a time, SL/TP, break-even, trailing."
-#property tester_indicator "FusionOliveInd.ex5"
+#property version   "2.00"
+#property description "Stand-alone FusionOliveEA: built-in FusionOliveInd engine, confirmed signals only, one trade at a time, SL/TP, break-even, trailing."
 
 #include <Trade/Trade.mqh>
 
@@ -50,28 +45,27 @@ enum ENUM_TRADE_DIR
    DIR_SELL = 2              // sells only
   };
 
-input group "=== Signal Source ==="
-input string          InpIndName      = "FusionOliveInd"; // indicator file name in MQL5\Indicators
+input group "=== EA: Signals traded ==="
 input bool            InpTradeReentry = true;             // also trade the indicator's re-entry signals
 input ENUM_TRADE_DIR  InpDirection    = DIR_BOTH;
 
-input group "=== Entry ==="
+input group "=== EA: Entry ==="
 input ENUM_ENTRY_MODE InpEntryMode     = ENTRY_AS_INDICATOR;
 input int             InpPendExpireBars = 12;  // delete unfilled pending orders after this many bars (0 = only when the indicator cancels)
 input int             InpMaxSpreadPts  = 0;    // skip new trades when the spread is wider (0 = off)
 input int             InpSlippagePts   = 30;   // max slippage for market orders (broker points)
 
-input group "=== Lots ==="
+input group "=== EA: Lots ==="
 input double          InpLots          = 0.01; // fixed lot size
 
-input group "=== Stop Loss / Take Profit (points: x10 on 3/5-digit symbols, XAUUSD 100 = $1.00) ==="
+input group "=== EA: Stop Loss / Take Profit (points: x10 on 3/5-digit symbols, XAUUSD 100 = $1.00) ==="
 input ENUM_SL_MODE    InpSLMode        = SL_INDICATOR;
 input int             InpSLPts         = 500;  // SL distance when SL_FIXED
 input ENUM_TP_MODE    InpTPMode        = TP_INDICATOR_TP1;
 input int             InpTPPts         = 500;  // TP distance when TP_FIXED
 input double          InpTPRR          = 1.5;  // TP = this x SL distance when TP_RR
 
-input group "=== Break-even / Trailing ==="
+input group "=== EA: Break-even / Trailing ==="
 input bool            InpBEOn          = false; // move the SL to break-even
 input int             InpBETriggerPts  = 300;   // profit needed to move it
 input int             InpBELockPts     = 20;    // points locked beyond the entry
@@ -80,33 +74,2505 @@ input int             InpTrailStartPts = 400;   // profit needed before trailing
 input int             InpTrailDistPts  = 300;   // SL distance behind the price
 input int             InpTrailStepPts  = 50;    // move the SL only in steps of at least this
 
-input group "=== Risk / Management ==="
+input group "=== EA: Risk / Management ==="
 input bool            InpCloseOnOpposite = false; // close the open trade on a confirmed opposite signal (and take it)
 input double          InpDailyLossMoney  = 0;     // no new trades after this daily loss in account currency (0 = off)
 input double          InpDailyProfitMoney = 0;    // no new trades after this daily profit (0 = off)
 input int             InpMaxTradesPerDay = 0;     // max new trades per day (0 = off)
 
-input group "=== Visuals / Notifications ==="
+input group "=== EA: Visuals / Notifications ==="
 input bool            InpShowDots      = true;          // dot on every confirmed signal
 input color           InpBuyDotColor   = clrAqua;       // under buy signals
 input color           InpSellDotColor  = clrMagenta;    // over sell signals
 input int             InpDotSize       = 3;             // 1-5
 input int             InpDotHistoryBars = 3000;         // also mark confirmed signals of this many past bars
-input bool            InpShowPanel     = true;          // status in the chart corner
+input bool            InpEAPanel     = true;          // status in the chart corner
 input bool            InpNotify        = true;          // push notification on trade open / close
 input long            InpMagic         = 260710;
 
-// indicator buffer numbers (see FusionOliveInd: EA signal buffers)
-#define B_SIG   10
-#define B_SIGT  11
-#define B_ENTRY 12
-#define B_BRK   13
-#define B_SL    14
-#define B_TP1   15
-#define B_TP2   16
-#define B_BSL   17
-#define B_BTP1  18
-#define B_BTP2  19
+
+//+------------------------------------------------------------------+
+//| Embedded FusionOliveInd signal engine                            |
+//+------------------------------------------------------------------+
+enum ENUM_PEND_TYPE
+  {
+   PEND_LIMIT = 0,   // pullback (buy below / sell above)
+   PEND_STOP  = 1,   // confirmation break (buy above / sell below)
+   PEND_HYBRID = 2   // both: pullback limit + breakout stop, first fill wins (the other is cancelled)
+  };
+
+enum ENUM_CHECK4_PRICE
+  {
+   CHECK4_CLOSE = 0, // Close
+   CHECK4_HIGH  = 1  // High
+  };
+
+enum ENUM_GRADE
+  {
+   GRADE_A = 0,   // passes every enabled quality filter
+   GRADE_B = 1,   // fails one filter
+   GRADE_C = 2    // fails two or more filters
+  };
+#define GRADE_NONE 3
+#define GRADE_CX   4   // grade C rejected by the Grade C filter
+
+// hollow (outline) Wingdings arrows
+#define ARROW_UP_HOLLOW 241
+#define ARROW_DN_HOLLOW 242
+
+bool InpHeadless = true;          // engine runs inside the EA: no panel, zones, tags or alerts
+
+input group "=== Signal: Timeframes ==="
+input ENUM_TIMEFRAMES InpTF_D  = PERIOD_D1;
+input ENUM_TIMEFRAMES InpTF_H4 = PERIOD_H4;
+input ENUM_TIMEFRAMES InpTF_H1 = PERIOD_H1;
+input ENUM_TIMEFRAMES InpTF_M5 = PERIOD_M5;
+
+input group "=== Signal: Signal Quality ==="
+input int    InpMinAlign     = 2;
+input double InpMinBodyRatio = 0.25;
+input double InpClosePos     = 0.55;
+input int    InpSwingLook    = 2;
+input int    InpCooldown     = 8;
+input bool   InpRequireD     = false;
+input bool   InpRequireH4    = true;
+input bool   InpUseM5Trigger = false;
+input bool   InpAutoDigits   = true;   // 3/5-digit brokers: point inputs are scaled x10 (same $ distances on 2- and 3-digit XAUUSD)
+
+input group "=== Signal: Pending Entry ==="
+input bool           InpPendingOn       = true;
+input ENUM_PEND_TYPE InpPendingType     = PEND_HYBRID;
+input int            InpHybridBreakPts  = 10;    // hybrid: breakout stop this many points beyond the signal candle low (sell) / high (buy)
+input int            InpPendingPts      = 40;    // minimum distance in points
+input double         InpPendingRetrace  = 0.40;  // fraction of signal candle range
+input bool           InpPendingUseRange = true;  // use max(points, range*retrace)
+input int            InpPendingExpire   = 12;    // cancel pending after N closed bars
+input int            InpMinSLGapPts     = 15;    // keep pending entry this far from SL
+input bool           InpConfirmBar      = true;  // the bar after the signal must close its way (buy: bullish, above the signal mid) before the order is placed
+input bool           InpSetupAlert      = true;  // with the confirmation bar: arrow + alert as soon as the zone appears (signal close), not one bar later
+input bool           InpCancelAtTP1     = true;  // cancel an unfilled pending if price reaches TP1 first (a limit that only fills on the way back is a losing fill)
+
+input group "=== Signal: Re-entry after SL ==="
+input bool   InpReentryOn      = true;
+input int    InpSLBufferPts    = 20;
+input double InpSLWidenPct     = 100.0;  // widen the SL by this % of the entry-SL distance (0 = off). TP1/TP2 keep the original R. Set the same in Ind and EA
+input double InpRR1            = 1.0;   // TP1 R-multiple
+input double InpRR2            = 2.0;   // TP2 R-multiple
+input int    InpMaxReentry     = 1;     // one re-entry at most
+input int    InpReentryWindow  = 24;
+input int    InpReentryCool    = 3;
+input bool   InpSpreadAware    = true;  // fills / SL / TP use the ask where the broker does (buy entries, sell exits)
+
+input group "=== Signal: Trend Filter (EMA, replaces the one-candle bias vote) ==="
+input bool            InpFiltOn     = true;        // on = EMA trend on TF1 AND TF2 must agree with the trade (legacy candle vote is skipped)
+input ENUM_TIMEFRAMES InpFiltTF1    = PERIOD_H1;
+input ENUM_TIMEFRAMES InpFiltTF2    = PERIOD_H4;
+input int             InpFiltFast   = 50;          // TF trend up = EMA fast > EMA slow and close > EMA slow
+input int             InpFiltSlow   = 200;
+input bool            InpD1FilterOn = true;        // D1 must not be against the trade
+input int             InpD1EmaP     = 50;          // D1 against a buy = last D1 close below this D1 EMA
+input bool            InpD1SkipIfTrend = true;     // D1 is not counted when the H1 + H4 EMA trend already agrees with the trade (D1 lags turns)
+
+input group "=== Signal: ATR / Location Filter ==="
+input int    InpATRPeriod   = 14;                  // ATR on the chart timeframe
+input bool   InpATROn       = true;                // signal candle range must be between min and max x ATR
+input double InpMinRangeATR = 0.6;                 // smaller = noise
+input double InpMaxRangeATR = 2.5;                 // larger = exhaustion
+input bool   InpLocationOn  = true;                // skip signals that chase: buy closing too far ABOVE the EMA / sell too far BELOW it
+input int    InpLocEmaP     = 21;                  // chart-TF EMA used as value
+input double InpMaxExtATR   = 2.0;                 // max distance close <-> EMA in ATR
+input bool   InpATRStopOn   = true;                // SL buffer = max(InpSLBufferPts, ATR x k, spread x m)
+input double InpSLBufATR    = 0.3;
+input double InpSLBufSpread = 2.0;
+
+input group "=== Signal: Strict Trigger ==="
+input bool   InpStrictOn    = true;                // strong displacement through a real swing, or a real pin bar
+input double InpStrictBody  = 0.40;                // min body / range
+input double InpStrictClose = 0.65;                // close in the top (buy) / bottom (sell) 35% of the candle
+input int    InpBreakBars   = 2;                   // swing break counts if price was still on the other side within this many bars
+input int    InpSwingBars   = 15;                  // swing to break is searched within this many bars
+input int    InpFractalSide = 2;                   // bars on each side that make a swing point
+input double InpPinWickMult = 2.0;                 // pin bar: rejection wick >= this x body
+input double InpPinWickPct  = 0.55;                // and >= this share of the candle range
+input int    InpPinSweep    = 3;                   // and the wick takes out the low/high of the previous N bars
+
+input group "=== Signal: VWMA / RSI Score ==="
+input bool              InpScoreOn     = true;          // score below InpMinScore counts as a failed grade filter
+input int               InpMinScore    = 3;             // score needed in the trade direction (0-5)
+input bool              InpObOsOn      = true;          // RSI beyond OB (buy) / OS (sell) counts as a failed grade filter
+input bool              InpObOsAllRsi  = false;         // false = only the slow RSI1 is checked (fast RSIs spike on every strong trigger candle)
+input int               InpVWMA1       = 85;            // VWMA1 period (red, scored vs price)
+input int               InpVWMA2       = 37;            // VWMA2 period (orange)
+input int               InpVWMA3       = 18;            // VWMA3 period (yellow, scored vs VWMA2)
+input int               InpVWMA4       = 6;             // VWMA4 period (green, used by the C momentum check)
+input ENUM_CHECK4_PRICE InpCheck4Price = CHECK4_CLOSE;  // price compared with VWMA1
+input int               InpRSI1        = 14;            // RSI1 period
+input int               InpRSI2        = 9;             // RSI2 period
+input int               InpRSI3        = 7;             // RSI3 period (fast, used by the C momentum check)
+input double            InpRsiMid      = 55.0;          // bull vote RSI > this, bear vote RSI < 100 - this
+input double            InpRsiOB       = 80.0;          // RSI overbought
+input double            InpRsiOS       = 20.0;          // RSI oversold
+
+input group "=== Signal: Signal Flow ==="
+input bool       InpOppOverride = true;            // a fresh opposite signal cancels a pending order or an SL re-entry wait (live trades still block)
+input bool       InpSoftChase   = true;            // range / extended / exhausted together count as at most ONE failed filter
+input bool       InpSoftHTF     = true;            // EMA trend + D1 together count as at most ONE failed filter (so a strong M5 move against the H4/D1 trend can still be B)
+input bool       InpShowDiag    = true;            // buy / sell diagnostics on the panel (also printed to the Experts log on load)
+input int        InpHistoryBars = 5000;            // closed bars replayed on load (signals, arrows and stats cover this many bars)
+
+input group "=== Signal: Hard Vetoes (cannot be averaged away by the soft filters) ==="
+input bool       InpRoomOn      = true;            // veto when TP1 lies beyond the nearest opposing swing (sell just above a fresh low / buy just under a fresh high)
+input int        InpRoomBars    = 36;              // bars searched for that swing low (sell) / swing high (buy)
+input double     InpMinRoomR    = 1.0;             // room from entry to that swing must be at least this many R (TP1 = InpRR1 R)
+input bool       InpLateOn      = false;           // veto late entries: price already ran too far in the trade direction
+input int        InpLegBars     = 12;              // leg = signal close vs lowest low (buy) / highest high (sell) of this many bars
+input double     InpMaxLegATR   = 3.0;             // veto when that leg is longer than this many ATR (entering at the end of the impulse)
+input bool       InpCounterConfirm = true;         // A/B signals against the EMA trend or D1 must also show momentum (fast RSI turning + close beyond VWMA4)
+
+input group "=== Signal: Signal Grade ==="
+input bool       InpGradeA   = true;               // A-grade signals (pass every filter) become signals (zone / alert / EA trade)
+input bool       InpGradeB   = true;               // B-grade signals (fail one filter) become signals
+input bool       InpGradeC   = false;              // allow Grade C trades (fail two or more filters); they must also pass the Grade C filter
+input bool       InpReNeedA  = false;              // true = re-entries only on a fresh A-grade trigger (false = same grades as the toggles)
+input bool       InpShowFiltered = true;          // grey grade letter on signals whose grade is toggled off / rejected (no zone, no alert)
+input color      InpFiltColor    = clrSilver;
+input bool       InpGradeTag     = true;          // grade letter under / over each signal arrow
+input double     InpTagOffATR    = 0.8;           // grade letter distance from the candle, in ATR
+
+input group "=== Signal: Grade C Filter (removes weak C signals) ==="
+input bool   InpCFilterOn   = true;                // C signals must pass every enabled check below
+input int    InpCMaxFails   = 3;                   // reject C if it fails more than this many grade filters
+input int    InpCMinScore   = 4;                   // reject C if the VWMA/RSI score in its direction is below this (0-5)
+input bool   InpCNoCounter  = true;                // reject C if the EMA trend (TF1 + TF2) points against it (neutral is allowed)
+input bool   InpCNoD1       = true;                // reject C if the D1 close is on the wrong side of the D1 EMA
+input bool   InpCNoExhaust  = true;                // reject C if any RSI is beyond OB (buy) / OS (sell)
+input bool   InpCMomentum   = true;                // C needs fast RSI turning its way and close beyond VWMA4
+input bool   InpCNeedCandle = true;                // C needs a strict trigger candle (displacement through a swing, or a pin bar)
+
+input group "=== Engine trade simulation (signal flow / stats, not the EA orders) ==="
+input bool   InpManageOn     = true;    // EA closes part at TP1 and lets the rest run to TP2
+input bool   InpMoveBE       = true;    // EA moves the SL to entry after TP1 (zone and stats follow it)
+
+bool   InpAlertPopup   = true;
+bool   InpAlertSound   = true;
+bool   InpAlertPush    = true;
+bool   InpAlertEmail   = false;
+string InpSoundFile    = "alert.wav";
+bool   InpAlertOnLoad  = false;
+bool   InpAlertReentry = true;
+bool   InpAlertFill    = true;    // alert when pending is filled
+bool   InpAlertCancel  = true;    // alert when a setup / pending order ends without a fill (not confirmed, expired, trend turned, reversed)
+
+bool   InpShowPanel    = true;
+color  InpBuyColor     = clrAqua;      // buy arrows (hollow)
+color  InpSellColor    = clrMagenta;   // sell arrows (hollow)
+color  InpReBuyColor   = clrAqua;      // re-entry buy arrows (hollow, thinner, further out)
+color  InpReSellColor  = clrMagenta;   // re-entry sell arrows (hollow, thinner, further out)
+int    InpArrowWidth   = 4;            // arrow size 1-5 (re-entry arrows are one size smaller)
+int    InpArrowShift   = 12;
+int    InpPanelX       = 4;        // left edge
+int    InpPanelY       = 20;       // top-left (EA panel goes bottom-left). Drag to move.
+int    InpPanelWidth   = 270;
+string InpPanelFontName = "Segoe UI Semilight"; // thin font for labels and values (thinner: "Segoe UI Light")
+string InpPanelFontHead = "Segoe UI";           // headings / title (e.g. "Segoe UI", "Calibri Light", "Arial")
+int    InpPanelFont    = 8;
+int    InpPanelTitleFont = 8;      // size of the panel name
+int    InpPanelRowH    = 15;
+ENUM_TIMEFRAMES InpTrendTF = PERIOD_H1;   // timeframe for the EMA trend line on the panel
+int    InpTrendFast    = 50;
+int    InpTrendSlow    = 200;
+
+bool   InpShowZones     = true;
+bool   InpKeepLastZone  = false;   // true = keep a finished zone on the chart until the next signal
+bool   InpHideAtTP1     = true;    // zone is mitigated (removed) when TP1 is hit; false = keep until TP2
+int    InpZoneRightBars = 18;       // box extends this many bars past the current bar
+int    InpLabelBars     = 16;       // extra line length to the right of the box for the labels
+int    InpZoneFontSize  = 7;
+string InpZoneFont      = "Segoe UI Semilight"; // thin font for zone labels (e.g. "Segoe UI Light", "Calibri Light", "Arial")
+bool   InpAutoChartShift = true;    // turn on chart shift so the box and labels have room
+int    InpChartShiftPct = 30;       // chart shift size in % of chart width (10-50)
+color  InpZoneSL        = C'220,50,50';
+color  InpZoneTP1       = C'30,170,100';
+color  InpZoneTP2       = C'40,100,230';
+int    InpZoneOpacity   = 35;       // box opacity % (0-100): lower = fainter / more see-through
+int    InpLineOpacity   = 80;       // level line opacity % (0-100); labels stay full colour
+color  InpLineEntry     = C'235,235,235';
+color  InpLineSL        = C'255,100,100';
+color  InpLineTP1       = C'60,255,190';
+color  InpLineTP2       = C'120,200,255';
+
+bool   InpShowLevels    = true;     // draw PDH/PDL and PWH/PWL lines
+color  InpPDColor       = clrSteelBlue;
+color  InpPWColor       = clrOrchid;
+bool   InpShowSessions  = true;     // session / day / week levels on the panel
+int    InpServerUtcOffset = 99;     // broker server time minus UTC in hours (99 = auto)
+int    InpSydS = 21;                // Sydney start hour (UTC)
+int    InpSydE = 6;                 // Sydney end hour (UTC)
+int    InpAsiS = 0;                 // Asian start hour (UTC)
+int    InpAsiE = 9;                 // Asian end hour (UTC)
+int    InpLonS = 7;                 // London start hour (UTC)
+int    InpLonE = 16;                // London end hour (UTC)
+int    InpNyS  = 12;                // New York start hour (UTC)
+int    InpNyE  = 21;                // New York end hour (UTC)
+
+double BuyBuf[];
+double SellBuf[];
+double ReBuyBuf[];
+double ReSellBuf[];
+double V1[], V2[], V3[], V4[];   // VWMA lines on High (series indexing, like the arrow buffers)
+// EA signal buffers (calculations only), one value per closed bar, read by FusionOliveEA:
+// EaSig = dir * (kind + 10 if re-entry); kind 1 = pending orders placed (entry is a LIMIT),
+// 4 = pending orders placed (entry is a STOP), 2 = enter at market now, 3 = cancel the pending orders
+double EaSig[], EaSigT[], EaEntry[], EaBrk[], EaSL[], EaTP1[], EaTP2[], EaBSL[], EaBTP1[], EaBTP2[];
+double VL1[], VL4[];             // VWMA1 / VWMA4 on Low: sells are measured against these (mirror of buys vs High)
+
+int gHR1 = INVALID_HANDLE, gHR2 = INVALID_HANDLE, gHR3 = INVALID_HANDLE;   // RSI handles
+
+datetime lastBuyTime   = 0;
+datetime lastSellTime  = 0;
+datetime lastAlertBar  = 0;
+datetime lastFillAlert = 0;
+datetime lastSetupAlert = 0;
+datetime lastMissAlert  = 0;
+datetime gCancT = 0;      // bar on which a setup / pending order ended without a fill
+int      gCancDir = 0, gCancGrade = 0;
+bool     gCancRe = false;
+string   gCancWhy = "";
+datetime lastCancAlert = 0;
+datetime gMissT = 0;      // confirmation bar that already reached TP1 (setup missed)
+int      gMissDir = 0, gMissGrade = 0;
+bool     gMissRe = false;
+bool     allowAlerts   = false;
+datetime gLastBar      = 0;      // last closed bar fed to the signal engine
+datetime gLastDrawBar  = 0;      // panel / zone / levels redraw throttle
+uint     gLastDrawMs   = 0;
+datetime lastFiltB     = 0;      // last grey (grade toggled off) markers, for their own cooldown
+datetime lastFiltS     = 0;
+
+int gCntBuy = 0, gCntSell = 0, gCntTP1 = 0, gCntTP2 = 0, gCntSL = 0, gCntLoss = 0;
+
+// signal outcome events, kept so the panel can count "today"
+#define EV_SIG  0
+#define EV_TP1  1
+#define EV_TP2  2
+#define EV_SL   3
+#define EV_LOSS 4   // SL hit before TP1
+datetime gEvT[];
+int      gEvK[];
+
+void AddEv(const int kind, const datetime t)
+  {
+   int n = ArraySize(gEvT);
+   if(n >= 3000) { ArrayRemove(gEvT, 0, 1000); ArrayRemove(gEvK, 0, 1000); n = ArraySize(gEvT); }
+   ArrayResize(gEvT, n + 1);
+   ArrayResize(gEvK, n + 1);
+   gEvT[n] = t;
+   gEvK[n] = kind;
+  }
+
+#define PREFIX "MZF_"
+#define ARPRE  "MZFAR_"
+#define ZPRE   "MZFZN_"
+#define LPRE   "MZFLV_"
+
+enum IdeaState { IDEA_IDLE = 0, IDEA_PENDING, IDEA_LIVE, IDEA_SL_WAIT };
+
+struct Idea
+  {
+   IdeaState state;
+   int       dir;
+   double    entry, sl, tp1, tp2;
+   double    slR;        // original (not widened) SL: TP1/TP2 are measured from it
+   datetime  signalTime, slTime, fillTime;
+   int       reCount, slBarAge, pendAge;
+   bool      tp1Done;
+   bool      re;
+   int       grade;      // GRADE_A / B / C
+   int       armTrend;   // EMA trend when the idea was armed
+   bool      needConfirm;  // waiting for the confirmation bar (order not placed yet)
+   double    sigMid;       // midpoint of the signal candle
+   datetime  confirmTime;  // close of the confirmation bar
+   string    why;          // grade reasons, for the arrow tooltip
+   double    brkEntry;     // hybrid: breakout stop price (0 = none)
+   bool      fillIsStop;   // the fill came from a stop order (fill-bar SL/TP order rules)
+  };
+Idea idea;
+
+// snapshot of the current (most recent) zone; only one is ever drawn
+struct ZoneSnap
+  {
+   bool     valid;
+   int      dir;
+   bool     re;
+   int      grade;
+   double   entry, sl, tp1, tp2;
+   double   brk;        // hybrid breakout price while pending (0 = not drawn)
+   datetime t1, tEnd;   // tEnd = 0 while the idea is still running
+   string   status;
+  };
+ZoneSnap gz;
+
+void ResetZone()
+  {
+   gz.valid = false;
+   gz.dir = 0;
+   gz.re = false;
+   gz.grade = GRADE_NONE;
+   gz.entry = gz.sl = gz.tp1 = gz.tp2 = 0;
+   gz.brk = 0;
+   gz.t1 = gz.tEnd = 0;
+   gz.status = "";
+  }
+
+struct Candle
+  {
+   double o,h,l,c;
+   double spr;      // bar spread as a price (ask = bid + spr)
+   datetime t;
+   bool valid;
+  };
+
+struct Bias
+  {
+   int  dir;
+   bool strong;
+  };
+
+Bias gD, gH4, gH1, gM5;
+int  gScoreB = 0, gScoreS = 0;
+
+int EngineInit()
+  {
+   if(InpVWMA1 < 1 || InpVWMA2 < 1 || InpVWMA3 < 1 || InpVWMA4 < 1 || InpRSI1 < 1 || InpRSI2 < 1 || InpRSI3 < 1)
+     {
+      Print("FusionOliveEA engine: all VWMA / RSI periods must be >= 1");
+      return(INIT_PARAMETERS_INCORRECT);
+     }
+   if(InpMinScore < 0 || InpMinScore > 5 || InpCMinScore < 0 || InpCMinScore > 5)
+     {
+      Print("FusionOliveEA engine: InpMinScore and InpCMinScore must be between 0 and 5");
+      return(INIT_PARAMETERS_INCORRECT);
+     }
+
+   ArraySetAsSeries(BuyBuf, true);
+   ArraySetAsSeries(SellBuf, true);
+   ArraySetAsSeries(ReBuyBuf, true);
+   ArraySetAsSeries(ReSellBuf, true);
+   ArraySetAsSeries(V1, true);
+   ArraySetAsSeries(V2, true);
+   ArraySetAsSeries(V3, true);
+   ArraySetAsSeries(V4, true);
+   ArraySetAsSeries(VL1, true);
+   ArraySetAsSeries(VL4, true);
+   ArraySetAsSeries(EaSig, true);
+   ArraySetAsSeries(EaSigT, true);
+   ArraySetAsSeries(EaEntry, true);
+   ArraySetAsSeries(EaBrk, true);
+   ArraySetAsSeries(EaSL, true);
+   ArraySetAsSeries(EaTP1, true);
+   ArraySetAsSeries(EaTP2, true);
+   ArraySetAsSeries(EaBSL, true);
+   ArraySetAsSeries(EaBTP1, true);
+   ArraySetAsSeries(EaBTP2, true);
+
+
+   gEmaFast = iMA(_Symbol, InpTrendTF, InpTrendFast, 0, MODE_EMA, PRICE_CLOSE);
+   gEmaSlow = iMA(_Symbol, InpTrendTF, InpTrendSlow, 0, MODE_EMA, PRICE_CLOSE);
+   if(!FiltersInit())
+     {
+      Print("FusionOliveEA engine: could not create the filter indicators (EMA / ATR / RSI)");
+      return(INIT_FAILED);
+     }
+   if(!InpHeadless) PanelInit();
+   lastAlertBar = 0;
+   lastFillAlert = 0;
+   lastSetupAlert = 0;
+   lastMissAlert = 0;
+   gCancT = 0;
+   lastCancAlert = 0;
+   gMissT = 0;
+   allowAlerts  = InpAlertOnLoad;
+   ResetIdea();
+   ResetZone();
+   ResetCounts();
+   if(InpAutoChartShift && !InpHeadless)
+     {
+      ChartSetInteger(0, CHART_SHIFT, true);
+      ChartSetDouble(0, CHART_SHIFT_SIZE, MathMax(10, MathMin(50, InpChartShiftPct)));
+     }
+   return(INIT_SUCCEEDED);
+  }
+
+void EngineDeinit(const int reason)
+  {
+   if(gDrag) ChartSetInteger(0, CHART_MOUSE_SCROLL, gScrollWas);
+   if(gEmaFast != INVALID_HANDLE) IndicatorRelease(gEmaFast);
+   if(gEmaSlow != INVALID_HANDLE) IndicatorRelease(gEmaSlow);
+   FiltersRelease();
+   if(InpHeadless) return;   // never touch the objects of a visible copy on the same chart
+   ObjectsDeleteAll(0, PREFIX);
+   ObjectsDeleteAll(0, ARPRE);
+   ObjectsDeleteAll(0, ZPRE);
+   ObjectsDeleteAll(0, LPRE);
+  }
+
+void ClearZones()
+  {
+   if(InpHeadless) return;
+   ObjectsDeleteAll(0, ZPRE);
+  }
+
+// buy / sell diagnostics: index 0 = buy, 1 = sell
+#define DIAG_NF 9
+string gFailName[DIAG_NF] = {"trend", "D1", "range", "extended", "candle", "score", "exhausted", "no room", "unconfirmed"};
+int    gDTrig[2], gDBusy[2], gDGrade[10], gDFail[18];   // gDGrade[d*5 + grade], gDFail[d*DIAG_NF + f]
+
+void DiagRecord(const int d, const int grade, const string why)
+  {
+   if(grade == GRADE_NONE) return;
+   gDTrig[d]++;
+   gDGrade[d * 5 + grade]++;
+   int cut = StringFind(why, "  |");
+   string w = (cut >= 0 ? StringSubstr(why, 0, cut) : why) + " ";
+   for(int f = 0; f < 7; f++)
+      if(StringFind(w, " " + gFailName[f] + " ") >= 0) gDFail[d * DIAG_NF + f]++;
+   if(StringFind(why, "veto: no room") >= 0)     gDFail[d * DIAG_NF + 7]++;   // vetoes sit after the "|"
+   if(StringFind(why, "unconfirmed") >= 0)       gDFail[d * DIAG_NF + 8]++;
+  }
+
+string DiagTop(const int d)
+  {
+   int a = -1, b = -1;
+   for(int f = 0; f < DIAG_NF; f++)
+     {
+      int n = gDFail[d * DIAG_NF + f];
+      if(n <= 0) continue;
+      if(a < 0 || n > gDFail[d * DIAG_NF + a]) { b = a; a = f; }
+      else if(b < 0 || n > gDFail[d * DIAG_NF + b]) b = f;
+     }
+   if(a < 0) return "-";
+   string s = gFailName[a] + " " + IntegerToString(gDFail[d * DIAG_NF + a]);
+   if(b >= 0) s += ", " + gFailName[b] + " " + IntegerToString(gDFail[d * DIAG_NF + b]);
+   return s;
+  }
+
+void ResetCounts()
+  {
+   ArrayInitialize(gDTrig, 0); ArrayInitialize(gDBusy, 0);
+   ArrayInitialize(gDGrade, 0); ArrayInitialize(gDFail, 0);
+   gCntBuy = gCntSell = gCntTP1 = gCntTP2 = gCntSL = gCntLoss = 0;
+   ArrayResize(gEvT, 0);
+   ArrayResize(gEvK, 0);
+  }
+
+void ResetIdea()
+  {
+   idea.state = IDEA_IDLE;
+   idea.dir = 0;
+   idea.entry = idea.sl = idea.tp1 = idea.tp2 = idea.slR = 0;
+   idea.signalTime = idea.slTime = idea.fillTime = 0;
+   idea.reCount = idea.slBarAge = idea.pendAge = 0;
+   idea.tp1Done = false;
+   idea.re = false;
+   idea.grade = GRADE_NONE;
+   idea.armTrend = 0;
+   idea.needConfirm = false;
+   idea.sigMid = 0;
+   idea.confirmTime = 0;
+   idea.why = "";
+   idea.brkEntry = 0;
+   idea.fillIsStop = false;
+  }
+
+// finish the running idea but keep its levels as the current zone
+void EndIdea(const string status, const datetime t)
+  {
+   // pending orders the EA placed must go when the engine drops them
+   if(idea.state == IDEA_PENDING && !idea.needConfirm)
+      EaPublish(t, 3);
+   // a setup or pending order that ends unfilled gets a CANCELLED alert (MISSED has its own)
+   if(idea.state == IDEA_PENDING && status != " [MISSED]")
+     {
+      string why = "";
+      if(status == " [NOT CONFIRMED]")  why = "not confirmed";
+      else if(status == " [EXPIRED]")   why = "expired, not filled";
+      else if(status == " [CANCELLED]") why = "trend turned against it";
+      else if(status == " [REVERSED]")  why = "opposite signal";
+      if(why != "")
+        {
+         gCancT = t; gCancDir = idea.dir; gCancGrade = idea.grade; gCancRe = idea.re; gCancWhy = why;
+        }
+     }
+   if(idea.state == IDEA_PENDING && idea.needConfirm)
+      SetupArrow(idea.signalTime, idea.dir, idea.re, false);   // setup never confirmed: arrow goes
+   if(idea.state != IDEA_IDLE && idea.signalTime != 0)
+     {
+      gz.valid  = true;
+      gz.dir    = idea.dir;
+      gz.re     = idea.re;
+      gz.grade  = idea.grade;
+      gz.entry  = idea.entry;
+      gz.sl     = idea.sl;
+      gz.tp1    = idea.tp1;
+      gz.tp2    = idea.tp2;
+      gz.brk    = 0;
+      gz.t1     = idea.signalTime;
+      gz.tEnd   = t;
+      gz.status = status;
+     }
+   ResetIdea();
+  }
+
+// point unit for the point-based inputs; on 3/5-digit brokers one unit = 10 points
+double Pt()
+  {
+   if(InpAutoDigits && (_Digits == 3 || _Digits == 5)) return _Point * 10.0;
+   return _Point;
+  }
+
+double PointBuf() { return (double)InpSLBufferPts * Pt(); }
+
+double PendingDist(const Candle &bar)
+  {
+   double byPts = (double)InpPendingPts * Pt();
+   double byRng = 0.0;
+   if(InpPendingUseRange && bar.h > bar.l)
+      byRng = (bar.h - bar.l) * InpPendingRetrace;
+   double d = MathMax(byPts, byRng);
+   if(d <= 0.0) d = 10.0 * Pt();
+   return d;
+  }
+
+void ApplyLevels(const int dir, const double entry, const double sl)
+  {
+   idea.dir   = dir;
+   idea.entry = entry;
+   idea.sl    = sl;
+   idea.slR   = sl;
+   double risk = (dir > 0 ? (entry - sl) : (sl - entry));
+   if(risk <= 0.0) risk = Pt() * 10;
+   // wider SL, same TPs: the SL moves InpSLWidenPct % further away, TP1/TP2 keep the original R
+   double w = 1.0 + MathMax(0.0, InpSLWidenPct) / 100.0;
+   idea.sl = (dir > 0 ? entry - risk * w : entry + risk * w);
+   if(dir > 0)
+     {
+      idea.tp1 = entry + risk * InpRR1;
+      idea.tp2 = entry + risk * InpRR2;
+     }
+   else
+     {
+      idea.tp1 = entry - risk * InpRR1;
+      idea.tp2 = entry - risk * InpRR2;
+     }
+  }
+
+bool BuildPendingPrices(const int dir, const Candle &bar, const double buf, double &entry, double &sl)
+  {
+   double gap = (double)InpMinSLGapPts * Pt();
+   if(gap <= 0.0) gap = 5.0 * Pt();
+   double dist = PendingDist(bar);
+
+   if(dir > 0)
+     {
+      sl = bar.l - buf;
+      if(InpPendingOn)
+        {
+         if(InpPendingType != PEND_STOP)
+            entry = bar.c - dist;
+         else
+            entry = bar.h + dist;
+         if(entry <= sl + gap)
+            entry = sl + gap;
+        }
+      else
+         entry = bar.c;
+      if(entry <= sl) return false;
+     }
+   else
+     {
+      sl = bar.h + buf;
+      if(InpPendingOn)
+        {
+         if(InpPendingType != PEND_STOP)
+            entry = bar.c + dist;
+         else
+            entry = bar.l - dist;
+         if(entry >= sl - gap)
+            entry = sl - gap;
+        }
+      else
+         entry = bar.c;
+      if(entry >= sl) return false;
+     }
+   return true;
+  }
+
+// SL / TP1 / TP2 the engine would use for a fill at entry (same maths as ApplyLevels)
+void LevelsFor(const int dir, const double entry, const double slR, double &sl, double &tp1, double &tp2)
+  {
+   double risk = (dir > 0 ? (entry - slR) : (slR - entry));
+   if(risk <= 0.0) risk = Pt() * 10;
+   double w = 1.0 + MathMax(0.0, InpSLWidenPct) / 100.0;
+   sl  = (dir > 0 ? entry - risk * w : entry + risk * w);
+   tp1 = entry + dir * risk * InpRR1;
+   tp2 = entry + dir * risk * InpRR2;
+  }
+
+// hand a confirmed signal (kind 1 / 2) or a cancel (kind 3) to FusionOliveEA on the bar that closed at t
+int EaPendKind() { return (InpPendingType == PEND_STOP ? 4 : 1); }
+
+void EaPublish(const datetime t, const int kind)
+  {
+   int sh = iBarShift(_Symbol, _Period, t, true);
+   if(sh < 0 || sh >= ArraySize(EaSig) || idea.dir == 0) return;
+   EaSig[sh]   = idea.dir * (kind + (idea.re ? 10 : 0));
+   EaSigT[sh]  = (double)idea.signalTime;
+   EaEntry[sh] = idea.entry;
+   EaBrk[sh]   = idea.brkEntry;
+   EaSL[sh]    = idea.sl;
+   EaTP1[sh]   = idea.tp1;
+   EaTP2[sh]   = idea.tp2;
+   EaBSL[sh] = EaBTP1[sh] = EaBTP2[sh] = 0.0;
+   if(idea.brkEntry > 0.0)
+     {
+      double bsl, b1, b2;
+      LevelsFor(idea.dir, idea.brkEntry, idea.slR, bsl, b1, b2);
+      EaBSL[sh] = bsl; EaBTP1[sh] = b1; EaBTP2[sh] = b2;
+     }
+  }
+
+void ArmIdea(const int dir, const Candle &bar, const bool re, const double buf,
+             const int grade, const int trendDir)
+  {
+   double entry = 0, sl = 0;
+   if(!BuildPendingPrices(dir, bar, buf, entry, sl))
+     {
+      EndIdea(idea.state == IDEA_SL_WAIT ? " [SL HIT]" : " [CANCELLED]", bar.t);
+      return;
+     }
+   idea.signalTime = bar.t;
+   idea.slTime = 0;
+   idea.fillTime = 0;
+   idea.slBarAge = 0;
+   idea.pendAge = 0;
+   idea.tp1Done = false;
+   idea.re = re;
+   idea.grade = grade;
+   idea.armTrend = trendDir;
+   idea.sigMid = (bar.h + bar.l) / 2.0;
+   idea.confirmTime = 0;
+   idea.needConfirm = (InpConfirmBar && InpPendingOn);
+   idea.fillIsStop = (InpPendingOn && InpPendingType == PEND_STOP);
+   idea.brkEntry = 0;
+   if(InpPendingOn && InpPendingType == PEND_HYBRID)
+      idea.brkEntry = (dir > 0 ? bar.h : bar.l) + dir * (double)MathMax(0, InpHybridBreakPts) * Pt();
+   ApplyLevels(dir, entry, sl);
+   idea.state = (InpPendingOn ? IDEA_PENDING : IDEA_LIVE);
+   if(idea.state == IDEA_LIVE)
+      idea.fillTime = bar.t;
+   if(idea.needConfirm)
+      SetupArrow(bar.t, dir, re, true);
+   else if(idea.state != IDEA_IDLE)
+      EaPublish(bar.t, idea.state == IDEA_LIVE ? 2 : EaPendKind());   // no confirmation bar: orders go in at this close
+  }
+
+// shift = spread for prices the broker checks on the ask (chart bars are bid)
+bool TouchedLevel(const Candle &bar, const double price, const double shift = 0.0)
+  {
+   return (bar.valid && bar.l + shift <= price && bar.h + shift >= price);
+  }
+
+// break-even after TP1 is simulated only when the EA manages trades that way
+bool EngineBE() { return (InpManageOn && InpMoveBE); }
+
+// idea must be dropped because the higher timeframe turned against it
+bool TrendAgainst(const int dir, const Bias &d, const Bias &h4, const int trendDir)
+  {
+   if(InpFiltOn) return (trendDir == -dir && idea.armTrend != -dir);
+   return (dir > 0 ? (d.dir < 0 || h4.dir < 0) : (d.dir > 0 || h4.dir > 0));
+  }
+
+void StopOut(const Candle &bar)
+  {
+   if(idea.tp1Done && EngineBE()) { EndIdea(" [BE]", bar.t); return; }   // runner stopped at entry
+   gCntSL++; AddEv(EV_SL, bar.t);
+   if(!idea.tp1Done) { gCntLoss++; AddEv(EV_LOSS, bar.t); }
+   idea.state = IDEA_SL_WAIT;
+   idea.slTime = bar.t;
+   idea.slBarAge = 0;
+  }
+
+// arrow only (no counters / tag) while a setup waits for its confirmation bar
+void SetupArrow(const datetime t, const int dir, const bool re, const bool on)
+  {
+   if(!InpSetupAlert) return;
+   int sh = iBarShift(_Symbol, _Period, t, true);
+   if(sh < 0) return;
+   double price = (on ? (dir > 0 ? iLow(_Symbol, _Period, sh) : iHigh(_Symbol, _Period, sh)) : EMPTY_VALUE);
+   if(dir > 0) { if(re) ReBuyBuf[sh]  = price; else BuyBuf[sh]  = price; }
+   else        { if(re) ReSellBuf[sh] = price; else SellBuf[sh] = price; }
+  }
+
+// arrow + grade tag + counters for a signal on the bar that opened at t
+void MarkSignal(const datetime t, const int dir, const bool re, const int grade, const string why)
+  {
+   int sh = iBarShift(_Symbol, _Period, t, true);
+   if(sh < 0) return;
+   double price = (dir > 0 ? iLow(_Symbol, _Period, sh) : iHigh(_Symbol, _Period, sh));
+   if(dir > 0) { if(re) ReBuyBuf[sh]  = price; else BuyBuf[sh]  = price; gCntBuy++; }
+   else        { if(re) ReSellBuf[sh] = price; else SellBuf[sh] = price; gCntSell++; }
+   AddEv(EV_SIG, t);
+   GradeTag(sh, t, price, dir, grade, re, why);
+  }
+
+void ManageIdea(const Candle &bar, const Bias &d, const Bias &h4, const int trendDir)
+  {
+   if(idea.state == IDEA_IDLE) return;
+   bool fillBar = false;
+   // buys are filled at the ask, sells are closed (SL / TP) at the ask
+   double sp = (InpSpreadAware ? bar.spr : 0.0);
+   double xs = (idea.dir < 0 ? sp : 0.0);
+
+   if(idea.state == IDEA_PENDING)
+     {
+      // hybrid: the breakout stop is live from the signal close; the pullback limit only after confirmation
+      bool hyb    = (InpPendingOn && InpPendingType == PEND_HYBRID && idea.brkEntry > 0.0);
+      bool brkNow = (hyb && (idea.dir > 0 ? bar.h + sp >= idea.brkEntry : bar.l <= idea.brkEntry));
+      bool limLive = !idea.needConfirm;
+      if(idea.needConfirm && !brkNow)
+        {
+         // the next bar must close the signal's way; the order is placed only after it closes
+         bool ok = (idea.dir > 0 ? (bar.c > idea.sigMid && bar.c >= bar.o)
+                                 : (bar.c < idea.sigMid && bar.c <= bar.o));
+         if(!ok)
+           {
+            if(InpShowFiltered)
+              {
+               int ssh = iBarShift(_Symbol, _Period, idea.signalTime, true);
+               if(ssh >= 0)
+                  FilteredMark(idea.signalTime, (idea.dir > 0 ? iLow(_Symbol, _Period, ssh) : iHigh(_Symbol, _Period, ssh)),
+                               idea.dir, idea.grade, idea.why + "  | not confirmed by the next bar");
+              }
+            EndIdea(" [NOT CONFIRMED]", bar.t);
+            return;
+           }
+         idea.needConfirm = false;
+         idea.confirmTime = bar.t;
+         MarkSignal(idea.signalTime, idea.dir, idea.re, idea.grade, idea.why);
+         // the confirmation bar itself may already have reached TP1. The order is placed only
+         // now, so the zone must not show a live [LIMIT] trade that is already "in profit"
+         // (hybrid keeps its breakout stop, which catches that move instead)
+         if(!hyb && InpCancelAtTP1 && (idea.dir > 0 ? bar.h >= idea.tp1 : bar.l + xs <= idea.tp1))
+           {
+            gMissT = bar.t; gMissDir = idea.dir; gMissGrade = idea.grade; gMissRe = idea.re;
+            EndIdea(" [MISSED]", bar.t);
+           }
+         else
+            EaPublish(bar.t, EaPendKind());   // confirmed: the EA places its orders now
+         return;
+        }
+      bool brkConfirm = false;
+      if(idea.needConfirm)
+        {
+         // hybrid: price broke the signal candle during the confirmation bar - the break is the confirmation
+         brkConfirm = true;
+         idea.needConfirm = false;
+         idea.confirmTime = bar.t;
+         MarkSignal(idea.signalTime, idea.dir, idea.re, idea.grade, idea.why);
+        }
+      else
+        {
+         idea.pendAge++;
+         if(idea.pendAge > InpPendingExpire) { EndIdea(" [EXPIRED]", bar.t); return; }
+         if(TrendAgainst(idea.dir, d, h4, trendDir)) { EndIdea(" [CANCELLED]", bar.t); return; }
+        }
+      bool touched = (limLive && TouchedLevel(bar, idea.entry, (idea.dir > 0 ? sp : 0.0)));
+      if(!hyb && InpCancelAtTP1 && !touched && (idea.dir > 0 ? bar.h >= idea.tp1 : bar.l + xs <= idea.tp1))
+        { EndIdea(" [MISSED]", bar.t); return; }   // the move left without us: never chase it back
+      if(!touched && !brkNow) return;
+      // both legs touched in one bar: the one nearer the open filled first
+      if(brkNow && (!touched || MathAbs(bar.o - idea.brkEntry) <= MathAbs(bar.o - idea.entry)))
+        {
+         ApplyLevels(idea.dir, idea.brkEntry, idea.slR);   // breakout leg: levels measured from its fill
+         idea.fillIsStop = true;
+        }
+      idea.state = IDEA_LIVE;
+      idea.fillTime = bar.t;
+      idea.slBarAge = 0;
+      fillBar = true;   // SL / TP are checked on the fill bar too
+      if(brkConfirm) EaPublish(bar.t, 2);   // already filled on the break: the EA enters at market
+     }
+
+   if(!InpReentryOn && idea.state == IDEA_SL_WAIT)
+     {
+      EndIdea(" [SL HIT]", idea.slTime);
+      return;
+     }
+
+   idea.slBarAge++;
+
+   bool hitTP2 = (idea.dir > 0 ? (bar.h >= idea.tp2) : (bar.l + xs <= idea.tp2));
+   bool hitTP1 = (idea.dir > 0 ? (bar.h >= idea.tp1) : (bar.l + xs <= idea.tp1));
+   bool hitSL  = (idea.dir > 0 ? (bar.l <= idea.sl)  : (bar.h + xs >= idea.sl));
+
+   if(fillBar)
+     {
+      // the order of prices inside the fill bar is unknown. A limit is filled coming from
+      // the TP side, so only a close beyond a TP proves it came after the fill; a stop is
+      // filled coming from the SL side, so only a close beyond the SL proves that.
+      if(!InpPendingOn || !idea.fillIsStop)
+        {
+         hitTP1 = (idea.dir > 0 ? bar.c >= idea.tp1 : bar.c + xs <= idea.tp1);
+         hitTP2 = (idea.dir > 0 ? bar.c >= idea.tp2 : bar.c + xs <= idea.tp2);
+        }
+      else
+         hitSL = (idea.dir > 0 ? bar.c <= idea.sl : bar.c + xs >= idea.sl);
+      if(hitSL) hitTP1 = hitTP2 = false;   // both possible: assume the loss
+     }
+
+   if(idea.state == IDEA_LIVE && hitSL && hitTP1)
+     {
+      bool closeFav = (idea.dir > 0 ? (bar.c > idea.entry) : (bar.c + xs < idea.entry));
+      if(!closeFav)
+        {
+         StopOut(bar);
+         return;
+        }
+     }
+
+   if(idea.state == IDEA_LIVE && hitTP2)
+     {
+      if(!idea.tp1Done) { gCntTP1++; AddEv(EV_TP1, bar.t); idea.tp1Done = true; }
+      gCntTP2++; AddEv(EV_TP2, bar.t);
+      EndIdea(" [TP2 HIT]", bar.t);
+      return;
+     }
+
+   bool tp1Now = false;
+   if(idea.state == IDEA_LIVE && hitTP1 && !idea.tp1Done)
+     {
+      gCntTP1++; AddEv(EV_TP1, bar.t);
+      idea.tp1Done = true;
+      tp1Now = true;
+     }
+
+   if(idea.state == IDEA_LIVE && hitSL)
+     {
+      StopOut(bar);
+      return;
+     }
+
+   if(tp1Now && EngineBE()) idea.sl = idea.entry;   // from the next bar the runner is at break-even
+
+   if(idea.state == IDEA_SL_WAIT)
+     {
+      if(idea.slBarAge > InpReentryWindow || TrendAgainst(idea.dir, d, h4, trendDir))
+         EndIdea(" [SL HIT]", idea.slTime);
+     }
+  }
+
+bool StructureAllows(const int dir, const Bias &d, const Bias &h4, const Bias &h1,
+                     const int scoreB, const int scoreS)
+  {
+   if(dir > 0)
+     {
+      if(scoreB < InpMinAlign) return false;
+      if(InpRequireD  && d.dir  !=  1) return false;
+      if(InpRequireH4 && h4.dir !=  1) return false;
+      if(h1.dir == -1) return false;
+      return true;
+     }
+   if(scoreS < InpMinAlign) return false;
+   if(InpRequireD  && d.dir  != -1) return false;
+   if(InpRequireH4 && h4.dir != -1) return false;
+   if(h1.dir == 1) return false;
+   return true;
+  }
+
+bool Cooled(const datetime now, const datetime lastSig, const int bars)
+  {
+   if(lastSig == 0) return true;
+   return ((now - lastSig) >= (datetime)bars * PeriodSeconds(_Period));
+  }
+
+//+------------------------------------------------------------------+
+//| Data caches. The engine reads single values (one bar of a        |
+//| timeframe, one indicator value, one spread) thousands of times   |
+//| during a history replay. Each series is now copied in one block  |
+//| per OnCalculate call (grown on demand) and read from memory.     |
+//| CacheReset() at the start of every call keeps values current.    |
+//+------------------------------------------------------------------+
+struct RateCache { ENUM_TIMEFRAMES tf; int n; MqlRates r[]; };
+struct BufCache  { int h; int n; double v[]; };
+RateCache gRC[8];
+BufCache  gBC[16];
+int       gRCUsed = 0, gBCUsed = 0;
+int       gSpr[];
+int       gSprN = 0;
+
+void CacheReset()
+  {
+   for(int j = 0; j < gRCUsed; j++) gRC[j].n = 0;
+   for(int j = 0; j < gBCUsed; j++) gBC[j].n = 0;
+   gSprN = 0;
+  }
+
+// how many values to copy so that shift sh is covered (grows geometrically, small on live ticks)
+int CacheWant(const int sh, const int have) { return MathMax(64, MathMax(sh + 1, have * 2)); }
+
+Candle CandleAtShift(ENUM_TIMEFRAMES tf, int sh)
+  {
+   Candle k;
+   k.valid = false; k.o = k.h = k.l = k.c = 0; k.spr = 0; k.t = 0;
+   if(sh < 0) return k;
+   int c = -1;
+   for(int j = 0; j < gRCUsed; j++) if(gRC[j].tf == tf) { c = j; break; }
+   if(c < 0 && gRCUsed < ArraySize(gRC)) { c = gRCUsed++; gRC[c].tf = tf; gRC[c].n = 0; }
+   if(c < 0)
+     {
+      MqlRates r1[];
+      if(CopyRates(_Symbol, tf, sh, 1, r1) != 1) return k;
+      k.o = r1[0].open; k.h = r1[0].high; k.l = r1[0].low; k.c = r1[0].close; k.t = r1[0].time;
+      k.valid = (k.h > k.l);
+      return k;
+     }
+   if(sh >= gRC[c].n)
+     {
+      ArraySetAsSeries(gRC[c].r, true);
+      int got = CopyRates(_Symbol, tf, 0, CacheWant(sh, gRC[c].n), gRC[c].r);
+      gRC[c].n = MathMax(0, got);
+      if(sh >= gRC[c].n) return k;
+     }
+   k.o = gRC[c].r[sh].open; k.h = gRC[c].r[sh].high; k.l = gRC[c].r[sh].low; k.c = gRC[c].r[sh].close;
+   k.t = gRC[c].r[sh].time;
+   k.valid = (k.h > k.l);
+   return k;
+  }
+
+int ClosedShiftAt(ENUM_TIMEFRAMES tf, const datetime t)
+  {
+   int sh = iBarShift(_Symbol, tf, t, false);
+   if(sh < 0) return -1;
+   datetime ht = iTime(_Symbol, tf, sh);
+   if(ht == 0) return -1;
+   if(t < ht + (datetime)PeriodSeconds(tf))
+      sh++;
+   return sh;
+  }
+
+double BodyRatio(const Candle &k)
+  {
+   double rng = k.h - k.l;
+   if(rng <= 0.0) return 0.0;
+   return MathAbs(k.c - k.o) / rng;
+  }
+
+double ClosePos(const Candle &k)
+  {
+   double rng = k.h - k.l;
+   if(rng <= 0.0) return 0.5;
+   return (k.c - k.l) / rng;
+  }
+
+bool BullCandle(const Candle &k) { return (k.valid && k.c > k.o); }
+bool BearCandle(const Candle &k) { return (k.valid && k.c < k.o); }
+
+Bias BiasFromTwo(const Candle &c1, const Candle &c2)
+  {
+   Bias b; b.dir = 0; b.strong = false;
+   if(!c1.valid || !c2.valid) return b;
+
+   bool bull = (c1.c > c1.o);
+   bool bear = (c1.c < c1.o);
+   bool hhhl = (c1.h >= c2.h && c1.l >= c2.l && c1.c > c2.c);
+   bool lhll = (c1.l <= c2.l && c1.h <= c2.h && c1.c < c2.c);
+   if(hhhl) bull = true;
+   if(lhll) bear = true;
+
+   if(bull && !bear) { b.dir = 1;  b.strong = hhhl || BodyRatio(c1) >= InpMinBodyRatio; }
+   else if(bear && !bull) { b.dir = -1; b.strong = lhll || BodyRatio(c1) >= InpMinBodyRatio; }
+   else if(c1.c > c2.c && c1.c > c1.o) b.dir = 1;
+   else if(c1.c < c2.c && c1.c < c1.o) b.dir = -1;
+   return b;
+  }
+
+Bias TFBiasNow(ENUM_TIMEFRAMES tf)
+  {
+   return BiasFromTwo(CandleAtShift(tf, 1), CandleAtShift(tf, 2));
+  }
+
+Bias TFBiasAt(ENUM_TIMEFRAMES tf, const datetime t)
+  {
+   int sh = ClosedShiftAt(tf, t);
+   if(sh < 0) return TFBiasNow(tf);
+   return BiasFromTwo(CandleAtShift(tf, sh), CandleAtShift(tf, sh + 1));
+  }
+
+bool QualityBullTrigger(const Candle &k, const double prevHigh)
+  {
+   if(!k.valid || k.c <= k.o) return false;
+   if(BodyRatio(k) < InpMinBodyRatio) return false;
+   if(ClosePos(k) < InpClosePos) return false;
+   bool displace = (k.c > prevHigh);
+   bool reject   = ((k.o - k.l) >= (k.c - k.o) * 0.55);
+   return (displace || reject);
+  }
+
+bool QualityBearTrigger(const Candle &k, const double prevLow)
+  {
+   if(!k.valid || k.c >= k.o) return false;
+   if(BodyRatio(k) < InpMinBodyRatio) return false;
+   if(ClosePos(k) > 1.0 - InpClosePos) return false;
+   bool displace = (k.c < prevLow);
+   bool reject   = ((k.h - k.o) >= (k.o - k.c) * 0.55);
+   return (displace || reject);
+  }
+
+//+------------------------------------------------------------------+
+//| Quality filters: EMA trend, D1, ATR range, location, strict      |
+//| trigger and the A/B/C grade. Keep in sync between Ind and EA.     |
+//+------------------------------------------------------------------+
+int gHTf1F = INVALID_HANDLE, gHTf1S = INVALID_HANDLE;
+int gHTf2F = INVALID_HANDLE, gHTf2S = INVALID_HANDLE;
+int gHD1   = INVALID_HANDLE, gHLoc  = INVALID_HANDLE, gHATR = INVALID_HANDLE;
+
+bool FiltersInit()
+  {
+   gHTf1F = iMA(_Symbol, InpFiltTF1, InpFiltFast, 0, MODE_EMA, PRICE_CLOSE);
+   gHTf1S = iMA(_Symbol, InpFiltTF1, InpFiltSlow, 0, MODE_EMA, PRICE_CLOSE);
+   gHTf2F = iMA(_Symbol, InpFiltTF2, InpFiltFast, 0, MODE_EMA, PRICE_CLOSE);
+   gHTf2S = iMA(_Symbol, InpFiltTF2, InpFiltSlow, 0, MODE_EMA, PRICE_CLOSE);
+   gHD1   = iMA(_Symbol, PERIOD_D1, InpD1EmaP, 0, MODE_EMA, PRICE_CLOSE);
+   gHLoc  = iMA(_Symbol, _Period, InpLocEmaP, 0, MODE_EMA, PRICE_CLOSE);
+   gHATR  = iATR(_Symbol, _Period, InpATRPeriod);
+   gHR1   = iRSI(_Symbol, _Period, InpRSI1, PRICE_CLOSE);
+   gHR2   = iRSI(_Symbol, _Period, InpRSI2, PRICE_CLOSE);
+   gHR3   = iRSI(_Symbol, _Period, InpRSI3, PRICE_CLOSE);
+   return (gHTf1F != INVALID_HANDLE && gHTf1S != INVALID_HANDLE && gHTf2F != INVALID_HANDLE
+           && gHTf2S != INVALID_HANDLE && gHD1 != INVALID_HANDLE && gHLoc != INVALID_HANDLE
+           && gHATR != INVALID_HANDLE && gHR1 != INVALID_HANDLE && gHR2 != INVALID_HANDLE
+           && gHR3 != INVALID_HANDLE);
+  }
+
+void ReleaseHandle(int &h)
+  {
+   if(h != INVALID_HANDLE) IndicatorRelease(h);
+   h = INVALID_HANDLE;
+  }
+
+void FiltersRelease()
+  {
+   ReleaseHandle(gHTf1F); ReleaseHandle(gHTf1S);
+   ReleaseHandle(gHTf2F); ReleaseHandle(gHTf2S);
+   ReleaseHandle(gHD1);   ReleaseHandle(gHLoc);  ReleaseHandle(gHATR);
+   ReleaseHandle(gHR1);   ReleaseHandle(gHR2);   ReleaseHandle(gHR3);
+  }
+
+bool HReady(const int h) { return (h != INVALID_HANDLE && BarsCalculated(h) > 0); }
+
+// all filter data is calculated (history replay must wait for it)
+bool FiltersReady()
+  {
+   return (HReady(gHTf1F) && HReady(gHTf1S) && HReady(gHTf2F) && HReady(gHTf2S)
+           && HReady(gHD1) && HReady(gHLoc) && HReady(gHATR)
+           && HReady(gHR1) && HReady(gHR2) && HReady(gHR3));
+  }
+
+double BufAt(const int h, const int sh)
+  {
+   if(h == INVALID_HANDLE || sh < 0) return 0.0;
+   int c = -1;
+   for(int j = 0; j < gBCUsed; j++) if(gBC[j].h == h) { c = j; break; }
+   if(c < 0 && gBCUsed < ArraySize(gBC)) { c = gBCUsed++; gBC[c].h = h; gBC[c].n = 0; }
+   double x = 0.0;
+   if(c < 0)
+     {
+      double v[1];
+      if(CopyBuffer(h, 0, sh, 1, v) != 1) return 0.0;
+      x = v[0];
+     }
+   else
+     {
+      if(sh >= gBC[c].n)
+        {
+         ArraySetAsSeries(gBC[c].v, true);
+         int got = CopyBuffer(h, 0, 0, CacheWant(sh, gBC[c].n), gBC[c].v);
+         gBC[c].n = MathMax(0, got);
+         if(sh >= gBC[c].n) return 0.0;
+        }
+      x = gBC[c].v[sh];
+     }
+   if(x == EMPTY_VALUE) return 0.0;
+   return x;
+  }
+
+// trend of one timeframe on its last bar closed at time t: 1 up, -1 down, 0 none
+int TFTrendAt(const ENUM_TIMEFRAMES tf, const int hF, const int hS, const datetime t)
+  {
+   int sh = ClosedShiftAt(tf, t);
+   if(sh < 0) return 0;
+   double f = BufAt(hF, sh), s = BufAt(hS, sh), c = iClose(_Symbol, tf, sh);
+   if(f <= 0 || s <= 0 || c <= 0) return 0;
+   if(f > s && c > s) return 1;
+   if(f < s && c < s) return -1;
+   return 0;
+  }
+
+// both filter timeframes must agree
+int TrendDirAt(const datetime t)
+  {
+   int a = TFTrendAt(InpFiltTF1, gHTf1F, gHTf1S, t);
+   int b = TFTrendAt(InpFiltTF2, gHTf2F, gHTf2S, t);
+   return ((a != 0 && a == b) ? a : 0);
+  }
+
+bool D1Against(const int dir, const datetime t)
+  {
+   int sh = ClosedShiftAt(PERIOD_D1, t);
+   if(sh < 0) return false;
+   double e = BufAt(gHD1, sh), c = iClose(_Symbol, PERIOD_D1, sh);
+   if(e <= 0 || c <= 0) return false;
+   return (dir > 0 ? c < e : c > e);
+  }
+
+double ATRAt(const int sh) { return BufAt(gHATR, sh); }
+
+double SpreadPriceAt(const int sh)
+  {
+   if(sh >= 0 && sh >= gSprN)
+     {
+      ArraySetAsSeries(gSpr, true);
+      gSprN = MathMax(0, CopySpread(_Symbol, _Period, 0, CacheWant(sh, gSprN), gSpr));
+     }
+   if(sh >= 0 && sh < gSprN && gSpr[sh] > 0) return gSpr[sh] * _Point;
+   return (double)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) * _Point;
+  }
+
+// SL distance beyond the signal candle
+double StopBuffer(const int sh)
+  {
+   double b = PointBuf();
+   if(!InpATRStopOn) return b;
+   double atr = ATRAt(sh);
+   if(atr > 0) b = MathMax(b, atr * InpSLBufATR);
+   b = MathMax(b, SpreadPriceAt(sh) * InpSLBufSpread);
+   return b;
+  }
+
+double BarHL(const int sh, const int dir) { return (dir > 0 ? iHigh(_Symbol, _Period, sh) : iLow(_Symbol, _Period, sh)); }
+
+// most recent confirmed swing high (dir > 0) / swing low (dir < 0) before bar sh;
+// falls back to the extreme of the look-back window when there is no swing point
+double SwingLevel(const int sh, const int dir)
+  {
+   int total = Bars(_Symbol, _Period);
+   int side  = (int)MathMax(1, InpFractalSide);
+   int last  = (int)MathMin(total - 1 - side, sh + InpSwingBars);
+   for(int j = sh + 1 + side; j <= last; j++)
+     {
+      double p = BarHL(j, dir);
+      bool ok = true;
+      for(int k = 1; k <= side && ok; k++)
+        {
+         double a = BarHL(j - k, dir), b = BarHL(j + k, dir);
+         if(dir > 0 ? (a >= p || b > p) : (a <= p || b < p)) ok = false;
+        }
+      if(ok) return p;
+     }
+   double ext = BarHL(sh + 1, dir);
+   for(int m = sh + 2; m <= sh + InpSwingBars && m < total; m++)
+     {
+      double p = BarHL(m, dir);
+      if(dir > 0 ? p > ext : p < ext) ext = p;
+     }
+   return ext;
+  }
+
+// strong displacement candle that is the first close through a real swing, or a real pin bar
+bool StrictTrigger(const int dir, const Candle &k, const int sh)
+  {
+   double rng = k.h - k.l;
+   if(!k.valid || rng <= 0) return false;
+   double body = MathAbs(k.c - k.o);
+   double cp   = ClosePos(k);
+   if(dir < 0) cp = 1.0 - cp;
+   bool strongClose = (cp >= InpStrictClose);
+
+   double lvl  = SwingLevel(sh, dir);
+   // close through the swing, with price still on the other side within the last InpBreakBars bars
+   bool before = false;
+   for(int b = 1; b <= MathMax(1, InpBreakBars) && !before; b++)
+     {
+      double pc = iClose(_Symbol, _Period, sh + b);
+      if(pc > 0 && (dir > 0 ? pc <= lvl : pc >= lvl)) before = true;
+     }
+   bool breaks = (dir > 0 ? k.c > lvl : k.c < lvl) && before;
+   if(BodyRatio(k) >= InpStrictBody && strongClose && breaks) return true;
+
+   double wick = (dir > 0 ? MathMin(k.o, k.c) - k.l : k.h - MathMax(k.o, k.c));
+   if(wick < body * InpPinWickMult || wick < rng * InpPinWickPct || !strongClose) return false;
+   double ext = BarHL(sh + 1, -dir);
+   for(int j = sh + 2; j <= sh + InpPinSweep; j++)
+     {
+      double p = BarHL(j, -dir);
+      if(dir > 0 ? p < ext : p > ext) ext = p;
+     }
+   return (dir > 0 ? k.l < ext : k.h > ext);
+  }
+
+//+------------------------------------------------------------------+
+//| VWMA / RSI score (from VWMA RSI Score), evaluated at chart bar sh |
+//|   1-3. RSI1/2/3 > RsiMid (buy)  /  < 100 - RsiMid (sell)          |
+//|   4.   Close (or High) above VWMA1 of highs (buy) /               |
+//|        Close (or Low) below VWMA1 of lows (sell)                  |
+//|   5.   VWMA3 above (buy) / below (sell) VWMA2                     |
+//+------------------------------------------------------------------+
+double VwmaAt(const int i, const int period, const int total, const double &high[], const long &vol[])
+  {
+   if(i + period > total) return EMPTY_VALUE;
+   double pv = 0.0, v = 0.0, h = 0.0;
+   for(int k = i; k < i + period; k++)
+     {
+      pv += high[k] * (double)vol[k];
+      v  += (double)vol[k];
+      h  += high[k];
+     }
+   return (v > 0.0) ? pv / v : h / period;
+  }
+
+bool VOk(const int sh)
+  {
+   return (sh >= 0 && sh < ArraySize(V1) && V1[sh] != EMPTY_VALUE && V2[sh] != EMPTY_VALUE
+           && V3[sh] != EMPTY_VALUE && V4[sh] != EMPTY_VALUE
+           && VL1[sh] != EMPTY_VALUE && VL4[sh] != EMPTY_VALUE);
+  }
+
+bool RsiAt(const int sh, double &r1, double &r2, double &r3)
+  {
+   r1 = BufAt(gHR1, sh); r2 = BufAt(gHR2, sh); r3 = BufAt(gHR3, sh);
+   return (r1 > 0.0 && r2 > 0.0 && r3 > 0.0);
+  }
+
+int ScoreAt(const int sh, const int dir)
+  {
+   double r1, r2, r3;
+   if(!VOk(sh) || !RsiAt(sh, r1, r2, r3)) return 0;
+   bool useHL = (InpCheck4Price == CHECK4_HIGH);
+   int s = 0;
+   if(dir > 0)
+     {
+      double m = InpRsiMid;
+      if(r1 > m) s++;
+      if(r2 > m) s++;
+      if(r3 > m) s++;
+      double price = (useHL ? iHigh(_Symbol, _Period, sh) : iClose(_Symbol, _Period, sh));
+      if(price > V1[sh]) s++;      // above the VWMA of highs
+      if(V3[sh] > V2[sh]) s++;
+     }
+   else
+     {
+      double m = 100.0 - InpRsiMid;
+      if(r1 < m) s++;
+      if(r2 < m) s++;
+      if(r3 < m) s++;
+      double price = (useHL ? iLow(_Symbol, _Period, sh) : iClose(_Symbol, _Period, sh));
+      if(price < VL1[sh]) s++;     // below the VWMA of lows (mirror of the buy check)
+      if(V3[sh] < V2[sh]) s++;
+     }
+   return s;
+  }
+
+// buy into overbought / sell into oversold (slow RSI1 only unless InpObOsAllRsi)
+bool RsiExhausted(const int sh, const int dir)
+  {
+   double r1, r2, r3;
+   if(!RsiAt(sh, r1, r2, r3)) return false;
+   if(!InpObOsAllRsi) return (dir > 0 ? r1 > InpRsiOB : r1 < InpRsiOS);
+   if(dir > 0) return (r1 > InpRsiOB || r2 > InpRsiOB || r3 > InpRsiOB);
+   return (r1 < InpRsiOS || r2 < InpRsiOS || r3 < InpRsiOS);
+  }
+
+// fast RSI turning the trade's way and close beyond the fast VWMA (highs for buys, lows for sells)
+bool Momentum(const int sh, const int dir)
+  {
+   double now = BufAt(gHR3, sh), prev = BufAt(gHR3, sh + 1);
+   if(now <= 0.0 || prev <= 0.0 || !VOk(sh)) return false;
+   double c = iClose(_Symbol, _Period, sh);
+   return (dir > 0 ? (now > prev && c > V4[sh]) : (now < prev && c < VL4[sh]));
+  }
+
+// A = passes every enabled filter, B = fails one, C = fails two or more
+int SignalGrade(const int dir, const Candle &k, const int sh, const int trendDir, string &why, int &fails)
+  {
+   fails = 0;
+   why = "";
+   // higher-timeframe filters: in an H4 / D1 downtrend every buy fails both, which alone made it a C
+   int htf = 0;
+   if(InpFiltOn && trendDir != dir)          { htf++; why += " trend"; }
+   if(InpD1FilterOn && D1Against(dir, k.t) && !(InpD1SkipIfTrend && trendDir == dir)) { htf++; why += " D1"; }
+   fails += (InpSoftHTF ? (int)MathMin(htf, 1) : htf);
+   // "chasing" filters: a strong trend candle often trips several of them at once
+   int chase = 0;
+   double atr = ATRAt(sh);
+   if(InpATROn)
+     {
+      double rng = k.h - k.l;
+      if(atr <= 0 || rng < atr * InpMinRangeATR || rng > atr * InpMaxRangeATR) { chase++; why += " range"; }
+     }
+   if(InpLocationOn)
+     {
+      double e = BufAt(gHLoc, sh);
+      // directional: a buy far BELOW value is a discount, not a chase (and the mirror for sells)
+      double ext = (dir > 0 ? k.c - e : e - k.c);
+      if(atr <= 0 || e <= 0 || ext > atr * InpMaxExtATR) { chase++; why += " extended"; }
+     }
+   if(InpStrictOn && !StrictTrigger(dir, k, sh)) { fails++; why += " candle"; }
+   if(InpScoreOn && ScoreAt(sh, dir) < InpMinScore) { fails++; why += " score"; }
+   if(InpObOsOn && RsiExhausted(sh, dir))           { chase++; why += " exhausted"; }
+   fails += (InpSoftChase ? (int)MathMin(chase, 1) : chase);
+   if(fails >= 2) return GRADE_C;
+   return fails;
+  }
+
+// extra gate for C signals: they already failed two or more filters, so the
+// ones that most often turn into losers (counter-trend, against D1, chasing
+// an exhausted RSI, no momentum, weak candle, low score) are thrown out
+bool CFilterPass(const int dir, const Candle &k, const int sh, const int fails, const int trendDir, string &rej)
+  {
+   rej = "";
+   if(!InpCFilterOn) return true;
+   if(fails > InpCMaxFails)                        rej += " fails>" + IntegerToString(InpCMaxFails);
+   if(ScoreAt(sh, dir) < InpCMinScore)             rej += " score<" + IntegerToString(InpCMinScore);
+   if(InpCNoCounter && trendDir == -dir)           rej += " counter-trend";
+   if(InpCNoD1 && D1Against(dir, k.t))             rej += " D1";
+   if(InpCNoExhaust && RsiExhausted(sh, dir))      rej += " exhausted";
+   if(InpCMomentum && !Momentum(sh, dir))          rej += " momentum";
+   if(InpCNeedCandle && !StrictTrigger(dir, k, sh)) rej += " candle";
+   return (rej == "");
+  }
+
+// length of the move into the signal, in ATR: close minus the lowest low (buy) /
+// highest high minus close (sell) of the last InpLegBars bars
+double LegATR(const int sh, const int dir)
+  {
+   double atr = ATRAt(sh);
+   if(atr <= 0) return 0.0;
+   int n = (int)MathMax(2, InpLegBars);
+   int ix = (dir > 0 ? iLowest(_Symbol, _Period, MODE_LOW, n, sh) : iHighest(_Symbol, _Period, MODE_HIGH, n, sh));
+   if(ix < 0) return 0.0;
+   double ext = (dir > 0 ? iLow(_Symbol, _Period, ix) : iHigh(_Symbol, _Period, ix));
+   double c   = iClose(_Symbol, _Period, sh);
+   return (dir > 0 ? c - ext : ext - c) / atr;
+  }
+
+// hard vetoes for signals that would otherwise arm; returns the reason, "" = keep
+// room from the planned entry to the nearest opposing swing, in R. A close already
+// through that swing (breakout / breakdown) has open room.
+double RoomR(const int dir, const int sh, const Candle &bar, const double buf)
+  {
+   double entry = 0, sl = 0;
+   if(!BuildPendingPrices(dir, bar, buf, entry, sl)) return 99.0;
+   double risk = MathAbs(entry - sl);
+   if(risk <= 0) return 99.0;
+   int n = (int)MathMax(3, InpRoomBars);
+   int ix = (dir > 0 ? iHighest(_Symbol, _Period, MODE_HIGH, n, sh + 1) : iLowest(_Symbol, _Period, MODE_LOW, n, sh + 1));
+   if(ix < 0) return 99.0;
+   double lvl = (dir > 0 ? iHigh(_Symbol, _Period, ix) : iLow(_Symbol, _Period, ix));
+   if(dir > 0 ? bar.c > lvl : bar.c < lvl) return 99.0;   // already through it
+   return (dir > 0 ? lvl - entry : entry - lvl) / risk;
+  }
+
+string VetoReason(const int dir, const int sh, const int grade, const string why, const Candle &bar, const double buf)
+  {
+   if(grade == GRADE_NONE || grade == GRADE_CX) return "";
+   if(InpRoomOn)
+     {
+      double room = RoomR(dir, sh, bar, buf);
+      if(room < InpMinRoomR) return StringFormat(" no room (%.1fR to %s)", room, dir > 0 ? "swing high" : "swing low");
+     }
+   if(InpLateOn)
+     {
+      double leg = LegATR(sh, dir);
+      if(leg > InpMaxLegATR) return StringFormat(" late (leg %.1f ATR)", leg);
+     }
+   if(InpCounterConfirm && grade != GRADE_C
+      && (StringFind(why + " ", " trend ") >= 0 || StringFind(why + " ", " D1 ") >= 0)
+      && !Momentum(sh, dir))
+      return " counter-trend unconfirmed";
+   return "";
+  }
+
+string GradeName(const int g)
+  {
+   if(g == GRADE_A)  return "A";
+   if(g == GRADE_B)  return "B";
+   if(g == GRADE_C)  return "C";
+   if(g == GRADE_CX) return "Cx";
+   return "-";
+  }
+
+// grade toggles; a C rejected by the C filter (GRADE_CX) never arms
+bool GradeOn(const int g)
+  {
+   if(g == GRADE_A) return InpGradeA;
+   if(g == GRADE_B) return InpGradeB;
+   if(g == GRADE_C) return InpGradeC;
+   return false;
+  }
+bool FreshOK(const int g) { return GradeOn(g); }
+bool ReOK(const int g)    { return (InpReNeedA ? g == GRADE_A : GradeOn(g)); }
+string GradesText(const bool re)
+  {
+   if(re && InpReNeedA) return "A";
+   string s = (InpGradeA ? "A" : "") + (InpGradeB ? "B" : "") + (InpGradeC ? (InpCFilterOn ? "C+" : "C") : "");
+   return (s == "" ? "none" : s);
+  }
+
+double RecentSwingHigh(const int rates_total, const int i, const double &high[])
+  {
+   int from = i + 1;
+   int to   = (int)MathMin(rates_total - 1, i + InpSwingLook);
+   if(from > rates_total - 1) return high[i];
+   double mx = high[from];
+   for(int k = from; k <= to; k++) if(high[k] > mx) mx = high[k];
+   return mx;
+  }
+
+double RecentSwingLow(const int rates_total, const int i, const double &low[])
+  {
+   int from = i + 1;
+   int to   = (int)MathMin(rates_total - 1, i + InpSwingLook);
+   if(from > rates_total - 1) return low[i];
+   double mn = low[from];
+   for(int k = from; k <= to; k++) if(low[k] < mn) mn = low[k];
+   return mn;
+  }
+
+// grade letter beyond the (hollow) signal arrow, in the arrow colour
+void GradeTag(const int sh, const datetime t, const double price, const int dir, const int grade,
+              const bool re, const string why)
+  {
+   if(InpHeadless) return;
+   if(!InpGradeTag || t == 0) return;
+   double atr = ATRAt(sh);
+   if(atr <= 0) atr = (iHigh(_Symbol, _Period, sh) - iLow(_Symbol, _Period, sh));
+   double p = (dir > 0 ? price - atr * InpTagOffATR : price + atr * InpTagOffATR);
+   string name = ARPRE + "G" + TimeToString(t, TIME_DATE|TIME_MINUTES) + (dir > 0 ? "_U" : "_D") + (re ? "R" : "");
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_TEXT, 0, t, p);
+   ObjectSetInteger(0, name, OBJPROP_TIME, t);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, p);
+   ObjectSetString(0, name, OBJPROP_TEXT, (re ? "R" : "") + GradeName(grade));
+   ObjectSetInteger(0, name, OBJPROP_COLOR, SignalColor(dir, re));
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, InpZoneFontSize + 1);
+   ObjectSetString(0, name, OBJPROP_FONT, InpZoneFont);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, dir > 0 ? ANCHOR_UPPER : ANCHOR_LOWER);
+   ObjectSetString(0, name, OBJPROP_TOOLTIP, (dir > 0 ? (re ? "RE-BUY " : "BUY ") : (re ? "RE-SELL " : "SELL ")) + GradeName(grade)
+                   + "  score " + IntegerToString(ScoreAt(sh, dir)) + "/5" + (why == "" ? "" : "  failed:" + why));
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+  }
+
+// signal whose grade is toggled off: grey grade letter, hover shows the failed filters
+void FilteredMark(const datetime t, const double price, const int dir, const int grade, const string why)
+  {
+   if(InpHeadless) return;
+   if(t == 0) return;
+   string name = ARPRE + "F" + TimeToString(t, TIME_DATE|TIME_MINUTES) + (dir > 0 ? "_U" : "_D");
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_TEXT, 0, t, price);
+   ObjectSetInteger(0, name, OBJPROP_TIME, t);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, price);
+   ObjectSetString(0, name, OBJPROP_TEXT, GradeName(grade));
+   ObjectSetInteger(0, name, OBJPROP_COLOR, InpFiltColor);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, InpZoneFontSize + 1);
+   ObjectSetString(0, name, OBJPROP_FONT, InpZoneFont);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, dir > 0 ? ANCHOR_UPPER : ANCHOR_LOWER);
+   ObjectSetString(0, name, OBJPROP_TOOLTIP, (dir > 0 ? "BUY " : "SELL ") + GradeName(grade) + " not taken, failed:" + why);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+  }
+
+void PutRect(const string name, datetime t1, double p1, datetime t2, double p2, color fill)
+  {
+   if(t1 <= 0 || t2 <= t1) return;
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_RECTANGLE, 0, t1, p1, t2, p2);
+   ObjectSetInteger(0, name, OBJPROP_TIME, 0, t1);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, 0, p1);
+   ObjectSetInteger(0, name, OBJPROP_TIME, 1, t2);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, 1, p2);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, fill);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, fill);
+   ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DOT);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
+   ObjectSetInteger(0, name, OBJPROP_FILL, true);
+   ObjectSetInteger(0, name, OBJPROP_BACK, true);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+  }
+
+void PutLine(const string name, datetime t1, datetime t2, double price, color clr)
+  {
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_TREND, 0, t1, price, t2, price);
+   ObjectSetInteger(0, name, OBJPROP_TIME, 0, t1);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, 0, price);
+   ObjectSetInteger(0, name, OBJPROP_TIME, 1, t2);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, 1, price);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DOT);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
+   ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+  }
+
+void PutLabel(const string name, datetime t, double price, const string text, color clr)
+  {
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_TEXT, 0, t, price);
+   ObjectSetInteger(0, name, OBJPROP_TIME, t);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, price);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, InpZoneFontSize);
+   ObjectSetString(0, name, OBJPROP_FONT, InpZoneFont);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_LEFT_LOWER);   // text sits on top of the line
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+  }
+
+// MT5 chart objects have no alpha channel, so fake transparency by
+// blending the colour into the chart background colour.
+color Faint(const color c, const int opacityPct)
+  {
+   double a = MathMax(0, MathMin(100, opacityPct)) / 100.0;
+   color bg = (color)ChartGetInteger(0, CHART_COLOR_BACKGROUND);
+   int r = (int)MathRound(( bg        & 0xFF) + (( c        & 0xFF) - ( bg        & 0xFF)) * a);
+   int g = (int)MathRound(((bg >> 8)  & 0xFF) + (((c >> 8)  & 0xFF) - ((bg >> 8)  & 0xFF)) * a);
+   int b = (int)MathRound(((bg >> 16) & 0xFF) + (((c >> 16) & 0xFF) - ((bg >> 16) & 0xFF)) * a);
+   return (color)(r | (g << 8) | (b << 16));
+  }
+
+color SignalColor(const int dir, const bool re)
+  {
+   if(dir > 0) return (re ? InpReBuyColor  : InpBuyColor);
+   return (re ? InpReSellColor : InpSellColor);
+  }
+
+// Draws only the current zone: the running idea, or (optionally) the last
+// finished one until a new signal replaces it. Objects are updated in place.
+void DrawLiveZone()
+  {
+   if(InpHeadless) return;
+   if(idea.state != IDEA_IDLE && idea.signalTime != 0)
+     {
+      gz.valid = true;
+      gz.dir   = idea.dir;
+      gz.re    = idea.re;
+      gz.grade = idea.grade;
+      gz.entry = idea.entry;
+      gz.sl    = idea.sl;
+      gz.tp1   = idea.tp1;
+      gz.tp2   = idea.tp2;
+      gz.t1    = idea.signalTime;
+      gz.tEnd  = 0;
+      gz.status = "";
+      bool hybP = (idea.state == IDEA_PENDING && idea.brkEntry > 0.0);
+      gz.brk = (hybP ? idea.brkEntry : 0.0);
+      if(idea.state == IDEA_PENDING)
+        {
+         if(hybP) gz.status = (idea.needConfirm ? " [CONFIRMING, BREAK LIVE]" : " [LIMIT + BREAK]");
+         else     gz.status = (idea.needConfirm ? " [CONFIRMING]" : (InpPendingType == PEND_LIMIT ? " [LIMIT]" : " [STOP]"));
+        }
+      if(idea.state == IDEA_LIVE)
+         gz.status = (idea.tp1Done ? " [TP1 HIT]" : (idea.brkEntry > 0.0 ? (idea.fillIsStop ? " [FILLED BREAK]" : " [FILLED PULLBACK]") : " [FILLED]"));
+      if(idea.state == IDEA_SL_WAIT) gz.status = " [SL HIT]";
+     }
+
+   // mitigated = SL hit, TP1 hit (or TP2 when InpHideAtTP1 is off), cancelled or expired
+   bool mitigated = (idea.state == IDEA_SL_WAIT)
+                    || (idea.state == IDEA_LIVE && idea.tp1Done && InpHideAtTP1)
+                    || (idea.state == IDEA_IDLE);
+   bool show = InpShowZones && gz.valid && gz.t1 != 0
+               && (!mitigated || InpKeepLastZone);
+   if(!show)
+     {
+      ClearZones();
+      return;
+     }
+
+   // box: signal bar -> a few bars past the current bar
+   // lines: continue past the box so the labels can sit on top of them
+   int ps = PeriodSeconds(_Period);
+   datetime now = iTime(_Symbol, _Period, 0);
+   if(now == 0) now = TimeCurrent();
+   datetime t1 = gz.t1;
+   datetime t2 = now + (datetime)MathMax(2, InpZoneRightBars) * ps;
+   if(t2 <= t1)
+      t2 = t1 + ps * 8;
+   datetime tl = t2 + ps;                                          // label start
+   datetime t3 = t2 + (datetime)MathMax(4, InpLabelBars) * ps;    // line end
+
+   color sig = SignalColor(gz.dir, gz.re);
+   string side = (gz.dir > 0 ? (gz.re ? "RE-BUY" : "BUY") : (gz.re ? "RE-SELL" : "SELL")) + " " + GradeName(gz.grade);
+
+   PutRect(ZPRE+"ZSL0",  t1, gz.entry, t2, gz.sl,  Faint(InpZoneSL,  InpZoneOpacity));
+   PutRect(ZPRE+"ZT10",  t1, gz.entry, t2, gz.tp1, Faint(InpZoneTP1, InpZoneOpacity));
+   PutRect(ZPRE+"ZT20",  t1, gz.tp1,   t2, gz.tp2, Faint(InpZoneTP2, InpZoneOpacity));
+
+   PutLine(ZPRE+"LEN0", t1, t3, gz.entry, Faint(sig,        InpLineOpacity));
+   PutLine(ZPRE+"LSL0", t1, t3, gz.sl,    Faint(InpLineSL,  InpLineOpacity));
+   PutLine(ZPRE+"LT10", t1, t3, gz.tp1,   Faint(InpLineTP1, InpLineOpacity));
+   PutLine(ZPRE+"LT20", t1, t3, gz.tp2,   Faint(InpLineTP2, InpLineOpacity));
+
+   PutLabel(ZPRE+"NEN0", tl, gz.entry, "Entry  " + DoubleToString(gz.entry, _Digits) + "  " + side + gz.status, sig);
+   PutLabel(ZPRE+"NSL0", tl, gz.sl,    "SL  "    + DoubleToString(gz.sl,    _Digits), InpLineSL);
+   PutLabel(ZPRE+"NT10", tl, gz.tp1,   "TP1  "   + DoubleToString(gz.tp1,   _Digits), InpLineTP1);
+   PutLabel(ZPRE+"NT20", tl, gz.tp2,   "TP2  "   + DoubleToString(gz.tp2,   _Digits), InpLineTP2);
+   if(gz.brk > 0.0)
+     {
+      PutLine(ZPRE+"LBK0", t1, t3, gz.brk, Faint(sig, InpLineOpacity));
+      PutLabel(ZPRE+"NBK0", tl, gz.brk, "Break  " + DoubleToString(gz.brk, _Digits) + "  (stop entry)", sig);
+     }
+   else
+     {
+      ObjectDelete(0, ZPRE+"LBK0");
+      ObjectDelete(0, ZPRE+"NBK0");
+     }
+   ChartRedraw(0);
+  }
+
+string StateText()
+  {
+   if(idea.state == IDEA_PENDING)
+      return (idea.dir > 0 ? "PEND LONG" : "PEND SHORT");
+   if(idea.state == IDEA_LIVE)
+      return (idea.dir > 0 ? "LIVE LONG" : "LIVE SHORT");
+   if(idea.state == IDEA_SL_WAIT)
+      return StringFormat("SL HIT  re %d/%d", idea.reCount, InpMaxReentry);
+   return "IDLE";
+  }
+
+//+------------------------------------------------------------------+
+//| Dashboard panel (same style as Lukes MTF EA)                     |
+//+------------------------------------------------------------------+
+#define PPRE    "MZF_P_"
+int  gPX = 0, gPY = 0, gPanelH = 0;
+int  gOtherObjs = -1;
+
+// objects on the chart that are not part of either Lukes panel
+int OtherObjCount()
+  {
+   int n = 0, total = ObjectsTotal(0);
+   for(int i = 0; i < total; i++)
+     {
+      string nm = ObjectName(0, i);
+      if(StringFind(nm, PPRE) == 0 || StringFind(nm, "LEA_P_") == 0) continue;
+      n++;
+     }
+   return n;
+  }
+bool gCollapsed = false, gAutoBottom = false;   // gCollapsed = panel hidden, only the small tab shows
+#define TAB_W 74
+#define TAB_H 20
+bool gDrag = false, gPrevDown = false, gScrollWas = true;
+int  gDragDX = 0, gDragDY = 0, gDownX = 0, gDownY = 0;
+#define C_HEAD  C'130,215,255'
+#define C_LBL   C'235,240,248'
+#define C_TXT   C'255,255,255'
+#define C_UP    C'60,255,150'
+#define C_DN    C'255,95,95'
+#define C_WARN  C'255,225,60'
+#define C_INFO  C'110,245,255'
+#define C_MUTE  C'190,196,208'
+
+int    gRow = 0, gMaxRow = 0;
+int    gEmaFast = INVALID_HANDLE, gEmaSlow = INVALID_HANDLE;
+uint   gLastPanelMs = 0;
+
+string Px(const double p) { return DoubleToString(p, _Digits); }
+
+datetime DayStart() { datetime t = TimeCurrent(); return t - (t % 86400); }
+
+int CountEv(const int kind, const datetime from)
+  {
+   int c = 0;
+   for(int i = ArraySize(gEvT) - 1; i >= 0; i--)
+      if(gEvK[i] == kind && gEvT[i] >= from) c++;
+   return c;
+  }
+
+string SessionName(color &c)
+  {
+   MqlDateTime g; TimeToStruct(TimeGMT(), g);
+   if(g.day_of_week == 6 || (g.day_of_week == 0 && g.hour < 21) || (g.day_of_week == 5 && g.hour >= 21))
+     { c = C_MUTE; return "CLOSED"; }
+   int h = g.hour;
+   if(h >= 12 && h < 16) { c = C_UP;   return "LONDON + NY"; }
+   if(h >= 7  && h < 12) { c = C_INFO; return "LONDON"; }
+   if(h >= 16 && h < 21) { c = C_WARN; return "NEW YORK"; }
+   c = C'190,120,255';
+   return (h >= 21 ? "SYDNEY" : "ASIA");
+  }
+
+string TrendText(color &c)
+  {
+   double f[1], s[1];
+   if(gEmaFast == INVALID_HANDLE || gEmaSlow == INVALID_HANDLE ||
+      CopyBuffer(gEmaFast, 0, 1, 1, f) != 1 || CopyBuffer(gEmaSlow, 0, 1, 1, s) != 1)
+     { c = C_MUTE; return "-"; }
+   double px = iClose(_Symbol, InpTrendTF, 1);
+   if(f[0] > s[0] && px > f[0]) { c = C_UP; return "EMA UP"; }
+   if(f[0] < s[0] && px < f[0]) { c = C_DN; return "EMA DOWN"; }
+   c = C_WARN;
+   return (f[0] > s[0] ? "UP / PULLBACK" : "DOWN / PULLBACK");
+  }
+
+string FilterTrendText(color &c)
+  {
+   if(!InpFiltOn) { c = C_MUTE; return "OFF"; }
+   string tfs = StringSubstr(EnumToString(InpFiltTF1), 7) + "+" + StringSubstr(EnumToString(InpFiltTF2), 7);
+   int t = TrendDirAt(iTime(_Symbol, _Period, 0));
+   if(t > 0) { c = C_UP; return "UP " + tfs; }
+   if(t < 0) { c = C_DN; return "DOWN " + tfs; }
+   c = C_WARN;
+   return "NONE (no A signals)";
+  }
+
+string BiasText(const ENUM_TIMEFRAMES tf, color &c)
+  {
+   Bias b = TFBiasNow(tf);
+   if(b.dir > 0) { c = C_UP; return (b.strong ? "BULL Q" : "BULL"); }
+   if(b.dir < 0) { c = C_DN; return (b.strong ? "BEAR Q" : "BEAR"); }
+   c = C_MUTE;
+   return "MIXED";
+  }
+
+void PText(const string name, const int x, const int y, const string text, const color clr,
+           const int size, const ENUM_ANCHOR_POINT anchor, const string font)
+  {
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, anchor);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetString(0, name, OBJPROP_FONT, font);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, size);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+  }
+
+int RowY() { return gPY + 46 + gRow * InpPanelRowH; }
+
+void PSection(const string title)
+  {
+   if(gRow > 0) gRow++;   // small gap before a section
+   PText(PPRE + "L" + IntegerToString(gRow), gPX + 10, RowY(), title, C_HEAD, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
+   ObjectDelete(0, PPRE + "V" + IntegerToString(gRow));
+   gRow++;
+  }
+
+void PRow(const string label, const string value, const color vc)
+  {
+   PText(PPRE + "L" + IntegerToString(gRow), gPX + 12, RowY(), label, C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
+   PText(PPRE + "V" + IntegerToString(gRow), gPX + InpPanelWidth - 12, RowY(), value, vc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   gRow++;
+  }
+
+string WinRate(const int wins, const int losses, color &c)
+  {
+   int n = wins + losses;
+   if(n == 0) { c = C_MUTE; return "-"; }
+   double wr = 100.0 * wins / n;
+   c = (wr >= 50 ? C_UP : C_DN);
+   return StringFormat("%.0f%%  (%d/%d)", wr, wins, n);
+  }
+
+void DrawPanel(const bool force = false)
+  {
+   if(InpHeadless) return;
+   if(!InpShowPanel) return;
+   uint now = GetTickCount();
+   if(!force && gLastPanelMs != 0 && now - gLastPanelMs < 500) return;   // redraw at most twice a second
+   gLastPanelMs = now;
+
+   color c;
+   string v;
+   gRow = 0;
+
+   // background is created BEFORE any text, otherwise it is drawn on top and hides it
+   string bg = PPRE + "BG";
+   int others = OtherObjCount();
+   if(others != gOtherObjs)
+     {
+      // objects created after the panel are drawn over it: rebuild the panel on top
+      ObjectDelete(0, bg);
+      gOtherObjs = others;
+     }
+   if(ObjectFind(0, bg) < 0)
+     {
+      ObjectsDeleteAll(0, PPRE);
+      gMaxRow = 0;
+      ObjectCreate(0, bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+     }
+
+   // hidden: only a small tab at the top; one click on it brings the panel back
+   if(gCollapsed)
+     {
+      for(int i = 0; i < gMaxRow; i++)
+        {
+         ObjectDelete(0, PPRE + "L" + IntegerToString(i));
+         ObjectDelete(0, PPRE + "V" + IntegerToString(i));
+        }
+      gMaxRow = 0;
+      ObjectDelete(0, PPRE + "T1"); ObjectDelete(0, PPRE + "T2");
+      ObjectDelete(0, PPRE + "T3"); ObjectDelete(0, PPRE + "T4");
+      PText(PPRE + "T0", gPX + TAB_W / 2, gPY + TAB_H / 2, "MZF  " + ShortToString((ushort)0x25BC),
+            C_TXT, InpPanelTitleFont, ANCHOR_CENTER, InpPanelFontHead);
+      ObjectSetInteger(0, bg, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, gPX);
+      ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, gPY);
+      ObjectSetInteger(0, bg, OBJPROP_XSIZE, TAB_W);
+      ObjectSetInteger(0, bg, OBJPROP_YSIZE, TAB_H);
+      ObjectSetInteger(0, bg, OBJPROP_BGCOLOR, C'24,30,46');
+      ObjectSetInteger(0, bg, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+      ObjectSetInteger(0, bg, OBJPROP_COLOR, C'80,110,160');
+      ObjectSetInteger(0, bg, OBJPROP_BACK, false);
+      ObjectSetInteger(0, bg, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, bg, OBJPROP_HIDDEN, true);
+      gPanelH = TAB_H;
+      return;
+     }
+   ObjectDelete(0, PPRE + "T0");
+
+   // header
+   string st; color sc;
+   if(idea.state == IDEA_PENDING)      { st = (idea.dir > 0 ? "PENDING BUY" : "PENDING SELL"); sc = C_WARN; }
+   else if(idea.state == IDEA_LIVE)    { st = (idea.dir > 0 ? "LIVE BUY" : "LIVE SELL"); sc = (idea.dir > 0 ? InpBuyColor : InpSellColor); }
+   else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
+   else                                { st = "WAIT"; sc = C_WARN; }
+   PText(PPRE + "T1", gPX + 10, gPY + 6, "FUSIONOLIVEIND", C_TXT, InpPanelTitleFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.09  " + ShortToString((ushort)0x25B2), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
+   PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
+
+   {
+
+   PSection("MARKET");
+   v = SessionName(c);         PRow("Session", v, c);
+   v = TrendText(c);           PRow("Trend (" + StringSubstr(EnumToString(InpTrendTF), 7) + ")", v, c);
+   v = BiasText(InpTF_D, c);   PRow("D1", v, c);
+   v = BiasText(InpTF_H4, c);  PRow("H4", v, c);
+   v = BiasText(InpTF_H1, c);  PRow("H1", v, c);
+   v = BiasText(InpTF_M5, c);  PRow("M5", v, c);
+   PRow("Align B / S", StringFormat("%d / %d", gScoreB, gScoreS),
+        (gScoreB >= InpMinAlign ? C_UP : (gScoreS >= InpMinAlign ? C_DN : C_MUTE)));
+   v = FilterTrendText(c);     PRow("Trend filter", v, c);
+   PRow("Grades / re-entry", GradesText(false) + " / " + GradesText(true), C_INFO);
+   PRow("C filter", (InpCFilterOn ? "ON" : "OFF"), (InpCFilterOn ? C_UP : C_MUTE));
+   double spr = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID)) / Pt();
+   PRow("Spread", StringFormat("%.0f pts", spr), (spr > 50 ? C_WARN : C_TXT));
+
+   PSection("VWMA / RSI SCORE");
+   int scB = ScoreAt(1, 1), scS = ScoreAt(1, -1);
+   PRow("Bull / Bear score", StringFormat("%d / %d   (min %d)", scB, scS, InpMinScore),
+        (scB >= InpMinScore ? C_UP : (scS >= InpMinScore ? C_DN : C_MUTE)));
+   double r1, r2, r3;
+   if(RsiAt(1, r1, r2, r3))
+     {
+      double lo = 100.0 - InpRsiMid;
+      color rc = ((r1 > InpRsiMid && r2 > InpRsiMid && r3 > InpRsiMid) ? C_UP
+                  : ((r1 < lo && r2 < lo && r3 < lo) ? C_DN : C_MUTE));
+      if(RsiExhausted(1, 1) || RsiExhausted(1, -1)) rc = C_WARN;
+      PRow(StringFormat("RSI %d / %d / %d", InpRSI1, InpRSI2, InpRSI3), StringFormat("%.1f / %.1f / %.1f", r1, r2, r3), rc);
+     }
+   if(VOk(1))
+     {
+      double px = iClose(_Symbol, _Period, 1);
+      bool above = (px > V1[1]), below = (px < VL1[1]), stackUp = (V3[1] > V2[1]);
+      PRow("Price vs VWMA" + IntegerToString(InpVWMA1), (above ? "ABOVE" : (below ? "BELOW" : "INSIDE")),
+           (above ? C_UP : (below ? C_DN : C_MUTE)));
+      PRow("VWMA" + IntegerToString(InpVWMA3) + " vs VWMA" + IntegerToString(InpVWMA2), (stackUp ? "UP" : "DOWN"), (stackUp ? C_UP : C_DN));
+     }
+
+   if(InpShowSessions)
+     {
+      PSection("LEVELS");
+      double hi, lo2;
+      PRow("Sydney H / L", SessionHL(InpSydS, InpSydE, hi, lo2) ? Px(hi) + " / " + Px(lo2) : "-", C_TXT);
+      PRow("Asia H / L",   SessionHL(InpAsiS, InpAsiE, hi, lo2) ? Px(hi) + " / " + Px(lo2) : "-", C_TXT);
+      PRow("London H / L", SessionHL(InpLonS, InpLonE, hi, lo2) ? Px(hi) + " / " + Px(lo2) : "-", C_TXT);
+      PRow("NY H / L",     SessionHL(InpNyS,  InpNyE,  hi, lo2) ? Px(hi) + " / " + Px(lo2) : "-", C_TXT);
+      PRow("PDH / PDL", Px(iHigh(_Symbol, PERIOD_D1, 1)) + " / " + Px(iLow(_Symbol, PERIOD_D1, 1)), InpPDColor);
+      PRow("PWH / PWL", Px(iHigh(_Symbol, PERIOD_W1, 1)) + " / " + Px(iLow(_Symbol, PERIOD_W1, 1)), InpPWColor);
+     }
+
+   if(InpShowDiag)
+     {
+      PSection("DIAGNOSTICS  (BUY / SELL)");
+      PRow("Triggers graded", StringFormat("%d / %d", gDTrig[0], gDTrig[1]), C_INFO);
+      PRow("Buy  A / B / C / Cx", StringFormat("%d / %d / %d / %d", gDGrade[0], gDGrade[1], gDGrade[2], gDGrade[4]), InpBuyColor);
+      PRow("Sell A / B / C / Cx", StringFormat("%d / %d / %d / %d", gDGrade[5], gDGrade[6], gDGrade[7], gDGrade[9]), InpSellColor);
+      PRow("Busy / cooldown", StringFormat("%d / %d", gDBusy[0], gDBusy[1]), C_MUTE);
+      PRow("Buy blockers", DiagTop(0), InpBuyColor);
+      PRow("Sell blockers", DiagTop(1), InpSellColor);
+     }
+
+   datetime d = DayStart();
+   int tS = CountEv(EV_SIG, d), t1 = CountEv(EV_TP1, d), t2 = CountEv(EV_TP2, d), tSL = CountEv(EV_SL, d), tL = CountEv(EV_LOSS, d);
+   PSection("TODAY");
+   PRow("Signals", IntegerToString(tS), C_INFO);
+   PRow("TP1 hits", IntegerToString(t1), C_UP);
+   PRow("TP2 hits", IntegerToString(t2), C_UP);
+   PRow("SL hits", IntegerToString(tSL), C_DN);
+   PRow("Running", IntegerToString(idea.state == IDEA_LIVE ? 1 : 0), C_WARN);
+   v = WinRate(t1, tL, c);     PRow("Win rate", v, c);
+
+   PSection("TOTAL (CHART HISTORY)");
+   PRow("Signals (B/S)", StringFormat("%d  (%d/%d)", gCntBuy + gCntSell, gCntBuy, gCntSell), C_INFO);
+   PRow("TP1 / TP2 / SL", StringFormat("%d / %d / %d", gCntTP1, gCntTP2, gCntSL), C_TXT);
+   v = WinRate(gCntTP1, gCntLoss, c); PRow("Win rate", v, c);
+
+   PSection("CURRENT SIGNAL");
+   if(idea.state == IDEA_IDLE)
+      PRow("Status", "no active signal", C_MUTE);
+   else
+     {
+      string side = (idea.dir > 0 ? (idea.re ? "RE-BUY" : "BUY") : (idea.re ? "RE-SELL" : "SELL"));
+      PRow("Status", side + " " + GradeName(idea.grade) + "  " + StateText(), SignalColor(idea.dir, idea.re));
+      PRow("Entry", Px(idea.entry), C_TXT);
+      PRow("SL", Px(idea.sl), InpLineSL);
+      PRow("TP1 / TP2", Px(idea.tp1) + " / " + Px(idea.tp2), InpLineTP1);
+     }
+   PRow("Re-entry", (InpReentryOn ? StringFormat("ON  %d / %d", idea.reCount, InpMaxReentry) : "OFF"), (InpReentryOn ? C_UP : C_MUTE));
+
+   }
+
+   for(int i = gRow; i < gMaxRow; i++)
+     {
+      ObjectDelete(0, PPRE + "L" + IntegerToString(i));
+      ObjectDelete(0, PPRE + "V" + IntegerToString(i));
+     }
+   gMaxRow = gRow;
+
+   ObjectSetInteger(0, bg, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, gPX);
+   ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, gPY);
+   ObjectSetInteger(0, bg, OBJPROP_XSIZE, InpPanelWidth);
+   gPanelH = 46 + gRow * InpPanelRowH + 10;
+   ObjectSetInteger(0, bg, OBJPROP_YSIZE, gPanelH);
+   ObjectSetInteger(0, bg, OBJPROP_BGCOLOR, C'24,30,46');
+   ObjectSetInteger(0, bg, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, bg, OBJPROP_COLOR, C'80,110,160');
+   ObjectSetInteger(0, bg, OBJPROP_BACK, false);
+   ObjectSetInteger(0, bg, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, bg, OBJPROP_HIDDEN, true);
+   if(gAutoBottom)
+     {
+      gAutoBottom = false;
+      int ch = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+      gPY = (int)MathMax(20, ch - gPanelH - 10);
+      DrawPanel(true);
+     }
+  }
+
+
+//+------------------------------------------------------------------+
+//| Session / day / week levels (from VWMA RSI Score)                |
+//+------------------------------------------------------------------+
+long ServerOffsetSec()
+  {
+   if(InpServerUtcOffset != 99) return (long)InpServerUtcOffset * 3600;
+   long d = (long)(TimeTradeServer() - TimeGMT());
+   return (long)MathRound(d / 1800.0) * 1800;
+  }
+
+// high / low of the most recent session (current or last completed); hours are UTC
+bool SessionHL(const int sH, const int eH, double &hi, double &lo)
+  {
+   datetime t0 = iTime(_Symbol, _Period, 0);
+   if(t0 == 0) return false;
+   long off    = ServerOffsetSec();
+   long nowUtc = (long)t0 - off;
+   long st     = nowUtc - nowUtc % 86400 + (long)sH * 3600;
+   if(st > nowUtc) st -= 86400;
+   int len = ((eH - sH) % 24 + 24) % 24;
+   if(len == 0) len = 24;
+   long en = st + (long)len * 3600;
+
+   hi = -DBL_MAX;
+   lo = DBL_MAX;
+   int n = Bars(_Symbol, _Period);
+   for(int i = 0; i < n; i++)
+     {
+      long u = (long)iTime(_Symbol, _Period, i) - off;
+      if(u < st) break;
+      if(u >= en) continue;
+      hi = MathMax(hi, iHigh(_Symbol, _Period, i));
+      lo = MathMin(lo, iLow(_Symbol, _Period, i));
+     }
+   return (hi > -DBL_MAX);
+  }
+
+void HLine(const string name, const double price, const color clr, const ENUM_LINE_STYLE style, const string tip)
+  {
+   string n = LPRE + name;
+   if(ObjectFind(0, n) < 0)
+     {
+      ObjectCreate(0, n, OBJ_HLINE, 0, 0, price);
+      ObjectSetInteger(0, n, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, n, OBJPROP_HIDDEN, true);
+      ObjectSetInteger(0, n, OBJPROP_BACK, true);
+     }
+   ObjectSetDouble(0, n, OBJPROP_PRICE, price);
+   ObjectSetInteger(0, n, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, n, OBJPROP_STYLE, style);
+   ObjectSetString(0, n, OBJPROP_TOOLTIP, tip + " " + Px(price));
+  }
+
+void DrawLevels()
+  {
+   if(InpHeadless) return;
+   double pdh = iHigh(_Symbol, PERIOD_D1, 1), pdl = iLow(_Symbol, PERIOD_D1, 1);
+   double pwh = iHigh(_Symbol, PERIOD_W1, 1), pwl = iLow(_Symbol, PERIOD_W1, 1);
+   if(pdh > 0) HLine("PDH", pdh, InpPDColor, STYLE_DOT,  "PDH");
+   if(pdl > 0) HLine("PDL", pdl, InpPDColor, STYLE_DOT,  "PDL");
+   if(pwh > 0) HLine("PWH", pwh, InpPWColor, STYLE_DASH, "PWH");
+   if(pwl > 0) HLine("PWL", pwl, InpPWColor, STYLE_DASH, "PWL");
+  }
+
+//+------------------------------------------------------------------+
+//| Panel position, drag and collapse                                |
+//| Drag the panel by its title area. One click on the title hides   |
+//| the panel, leaving a small "MZF" tab at the top; one click on    |
+//| the tab shows it again. Position is remembered per chart.        |
+//+------------------------------------------------------------------+
+
+string PosKey(const string k) { return "MZFusion_panel_" + k + "_" + IntegerToString(ChartID()); }
+
+void PanelInit()
+  {
+   gPX = InpPanelX;
+   gPY = InpPanelY;
+   gAutoBottom = (InpPanelY < 0);
+   if(GlobalVariableCheck(PosKey("x")) && GlobalVariableCheck(PosKey("y")))
+     {
+      gPX = (int)GlobalVariableGet(PosKey("x"));
+      gPY = (int)GlobalVariableGet(PosKey("y"));
+      gAutoBottom = false;
+     }
+   if(gPY < 0) gPY = 20;
+   gCollapsed = (GlobalVariableCheck(PosKey("c")) && GlobalVariableGet(PosKey("c")) > 0);
+   ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, true);
+   ChartSetInteger(0, CHART_FOREGROUND, false);   // "chart on foreground" would draw candles/grid over the panel
+  }
+
+void PanelSave()
+  {
+   GlobalVariableSet(PosKey("x"), gPX);
+   GlobalVariableSet(PosKey("y"), gPY);
+   GlobalVariableSet(PosKey("c"), gCollapsed ? 1 : 0);
+  }
+
+void PanelMouse(const long lparam, const double dparam, const string sparam)
+  {
+   int  x = (int)lparam, y = (int)dparam;
+   bool down = ((StringToInteger(sparam) & 1) != 0);
+
+   if(down && !gPrevDown)
+     {
+      // press on the title area starts a drag
+      int hw = (gCollapsed ? TAB_W : InpPanelWidth), hh = (gCollapsed ? TAB_H : 44);
+      if(InpShowPanel && x >= gPX && x <= gPX + hw && y >= gPY && y <= gPY + hh)
+        {
+         gDrag = true;
+         gDragDX = x - gPX; gDragDY = y - gPY;
+         gDownX = x; gDownY = y;
+         gScrollWas = (bool)ChartGetInteger(0, CHART_MOUSE_SCROLL);
+         ChartSetInteger(0, CHART_MOUSE_SCROLL, false);
+        }
+     }
+   else if(down && gDrag)
+     {
+      int cw = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+      int ch = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+      int nx = (int)MathMax(0, MathMin(cw - 60, x - gDragDX));
+      int ny = (int)MathMax(0, MathMin(ch - 30, y - gDragDY));
+      if(nx != gPX || ny != gPY)
+        {
+         gPX = nx; gPY = ny;
+         DrawPanel(true);
+        }
+     }
+   else if(!down && gDrag)
+     {
+      gDrag = false;
+      ChartSetInteger(0, CHART_MOUSE_SCROLL, gScrollWas);
+      if(MathAbs(x - gDownX) < 4 && MathAbs(y - gDownY) < 4)
+         gCollapsed = !gCollapsed;          // a click, not a drag: hide / show the panel
+      PanelSave();
+      DrawPanel(true);
+      ChartRedraw(0);
+     }
+   gPrevDown = down;
+  }
+
+void EngineChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
+  {
+   if(InpHeadless) return;
+   if(id == CHARTEVENT_MOUSE_MOVE) PanelMouse(lparam, dparam, sparam);
+   else if(id == CHARTEVENT_CHART_CHANGE) DrawPanel(true);
+  }
+
+int EngineCalc(const int rates_total,
+                const int prev_calculated,
+                const datetime &time[],
+                const double &open[],
+                const double &high[],
+                const double &low[],
+                const double &close[],
+                const long &tick_volume[],
+                const long &volume[],
+                const int &spread[])
+  {
+   if(rates_total < MathMax(40, InpVWMA1 + 5)) return(0);
+
+   ArraySetAsSeries(time, true);
+   ArraySetAsSeries(open, true);
+   ArraySetAsSeries(high, true);
+   ArraySetAsSeries(low, true);
+   ArraySetAsSeries(close, true);
+   ArraySetAsSeries(tick_volume, true);
+   CacheReset();
+
+   // VWMA lines first: the score used by the engine reads them
+   bool fullCalc = (prev_calculated <= 0 || prev_calculated > rates_total);
+   if(fullCalc)
+      if(!FiltersReady()) return(0);
+   // on a full recalculation only the replayed bars (plus look-back room) need VWMAs, not the whole chart
+   int vFrom = fullCalc
+               ? (int)MathMin(rates_total - 1, MathMax(100, InpHistoryBars) + 300)
+               : (int)MathMin(rates_total - 1, rates_total - prev_calculated + 1);
+   if(fullCalc)
+     {
+      ArrayInitialize(V1, EMPTY_VALUE);
+      ArrayInitialize(V2, EMPTY_VALUE);
+      ArrayInitialize(V3, EMPTY_VALUE);
+      ArrayInitialize(V4, EMPTY_VALUE);
+      ArrayInitialize(VL1, EMPTY_VALUE);
+      ArrayInitialize(VL4, EMPTY_VALUE);
+     }
+   for(int v = vFrom; v >= 0; v--)
+     {
+      V1[v] = VwmaAt(v, InpVWMA1, rates_total, high, tick_volume);
+      V2[v] = VwmaAt(v, InpVWMA2, rates_total, high, tick_volume);
+      V3[v] = VwmaAt(v, InpVWMA3, rates_total, high, tick_volume);
+      V4[v] = VwmaAt(v, InpVWMA4, rates_total, high, tick_volume);
+      VL1[v] = VwmaAt(v, InpVWMA1, rates_total, low, tick_volume);
+      VL4[v] = VwmaAt(v, InpVWMA4, rates_total, low, tick_volume);
+     }
+
+   int start;
+   if(prev_calculated <= 0)
+     {
+      if(!FiltersReady()) return(0);   // EMA / ATR history still calculating: try again next tick
+      ArrayInitialize(BuyBuf, EMPTY_VALUE);
+      ArrayInitialize(SellBuf, EMPTY_VALUE);
+      ArrayInitialize(ReBuyBuf, EMPTY_VALUE);
+      ArrayInitialize(ReSellBuf, EMPTY_VALUE);
+      ArrayInitialize(EaSig, 0.0);
+      // arrows are kept (not deleted) so history stays on the chart
+      lastBuyTime = lastSellTime = 0;
+      lastFiltB = lastFiltS = 0;
+      ResetIdea();
+      ResetZone();
+      ResetCounts();
+      ClearZones();
+      gLastBar = 0;
+      start = (int)MathMin(rates_total - 5, MathMax(100, InpHistoryBars));
+     }
+   else
+      start = (int)MathMax(2, rates_total - prev_calculated + 1);
+
+   if(start < 1) start = 1;
+
+   gD  = TFBiasNow(InpTF_D);
+   gH4 = TFBiasNow(InpTF_H4);
+   gH1 = TFBiasNow(InpTF_H1);
+   gM5 = TFBiasNow(InpTF_M5);
+   gScoreB = (gD.dir==1) + (gH4.dir==1) + (gH1.dir==1) + (gM5.dir==1);
+   gScoreS = (gD.dir==-1) + (gH4.dir==-1) + (gH1.dir==-1) + (gM5.dir==-1);
+
+   for(int i = start; i >= 1; i--)
+     {
+      // each closed bar goes through the engine exactly once, so counters
+      // (pending expiry, bars since SL) count bars, not ticks
+      if(time[i] <= gLastBar) continue;
+      gLastBar = time[i];
+      BuyBuf[i] = SellBuf[i] = ReBuyBuf[i] = ReSellBuf[i] = EMPTY_VALUE;
+      EaSig[i] = EaSigT[i] = EaEntry[i] = EaBrk[i] = EaSL[i] = EaTP1[i] = EaTP2[i] = 0.0;
+      EaBSL[i] = EaBTP1[i] = EaBTP2[i] = 0.0;
+
+      Candle bar;
+      bar.o = open[i]; bar.h = high[i]; bar.l = low[i]; bar.c = close[i];
+      bar.t = time[i]; bar.valid = true;
+      bar.spr = SpreadPriceAt(i);
+
+      Bias d  = TFBiasAt(InpTF_D,  time[i]);
+      Bias h4 = TFBiasAt(InpTF_H4, time[i]);
+      Bias h1 = TFBiasAt(InpTF_H1, time[i]);
+      Bias m5 = TFBiasAt(InpTF_M5, time[i]);
+      int sb = (d.dir==1) + (h4.dir==1) + (h1.dir==1) + (m5.dir==1);
+      int ss = (d.dir==-1) + (h4.dir==-1) + (h1.dir==-1) + (m5.dir==-1);
+
+      int trendDir = TrendDirAt(bar.t);
+
+      ManageIdea(bar, d, h4, trendDir);
+
+      double prevH = RecentSwingHigh(rates_total, i, high);
+      double prevL = RecentSwingLow(rates_total, i, low);
+      bool trigB = QualityBullTrigger(bar, prevH);
+      bool trigS = QualityBearTrigger(bar, prevL);
+
+      if(InpUseM5Trigger && PeriodSeconds(_Period) <= PeriodSeconds(PERIOD_M15))
+        {
+         Candle m5c = CandleAtShift(InpTF_M5, ClosedShiftAt(InpTF_M5, time[i]));
+         if(trigB && !BullCandle(m5c)) trigB = false;
+         if(trigS && !BearCandle(m5c)) trigS = false;
+        }
+
+      // with the EMA trend filter on, the one-candle bias vote is replaced by the grade
+      bool allowB = (InpFiltOn || StructureAllows(1, d, h4, h1, sb, ss));
+      bool allowS = (InpFiltOn || StructureAllows(-1, d, h4, h1, sb, ss));
+
+      string whyB = "", whyS = "";
+      int failsB = 0, failsS = 0;
+      int gradeB = ((trigB && allowB) ? SignalGrade(1, bar, i, trendDir, whyB, failsB) : GRADE_NONE);
+      int gradeS = ((trigS && allowS) ? SignalGrade(-1, bar, i, trendDir, whyS, failsS) : GRADE_NONE);
+
+      // grade C must also clear the C filter, otherwise it is demoted to Cx (never armed)
+      string rej = "";
+      if(gradeB == GRADE_C && !CFilterPass(1, bar, i, failsB, trendDir, rej))
+        { gradeB = GRADE_CX; whyB += "  | C filter:" + rej; }
+      if(gradeS == GRADE_C && !CFilterPass(-1, bar, i, failsS, trendDir, rej))
+        { gradeS = GRADE_CX; whyS += "  | C filter:" + rej; }
+      double buf = StopBuffer(i);
+      string veto = VetoReason(1, i, gradeB, whyB, bar, buf);
+      if(veto != "") { gradeB = GRADE_CX; whyB += "  | veto:" + veto; }
+      veto = VetoReason(-1, i, gradeS, whyS, bar, buf);
+      if(veto != "") { gradeS = GRADE_CX; whyS += "  | veto:" + veto; }
+      DiagRecord(0, gradeB, whyB);
+      DiagRecord(1, gradeS, whyS);
+
+      bool didRe = false;
+      if(InpReentryOn && idea.state == IDEA_SL_WAIT && idea.reCount < InpMaxReentry
+         && idea.slBarAge >= InpReentryCool)
+        {
+         if(idea.dir > 0 && ReOK(gradeB))
+           {
+            int rc = idea.reCount + 1;
+            ArmIdea(1, bar, true, buf, gradeB, trendDir);
+            idea.reCount = rc;
+            idea.why = whyB;
+            lastBuyTime = bar.t;
+            if(idea.state != IDEA_IDLE && !idea.needConfirm) MarkSignal(bar.t, 1, true, gradeB, whyB);
+            didRe = true;
+           }
+         else if(idea.dir < 0 && ReOK(gradeS))
+           {
+            int rc = idea.reCount + 1;
+            ArmIdea(-1, bar, true, buf, gradeS, trendDir);
+            idea.reCount = rc;
+            idea.why = whyS;
+            lastSellTime = bar.t;
+            if(idea.state != IDEA_IDLE && !idea.needConfirm) MarkSignal(bar.t, -1, true, gradeS, whyS);
+            didRe = true;
+           }
+        }
+
+      bool armed = didRe;
+      if(!didRe)
+        {
+         bool coolB = Cooled(bar.t, lastBuyTime, InpCooldown) && Cooled(bar.t, lastSellTime, 3);
+         bool coolS = Cooled(bar.t, lastSellTime, InpCooldown) && Cooled(bar.t, lastBuyTime, 3);
+         bool free = (idea.state == IDEA_IDLE);
+         // an opposite signal may replace an unfilled pending order or an SL re-entry wait;
+         // without this a stopped-out sell blocks every buy for the whole re-entry window
+         bool oppB = (InpOppOverride && idea.dir < 0 && (idea.state == IDEA_PENDING || idea.state == IDEA_SL_WAIT));
+         bool oppS = (InpOppOverride && idea.dir > 0 && (idea.state == IDEA_PENDING || idea.state == IDEA_SL_WAIT));
+         bool takeB = ((free || oppB) && FreshOK(gradeB) && coolB);
+         bool takeS = (!takeB && (free || oppS) && FreshOK(gradeS) && coolS);
+         if(FreshOK(gradeB) && !takeB) gDBusy[0]++;
+         if(FreshOK(gradeS) && !takeS) gDBusy[1]++;
+         if((takeB && oppB) || (takeS && oppS))
+            EndIdea(idea.state == IDEA_SL_WAIT ? " [SL HIT]" : " [REVERSED]", bar.t);
+
+         if(takeB)
+           {
+            lastBuyTime = bar.t;
+            ArmIdea(1, bar, false, buf, gradeB, trendDir);
+            idea.why = whyB;
+            if(idea.state != IDEA_IDLE && !idea.needConfirm) MarkSignal(bar.t, 1, false, gradeB, whyB);
+            armed = true;
+           }
+         else if(takeS)
+           {
+            lastSellTime = bar.t;
+            ArmIdea(-1, bar, false, buf, gradeS, trendDir);
+            idea.why = whyS;
+            if(idea.state != IDEA_IDLE && !idea.needConfirm) MarkSignal(bar.t, -1, false, gradeS, whyS);
+            armed = true;
+           }
+        }
+
+      // base signals whose grade is toggled off: grey letter only (no zone, no alert, no trade)
+      if(!armed && InpShowFiltered)
+        {
+         if(gradeB != GRADE_NONE && !FreshOK(gradeB) && Cooled(bar.t, lastFiltB, InpCooldown))
+           {
+            lastFiltB = bar.t;
+            FilteredMark(time[i], low[i], 1, gradeB, whyB);
+           }
+         else if(gradeS != GRADE_NONE && !FreshOK(gradeS) && Cooled(bar.t, lastFiltS, InpCooldown))
+           {
+            lastFiltS = bar.t;
+            FilteredMark(time[i], high[i], -1, gradeS, whyS);
+           }
+        }
+     }
+
+   BuyBuf[0] = SellBuf[0] = ReBuyBuf[0] = ReSellBuf[0] = EMPTY_VALUE;
+   if(prev_calculated <= 0 && InpShowDiag && !InpHeadless)
+     {
+      // short lines so the Experts tab does not cut them off
+      PrintFormat("FusionOliveInd BUY  taken %d | blockers: %s | A %d B %d C %d Cx %d busy %d of %d", gCntBuy, DiagTop(0),
+                  gDGrade[0], gDGrade[1], gDGrade[2], gDGrade[4], gDBusy[0], gDTrig[0]);
+      PrintFormat("FusionOliveInd SELL taken %d | blockers: %s | A %d B %d C %d Cx %d busy %d of %d", gCntSell, DiagTop(1),
+                  gDGrade[5], gDGrade[6], gDGrade[7], gDGrade[9], gDBusy[1], gDTrig[1]);
+     }
+   // panel / zone / levels: on a full recalc, on a new bar, otherwise at most once a second
+   // (the engine only changes state on closed bars; per-tick redraws only cost time)
+   uint nowMs = GetTickCount();
+   if(fullCalc || time[0] != gLastDrawBar || (uint)(nowMs - gLastDrawMs) >= 1000)
+     {
+      gLastDrawBar = time[0];
+      gLastDrawMs  = nowMs;
+      if(InpShowLevels) DrawLevels();
+      DrawPanel();
+      DrawLiveZone();
+     }
+
+   if(allowAlerts) CheckAlerts(time[1], close[1]);
+   else allowAlerts = true;
+
+   return(rates_total);
+  }
+
+void FireAlert(const string side, const datetime barTime, const double barClose, const bool levels = true)
+  {
+   string tf = EnumToString(_Period);
+   StringReplace(tf, "PERIOD_", "");
+   string extra = "";
+   if(levels && idea.state != IDEA_IDLE)
+      extra = StringFormat(" | EN %s SL %s TP1 %s TP2 %s",
+                           DoubleToString(idea.entry, _Digits),
+                           DoubleToString(idea.sl, _Digits),
+                           DoubleToString(idea.tp1, _Digits),
+                           DoubleToString(idea.tp2, _Digits));
+
+   if(levels && idea.state == IDEA_PENDING && idea.brkEntry > 0.0)
+      extra += " BRK " + DoubleToString(idea.brkEntry, _Digits);
+   if(levels && idea.state != IDEA_IDLE)
+      extra += StringFormat(" | score %d/5", ScoreAt(1, idea.dir));
+
+   string msg = StringFormat("FusionOliveInd %s %s | %s | close %s | %s%s",
+                             side, _Symbol, tf, DoubleToString(barClose, _Digits),
+                             TimeToString(barTime, TIME_DATE|TIME_MINUTES), extra);
+
+   if(InpAlertPopup) Alert(msg);
+   if(InpAlertSound) PlaySound(InpSoundFile);
+   if(InpAlertPush)  SendNotification(msg);
+   if(InpAlertEmail) SendMail("FusionOliveInd " + side + " " + _Symbol, msg);
+  }
+
+void CheckAlerts(const datetime barTime, const double barClose)
+  {
+   if(InpHeadless) return;
+   if(barTime == 0) return;
+
+   if(InpAlertFill && idea.state == IDEA_LIVE && idea.fillTime == barTime && lastFillAlert != barTime)
+     {
+      lastFillAlert = barTime;
+      FireAlert((idea.dir > 0 ? "PENDING FILLED BUY" : "PENDING FILLED SELL")
+                + (idea.brkEntry > 0.0 ? (idea.fillIsStop ? " (BREAKOUT)" : " (PULLBACK)") : ""), barTime, barClose);
+     }
+
+   // setup / pending order ended without a fill (no return: a new setup on the same bar still alerts)
+   if(InpAlertCancel && InpPendingOn && gCancT == barTime && lastCancAlert != barTime)
+     {
+      lastCancAlert = barTime;
+      if(!(gCancRe && !InpAlertReentry))
+         FireAlert((gCancDir > 0 ? (gCancRe ? "RE-ENTRY BUY" : "BUY") : (gCancRe ? "RE-ENTRY SELL" : "SELL"))
+                   + string(" ") + GradeName(gCancGrade) + " CANCELLED (" + gCancWhy + ")", barTime, barClose, false);
+     }
+
+   if(InpConfirmBar && InpPendingOn && InpSetupAlert)
+     {
+      // setup alert on the signal bar, together with the zone and the arrow
+      if(idea.state == IDEA_PENDING && idea.needConfirm && idea.signalTime == barTime && lastSetupAlert != barTime)
+        {
+         lastSetupAlert = barTime;
+         if(!(idea.re && !InpAlertReentry))
+            FireAlert((idea.dir > 0 ? (idea.re ? "RE-ENTRY BUY" : "BUY") : (idea.re ? "RE-ENTRY SELL" : "SELL"))
+                      + " " + GradeName(idea.grade) + " SETUP (confirms at next close)", barTime, barClose);
+         return;
+        }
+      // the move reached TP1 during the confirmation bar: tell the user not to chase it
+      if(gMissT == barTime && lastMissAlert != barTime)
+        {
+         lastMissAlert = barTime;
+         if(!(gMissRe && !InpAlertReentry))
+            FireAlert((gMissDir > 0 ? "BUY" : "SELL") + string(" ") + GradeName(gMissGrade)
+                      + " MISSED (TP1 reached before confirmation, no order)", barTime, barClose);
+         return;
+        }
+     }
+
+   if(barTime == lastAlertBar) return;
+   if(InpConfirmBar && InpPendingOn)
+     {
+      if(idea.state == IDEA_IDLE || idea.confirmTime != barTime) return;
+      lastAlertBar = barTime;
+      if(idea.re && !InpAlertReentry) return;
+      string cs = (idea.dir > 0 ? (idea.re ? "RE-ENTRY BUY" : "BUY") : (idea.re ? "RE-ENTRY SELL" : "SELL"))
+                  + " " + GradeName(idea.grade) + " CONFIRMED PEND";
+      FireAlert(cs, barTime, barClose);
+      return;
+     }
+   bool buy    = (BuyBuf[1]    != EMPTY_VALUE);
+   bool sell   = (SellBuf[1]   != EMPTY_VALUE);
+   bool rebuy  = (ReBuyBuf[1]  != EMPTY_VALUE);
+   bool resell = (ReSellBuf[1] != EMPTY_VALUE);
+   if(!buy && !sell && !rebuy && !resell) return;
+   lastAlertBar = barTime;
+
+   string side = buy ? "BUY" : (sell ? "SELL" : (rebuy ? "RE-ENTRY BUY" : "RE-ENTRY SELL"));
+   if((rebuy || resell) && !InpAlertReentry) return;
+   if(idea.state != IDEA_IDLE) side = side + " " + GradeName(idea.grade);
+   if(InpPendingOn) side = side + " PEND";
+   FireAlert(side, barTime, barClose);
+  }
+//+------------------------------------------------------------------+
 
 #define DOTPRE  "FOE_DOT_"
 
@@ -121,18 +2587,12 @@ struct EaSignal
   };
 
 CTrade   trade;
-int      gH = INVALID_HANDLE;
-datetime gLastBar   = 0;      // last closed bar whose signal was handled
+datetime gEaLastBar = 0;      // last closed bar whose signal was handled
 datetime gPendSince = 0;      // bar time when our pending orders were placed
 bool     gDotsDone  = false;
 string   gLastMsg   = "";
 
 //+------------------------------------------------------------------+
-double Pt()
-  {
-   if(_Digits == 3 || _Digits == 5) return _Point * 10.0;
-   return _Point;
-  }
 
 double NormPrice(const double p)
   {
@@ -160,69 +2620,13 @@ double StopsDist()
   }
 
 //+------------------------------------------------------------------+
-int OnInit()
-  {
-   if(InpLots <= 0.0 || InpSLPts <= 0 || InpTPPts <= 0 || InpTPRR <= 0.0)
-     {
-      Print("FusionOliveEA: lots, SL/TP points and TP RR must be positive");
-      return(INIT_PARAMETERS_INCORRECT);
-     }
-   gH = iCustom(_Symbol, _Period, InpIndName, true);   // true = InpHeadless
-   if(gH == INVALID_HANDLE)
-     {
-      Print("FusionOliveEA: cannot load the indicator '", InpIndName, "' - compile it in MQL5\\Indicators first");
-      return(INIT_FAILED);
-     }
-   trade.SetExpertMagicNumber((ulong)InpMagic);
-   trade.SetDeviationInPoints((ulong)MathMax(0, InpSlippagePts));
-   trade.SetTypeFillingBySymbol(_Symbol);
-   gLastBar = iTime(_Symbol, _Period, 1);   // never trade a signal that closed before the EA started
-   gDotsDone = false;
-   return(INIT_SUCCEEDED);
-  }
 
-void OnDeinit(const int reason)
-  {
-   if(gH != INVALID_HANDLE) IndicatorRelease(gH);
-   if(reason == REASON_REMOVE) ObjectsDeleteAll(0, DOTPRE);
-   Comment("");
-  }
 
 //+------------------------------------------------------------------+
 //| Reading the indicator                                            |
 //+------------------------------------------------------------------+
-double Buf(const int b, const int sh)
-  {
-   double v[1];
-   if(CopyBuffer(gH, b, sh, 1, v) != 1) return 0.0;
-   if(v[0] == EMPTY_VALUE) return 0.0;
-   return v[0];
-  }
 
-bool ReadSignal(const int sh, EaSignal &s)
-  {
-   s.code = (int)MathRound(Buf(B_SIG, sh));
-   if(s.code == 0) return false;
-   int a   = MathAbs(s.code);
-   s.dir   = (s.code > 0 ? 1 : -1);
-   s.re    = (a >= 10);
-   s.kind  = a % 10;
-   s.sigTime = (datetime)(long)Buf(B_SIGT, sh);
-   s.entry = Buf(B_ENTRY, sh);
-   s.brk   = Buf(B_BRK, sh);
-   s.sl    = Buf(B_SL, sh);
-   s.tp1   = Buf(B_TP1, sh);
-   s.tp2   = Buf(B_TP2, sh);
-   s.bsl   = Buf(B_BSL, sh);
-   s.btp1  = Buf(B_BTP1, sh);
-   s.btp2  = Buf(B_BTP2, sh);
-   return (s.kind >= 1 && s.kind <= 4);
-  }
 
-bool IndicatorReady()
-  {
-   return (gH != INVALID_HANDLE && BarsCalculated(gH) >= Bars(_Symbol, _Period));
-  }
 
 //+------------------------------------------------------------------+
 //| Dots on confirmed signals                                        |
@@ -246,24 +2650,6 @@ void DrawDot(const datetime t, const int dir)
   }
 
 // past confirmed signals, drawn once when the indicator is ready
-void DrawHistoryDots()
-  {
-   if(!InpShowDots) { gDotsDone = true; return; }
-   int n = (int)MathMin(MathMax(0, InpDotHistoryBars), Bars(_Symbol, _Period) - 2);
-   if(n <= 0) { gDotsDone = true; return; }
-   double sig[], st[];
-   ArraySetAsSeries(sig, true);
-   ArraySetAsSeries(st, true);
-   if(CopyBuffer(gH, B_SIG, 1, n, sig) != n || CopyBuffer(gH, B_SIGT, 1, n, st) != n) return;   // retry next tick
-   for(int k = 0; k < n; k++)
-     {
-      int c = (int)MathRound(sig[k] == EMPTY_VALUE ? 0.0 : sig[k]);
-      int kind = MathAbs(c) % 10;
-      if(c != 0 && (kind == 1 || kind == 2 || kind == 4))
-         DrawDot((datetime)(long)st[k], (c > 0 ? 1 : -1));
-     }
-   gDotsDone = true;
-  }
 
 //+------------------------------------------------------------------+
 //| Positions / orders of this EA                                    |
@@ -561,7 +2947,7 @@ void ManagePendings()
 //+------------------------------------------------------------------+
 void ShowPanel()
   {
-   if(!InpShowPanel) return;
+   if(!InpEAPanel) return;
    static uint last = 0;                      // the history scan is not needed on every tick
    uint now = GetTickCount();
    if(last != 0 && (uint)(now - last) < 1000) return;
@@ -585,25 +2971,6 @@ void ShowPanel()
   }
 
 //+------------------------------------------------------------------+
-void OnTick()
-  {
-   ManagePosition();
-   ManagePendings();
-
-   if(IndicatorReady())
-     {
-      if(!gDotsDone) DrawHistoryDots();
-      // one decision per closed bar, after the indicator has processed that bar
-      datetime t1 = iTime(_Symbol, _Period, 1);
-      if(t1 != 0 && t1 != gLastBar)
-        {
-         gLastBar = t1;
-         EaSignal s;
-         if(ReadSignal(1, s)) HandleSignal(s);
-        }
-     }
-   ShowPanel();
-  }
 
 // notification when a trade of this EA closes
 void OnTradeTransaction(const MqlTradeTransaction &tr, const MqlTradeRequest &rq, const MqlTradeResult &rs)
@@ -622,3 +2989,185 @@ void OnTradeTransaction(const MqlTradeTransaction &tr, const MqlTradeRequest &rq
       DeletePendings(0);   // OCO as soon as one leg fills
   }
 //+------------------------------------------------------------------+
+
+//+------------------------------------------------------------------+
+//| Engine driver: feeds the embedded FusionOliveInd engine with the  |
+//| chart's bars, exactly as the terminal feeds the indicator.       |
+//| The window is fixed (InpHistoryBars + 600 bars); on every new    |
+//| bar the engine arrays shift by one and only that bar is run.     |
+//+------------------------------------------------------------------+
+datetime gEngT0    = 0;       // open time of bar 0 at the last engine run
+int      gEngTotal = 0;       // bars in the engine window (0 = full run needed)
+datetime gTime[];
+double   gOpen[], gHigh[], gLow[], gClose[];
+long     gTickVol[], gVolume[];
+int      gSpread[];
+
+void SeriesShift(double &a[], const int k, const double fill)
+  {
+   int n = ArraySize(a);
+   for(int j = n - 1; j >= k; j--) a[j] = a[j - k];
+   for(int j = 0; j < k && j < n; j++) a[j] = fill;
+  }
+
+void SeriesReset(double &a[], const int n, const double fill)
+  {
+   ArraySetAsSeries(a, false);
+   ArrayResize(a, n);
+   ArraySetAsSeries(a, true);
+   ArrayInitialize(a, fill);
+  }
+
+void EngineArrays(const int n, const int k, const bool reset)
+  {
+   if(reset)
+     {
+      SeriesReset(BuyBuf, n, EMPTY_VALUE);  SeriesReset(SellBuf, n, EMPTY_VALUE);
+      SeriesReset(ReBuyBuf, n, EMPTY_VALUE); SeriesReset(ReSellBuf, n, EMPTY_VALUE);
+      SeriesReset(V1, n, EMPTY_VALUE); SeriesReset(V2, n, EMPTY_VALUE);
+      SeriesReset(V3, n, EMPTY_VALUE); SeriesReset(V4, n, EMPTY_VALUE);
+      SeriesReset(VL1, n, EMPTY_VALUE); SeriesReset(VL4, n, EMPTY_VALUE);
+      SeriesReset(EaSig, n, 0.0);  SeriesReset(EaSigT, n, 0.0); SeriesReset(EaEntry, n, 0.0);
+      SeriesReset(EaBrk, n, 0.0);  SeriesReset(EaSL, n, 0.0);   SeriesReset(EaTP1, n, 0.0);
+      SeriesReset(EaTP2, n, 0.0);  SeriesReset(EaBSL, n, 0.0);  SeriesReset(EaBTP1, n, 0.0);
+      SeriesReset(EaBTP2, n, 0.0);
+      return;
+     }
+   SeriesShift(BuyBuf, k, EMPTY_VALUE);  SeriesShift(SellBuf, k, EMPTY_VALUE);
+   SeriesShift(ReBuyBuf, k, EMPTY_VALUE); SeriesShift(ReSellBuf, k, EMPTY_VALUE);
+   SeriesShift(V1, k, EMPTY_VALUE); SeriesShift(V2, k, EMPTY_VALUE);
+   SeriesShift(V3, k, EMPTY_VALUE); SeriesShift(V4, k, EMPTY_VALUE);
+   SeriesShift(VL1, k, EMPTY_VALUE); SeriesShift(VL4, k, EMPTY_VALUE);
+   SeriesShift(EaSig, k, 0.0);  SeriesShift(EaSigT, k, 0.0); SeriesShift(EaEntry, k, 0.0);
+   SeriesShift(EaBrk, k, 0.0);  SeriesShift(EaSL, k, 0.0);   SeriesShift(EaTP1, k, 0.0);
+   SeriesShift(EaTP2, k, 0.0);  SeriesShift(EaBSL, k, 0.0);  SeriesShift(EaBTP1, k, 0.0);
+   SeriesShift(EaBTP2, k, 0.0);
+  }
+
+bool LoadBars(const int n)
+  {
+   MqlRates r[];
+   ArraySetAsSeries(r, true);
+   if(CopyRates(_Symbol, _Period, 0, n, r) != n) return false;
+   ArrayResize(gTime, n); ArrayResize(gOpen, n); ArrayResize(gHigh, n); ArrayResize(gLow, n);
+   ArrayResize(gClose, n); ArrayResize(gTickVol, n); ArrayResize(gVolume, n); ArrayResize(gSpread, n);
+   ArraySetAsSeries(gTime, true); ArraySetAsSeries(gOpen, true); ArraySetAsSeries(gHigh, true);
+   ArraySetAsSeries(gLow, true); ArraySetAsSeries(gClose, true); ArraySetAsSeries(gTickVol, true);
+   ArraySetAsSeries(gVolume, true); ArraySetAsSeries(gSpread, true);
+   for(int j = 0; j < n; j++)
+     {
+      gTime[j] = r[j].time; gOpen[j] = r[j].open; gHigh[j] = r[j].high; gLow[j] = r[j].low;
+      gClose[j] = r[j].close; gTickVol[j] = r[j].tick_volume; gVolume[j] = r[j].real_volume;
+      gSpread[j] = r[j].spread;
+     }
+   return true;
+  }
+
+// run the engine when a new bar has opened; true when the engine is up to date
+bool EngineRun(bool &fullRun)
+  {
+   fullRun = false;
+   datetime t0 = iTime(_Symbol, _Period, 0);
+   if(t0 == 0) return false;
+   if(gEngTotal > 0 && t0 == gEngT0) return true;
+
+   int k = (gEngTotal > 0 ? iBarShift(_Symbol, _Period, gEngT0, true) : -1);
+   bool reset = (gEngTotal <= 0 || k <= 0 || k >= gEngTotal - 10);
+   int n = (reset ? (int)MathMin(Bars(_Symbol, _Period), MathMax(100, InpHistoryBars) + 600) : gEngTotal);
+   if(n < 200) return false;
+   if(!LoadBars(n)) return false;
+   EngineArrays(n, k, reset);
+   int prev = (reset ? 0 : n - k);
+   int ret = EngineCalc(n, prev, gTime, gOpen, gHigh, gLow, gClose, gTickVol, gVolume, gSpread);
+   if(ret <= 0) { gEngTotal = 0; return false; }   // filter indicators still loading: full run next tick
+   gEngTotal = n;
+   gEngT0 = t0;
+   fullRun = reset;
+   return true;
+  }
+
+bool ReadSignal(const int sh, EaSignal &s)
+  {
+   if(sh < 0 || sh >= ArraySize(EaSig)) return false;
+   s.code = (int)MathRound(EaSig[sh]);
+   if(s.code == 0) return false;
+   int a   = MathAbs(s.code);
+   s.dir   = (s.code > 0 ? 1 : -1);
+   s.re    = (a >= 10);
+   s.kind  = a % 10;
+   s.sigTime = (datetime)(long)EaSigT[sh];
+   s.entry = EaEntry[sh];
+   s.brk   = EaBrk[sh];
+   s.sl    = EaSL[sh];
+   s.tp1   = EaTP1[sh];
+   s.tp2   = EaTP2[sh];
+   s.bsl   = EaBSL[sh];
+   s.btp1  = EaBTP1[sh];
+   s.btp2  = EaBTP2[sh];
+   return (s.kind >= 1 && s.kind <= 4);
+  }
+
+// confirmed signals already in the engine window (history), drawn once
+void DrawHistoryDots()
+  {
+   if(!InpShowDots) return;
+   int n = (int)MathMin(MathMax(0, InpDotHistoryBars), ArraySize(EaSig) - 1);
+   for(int k = 1; k <= n; k++)
+     {
+      int c = (int)MathRound(EaSig[k]);
+      int kind = MathAbs(c) % 10;
+      if(c != 0 && (kind == 1 || kind == 2 || kind == 4))
+         DrawDot((datetime)(long)EaSigT[k], (c > 0 ? 1 : -1));
+     }
+  }
+
+//+------------------------------------------------------------------+
+int OnInit()
+  {
+   if(InpLots <= 0.0 || InpSLPts <= 0 || InpTPPts <= 0 || InpTPRR <= 0.0)
+     {
+      Print("FusionOliveEA: lots, SL/TP points and TP RR must be positive");
+      return(INIT_PARAMETERS_INCORRECT);
+     }
+   int r = EngineInit();
+   if(r != INIT_SUCCEEDED) return(r);
+   trade.SetExpertMagicNumber((ulong)InpMagic);
+   trade.SetDeviationInPoints((ulong)MathMax(0, InpSlippagePts));
+   trade.SetTypeFillingBySymbol(_Symbol);
+   gEngTotal  = 0;
+   gEngT0     = 0;
+   gEaLastBar = 0;
+   return(INIT_SUCCEEDED);
+  }
+
+void OnDeinit(const int reason)
+  {
+   EngineDeinit(reason);
+   if(reason == REASON_REMOVE) ObjectsDeleteAll(0, DOTPRE);
+   Comment("");
+  }
+
+void OnTick()
+  {
+   ManagePosition();
+   ManagePendings();
+
+   bool fullRun = false;
+   if(EngineRun(fullRun))
+     {
+      datetime t1 = iTime(_Symbol, _Period, 1);
+      if(fullRun)
+        {
+         DrawHistoryDots();
+         if(gEaLastBar == 0) gEaLastBar = t1;   // never trade a signal that closed before the EA started
+        }
+      // one decision per closed bar
+      if(t1 != 0 && t1 != gEaLastBar)
+        {
+         gEaLastBar = t1;
+         EaSignal s;
+         if(ReadSignal(1, s)) HandleSignal(s);
+        }
+     }
+   ShowPanel();
+  }
