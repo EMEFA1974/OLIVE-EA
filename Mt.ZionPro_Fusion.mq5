@@ -141,7 +141,7 @@ input int    InpATRPeriod   = 14;                  // ATR on the chart timeframe
 input bool   InpATROn       = true;                // signal candle range must be between min and max x ATR
 input double InpMinRangeATR = 0.6;                 // smaller = noise
 input double InpMaxRangeATR = 2.5;                 // larger = exhaustion
-input bool   InpLocationOn  = true;                // skip signals that chase price far from value
+input bool   InpLocationOn  = true;                // skip signals that chase: buy closing too far ABOVE the EMA / sell too far BELOW it
 input int    InpLocEmaP     = 21;                  // chart-TF EMA used as value
 input double InpMaxExtATR   = 2.0;                 // max distance close <-> EMA in ATR
 input bool   InpATRStopOn   = true;                // SL buffer = max(InpSLBufferPts, ATR x k, spread x m)
@@ -179,7 +179,8 @@ input double            InpRsiOS       = 20.0;          // RSI oversold
 input group "=== Signal Flow ==="
 input bool       InpOppOverride = true;            // a fresh opposite signal cancels a pending order or an SL re-entry wait (live trades still block)
 input bool       InpSoftChase   = true;            // range / extended / exhausted together count as at most ONE failed filter
-input bool       InpShowDiag    = true;            // buy / sell diagnostics on the panel
+input bool       InpShowDiag    = true;            // buy / sell diagnostics on the panel (also printed to the Experts log on load)
+input int        InpHistoryBars = 5000;            // closed bars replayed on load (signals, arrows and stats cover this many bars)
 
 input group "=== Signal Grade ==="
 input bool       InpGradeA   = true;               // A-grade signals (pass every filter) become signals (zone / alert / EA trade)
@@ -1150,7 +1151,9 @@ int SignalGrade(const int dir, const Candle &k, const int sh, const int trendDir
    if(InpLocationOn)
      {
       double e = BufAt(gHLoc, sh);
-      if(atr <= 0 || e <= 0 || MathAbs(k.c - e) > atr * InpMaxExtATR) { chase++; why += " extended"; }
+      // directional: a buy far BELOW value is a discount, not a chase (and the mirror for sells)
+      double ext = (dir > 0 ? k.c - e : e - k.c);
+      if(atr <= 0 || e <= 0 || ext > atr * InpMaxExtATR) { chase++; why += " extended"; }
      }
    if(InpStrictOn && !StrictTrigger(dir, k, sh)) { fails++; why += " candle"; }
    if(InpScoreOn && ScoreAt(sh, dir) < InpMinScore) { fails++; why += " score"; }
@@ -1616,7 +1619,7 @@ void DrawPanel(const bool force = false)
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
    PText(PPRE + "T1", gPX + 10, gPY + 6, "MT.ZIONPRO FUSION", C_TXT, InpPanelTitleFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.04  " + ShortToString((ushort)0x25B2), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.05  " + ShortToString((ushort)0x25B2), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
@@ -1937,7 +1940,7 @@ int OnCalculate(const int rates_total,
       ResetCounts();
       ClearZones();
       gLastBar = 0;
-      start = (int)MathMin(rates_total - 5, 800);
+      start = (int)MathMin(rates_total - 5, MathMax(100, InpHistoryBars));
      }
    else
       start = (int)MathMax(2, rates_total - prev_calculated + 1);
@@ -2088,6 +2091,12 @@ int OnCalculate(const int rates_total,
      }
 
    BuyBuf[0] = SellBuf[0] = ReBuyBuf[0] = ReSellBuf[0] = EMPTY_VALUE;
+   if(prev_calculated <= 0 && InpShowDiag)
+      PrintFormat("Mt.ZionPro Fusion %s %s, %d bars: BUY triggers %d (A %d B %d C %d Cx %d, busy %d, taken %d) blockers: %s | "
+                  "SELL triggers %d (A %d B %d C %d Cx %d, busy %d, taken %d) blockers: %s",
+                  _Symbol, StringSubstr(EnumToString(_Period), 7), start,
+                  gDTrig[0], gDGrade[0], gDGrade[1], gDGrade[2], gDGrade[4], gDBusy[0], gCntBuy, DiagTop(0),
+                  gDTrig[1], gDGrade[5], gDGrade[6], gDGrade[7], gDGrade[9], gDBusy[1], gCntSell, DiagTop(1));
    if(InpShowLevels) DrawLevels();
    DrawPanel();
    DrawLiveZone();
