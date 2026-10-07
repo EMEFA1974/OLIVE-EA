@@ -27,22 +27,22 @@
 #property indicator_label1  "Buy"
 #property indicator_type1   DRAW_ARROW
 #property indicator_color1  clrAqua
-#property indicator_width1  2
+#property indicator_width1  4
 
 #property indicator_label2  "Sell"
 #property indicator_type2   DRAW_ARROW
 #property indicator_color2  clrMagenta
-#property indicator_width2  2
+#property indicator_width2  4
 
 #property indicator_label3  "ReBuy"
 #property indicator_type3   DRAW_ARROW
 #property indicator_color3  clrAqua
-#property indicator_width3  1
+#property indicator_width3  3
 
 #property indicator_label4  "ReSell"
 #property indicator_type4   DRAW_ARROW
 #property indicator_color4  clrMagenta
-#property indicator_width4  1
+#property indicator_width4  3
 
 #property indicator_label5  "VWMA High 1"
 #property indicator_type5   DRAW_LINE
@@ -214,7 +214,7 @@ input color  InpBuyColor     = clrAqua;      // buy arrows (hollow)
 input color  InpSellColor    = clrMagenta;   // sell arrows (hollow)
 input color  InpReBuyColor   = clrAqua;      // re-entry buy arrows (hollow, thinner, further out)
 input color  InpReSellColor  = clrMagenta;   // re-entry sell arrows (hollow, thinner, further out)
-input int    InpArrowWidth   = 2;
+input int    InpArrowWidth   = 4;            // arrow size 1-5 (re-entry arrows are one size smaller)
 input int    InpArrowShift   = 12;
 input int    InpPanelX       = 4;        // left edge
 input int    InpPanelY       = 20;       // top-left (EA panel goes bottom-left). Drag to move.
@@ -222,6 +222,7 @@ input int    InpPanelWidth   = 270;
 input string InpPanelFontName = "Segoe UI Semilight"; // thin font for labels and values (thinner: "Segoe UI Light")
 input string InpPanelFontHead = "Segoe UI";           // headings / title (e.g. "Segoe UI", "Calibri Light", "Arial")
 input int    InpPanelFont    = 8;
+input int    InpPanelTitleFont = 8;      // size of the panel name
 input int    InpPanelRowH    = 15;
 input ENUM_TIMEFRAMES InpTrendTF = PERIOD_H1;   // timeframe for the EMA trend line on the panel
 input int    InpTrendFast    = 50;
@@ -406,10 +407,11 @@ int OnInit()
    PlotIndexSetInteger(1, PLOT_LINE_COLOR, InpSellColor);
    PlotIndexSetInteger(2, PLOT_LINE_COLOR, InpReBuyColor);
    PlotIndexSetInteger(3, PLOT_LINE_COLOR, InpReSellColor);
-   PlotIndexSetInteger(0, PLOT_LINE_WIDTH, InpArrowWidth);
-   PlotIndexSetInteger(1, PLOT_LINE_WIDTH, InpArrowWidth);
-   PlotIndexSetInteger(2, PLOT_LINE_WIDTH, MathMax(1, InpArrowWidth - 1));
-   PlotIndexSetInteger(3, PLOT_LINE_WIDTH, MathMax(1, InpArrowWidth - 1));
+   int aw = (int)MathMax(1, MathMin(5, InpArrowWidth));
+   PlotIndexSetInteger(0, PLOT_LINE_WIDTH, aw);
+   PlotIndexSetInteger(1, PLOT_LINE_WIDTH, aw);
+   PlotIndexSetInteger(2, PLOT_LINE_WIDTH, MathMax(1, aw - 1));
+   PlotIndexSetInteger(3, PLOT_LINE_WIDTH, MathMax(1, aw - 1));
    for(int p = 0; p < 8; p++)
       PlotIndexSetDouble(p, PLOT_EMPTY_VALUE, EMPTY_VALUE);
    if(!InpShowVWMA)
@@ -1372,7 +1374,9 @@ int OtherObjCount()
      }
    return n;
   }
-bool gCollapsed = false, gAutoBottom = false;
+bool gCollapsed = false, gAutoBottom = false;   // gCollapsed = panel hidden, only the small tab shows
+#define TAB_W 74
+#define TAB_H 20
 bool gDrag = false, gPrevDown = false, gScrollWas = true;
 int  gDragDX = 0, gDragDY = 0, gDownX = 0, gDownY = 0;
 #define C_HEAD  C'130,215,255'
@@ -1517,18 +1521,46 @@ void DrawPanel(const bool force = false)
       ObjectCreate(0, bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
      }
 
+   // hidden: only a small tab at the top; one click on it brings the panel back
+   if(gCollapsed)
+     {
+      for(int i = 0; i < gMaxRow; i++)
+        {
+         ObjectDelete(0, PPRE + "L" + IntegerToString(i));
+         ObjectDelete(0, PPRE + "V" + IntegerToString(i));
+        }
+      gMaxRow = 0;
+      ObjectDelete(0, PPRE + "T1"); ObjectDelete(0, PPRE + "T2");
+      ObjectDelete(0, PPRE + "T3"); ObjectDelete(0, PPRE + "T4");
+      PText(PPRE + "T0", gPX + TAB_W / 2, gPY + TAB_H / 2, "MZF  " + ShortToString((ushort)0x25BC),
+            C_TXT, InpPanelTitleFont, ANCHOR_CENTER, InpPanelFontHead);
+      ObjectSetInteger(0, bg, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, gPX);
+      ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, gPY);
+      ObjectSetInteger(0, bg, OBJPROP_XSIZE, TAB_W);
+      ObjectSetInteger(0, bg, OBJPROP_YSIZE, TAB_H);
+      ObjectSetInteger(0, bg, OBJPROP_BGCOLOR, C'24,30,46');
+      ObjectSetInteger(0, bg, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+      ObjectSetInteger(0, bg, OBJPROP_COLOR, C'80,110,160');
+      ObjectSetInteger(0, bg, OBJPROP_BACK, false);
+      ObjectSetInteger(0, bg, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, bg, OBJPROP_HIDDEN, true);
+      gPanelH = TAB_H;
+      return;
+     }
+   ObjectDelete(0, PPRE + "T0");
+
    // header
    string st; color sc;
    if(idea.state == IDEA_PENDING)      { st = (idea.dir > 0 ? "PENDING BUY" : "PENDING SELL"); sc = C_WARN; }
    else if(idea.state == IDEA_LIVE)    { st = (idea.dir > 0 ? "LIVE BUY" : "LIVE SELL"); sc = (idea.dir > 0 ? InpBuyColor : InpSellColor); }
    else if(idea.state == IDEA_SL_WAIT) { st = "SL HIT"; sc = C_DN; }
    else                                { st = "WAIT"; sc = C_WARN; }
-   PText(PPRE + "T1", gPX + 10, gPY + 6, "MT.ZIONPRO FUSION", C_TXT, InpPanelFont + 3, ANCHOR_LEFT_UPPER, InpPanelFontHead);
-   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.00  " + ShortToString((ushort)(gCollapsed ? 0x25B6 : 0x25BC)), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
+   PText(PPRE + "T1", gPX + 10, gPY + 6, "MT.ZIONPRO FUSION", C_TXT, InpPanelTitleFont, ANCHOR_LEFT_UPPER, InpPanelFontHead);
+   PText(PPRE + "T2", gPX + InpPanelWidth - 10, gPY + 6, "v2.01  " + ShortToString((ushort)0x25B2), C_MUTE, InpPanelFont - 1, ANCHOR_RIGHT_UPPER, InpPanelFontName);
    PText(PPRE + "T3", gPX + 10, gPY + 27, _Symbol + "  " + StringSubstr(EnumToString(_Period), 7), C_LBL, InpPanelFont, ANCHOR_LEFT_UPPER, InpPanelFontName);
    PText(PPRE + "T4", gPX + InpPanelWidth - 10, gPY + 27, ShortToString((ushort)0x25CF) + " " + st, sc, InpPanelFont, ANCHOR_RIGHT_UPPER, InpPanelFontHead);
 
-   if(!gCollapsed)
    {
 
    PSection("MARKET");
@@ -1620,7 +1652,7 @@ void DrawPanel(const bool force = false)
    ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, gPX);
    ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, gPY);
    ObjectSetInteger(0, bg, OBJPROP_XSIZE, InpPanelWidth);
-   gPanelH = (gCollapsed ? 46 : 46 + gRow * InpPanelRowH + 10);
+   gPanelH = 46 + gRow * InpPanelRowH + 10;
    ObjectSetInteger(0, bg, OBJPROP_YSIZE, gPanelH);
    ObjectSetInteger(0, bg, OBJPROP_BGCOLOR, C'24,30,46');
    ObjectSetInteger(0, bg, OBJPROP_BORDER_TYPE, BORDER_FLAT);
@@ -1703,8 +1735,9 @@ void DrawLevels()
 
 //+------------------------------------------------------------------+
 //| Panel position, drag and collapse                                |
-//| Drag the panel by its title area. Click the title (without       |
-//| moving) to collapse / expand. Position is remembered per chart.  |
+//| Drag the panel by its title area. One click on the title hides   |
+//| the panel, leaving a small "MZF" tab at the top; one click on    |
+//| the tab shows it again. Position is remembered per chart.        |
 //+------------------------------------------------------------------+
 
 string PosKey(const string k) { return "MZFusion_panel_" + k + "_" + IntegerToString(ChartID()); }
@@ -1741,7 +1774,8 @@ void PanelMouse(const long lparam, const double dparam, const string sparam)
    if(down && !gPrevDown)
      {
       // press on the title area starts a drag
-      if(InpShowPanel && x >= gPX && x <= gPX + InpPanelWidth && y >= gPY && y <= gPY + 44)
+      int hw = (gCollapsed ? TAB_W : InpPanelWidth), hh = (gCollapsed ? TAB_H : 44);
+      if(InpShowPanel && x >= gPX && x <= gPX + hw && y >= gPY && y <= gPY + hh)
         {
          gDrag = true;
          gDragDX = x - gPX; gDragDY = y - gPY;
@@ -1767,9 +1801,10 @@ void PanelMouse(const long lparam, const double dparam, const string sparam)
       gDrag = false;
       ChartSetInteger(0, CHART_MOUSE_SCROLL, gScrollWas);
       if(MathAbs(x - gDownX) < 4 && MathAbs(y - gDownY) < 4)
-         gCollapsed = !gCollapsed;          // a click, not a drag
+         gCollapsed = !gCollapsed;          // a click, not a drag: hide / show the panel
       PanelSave();
       DrawPanel(true);
+      ChartRedraw(0);
      }
    gPrevDown = down;
   }
