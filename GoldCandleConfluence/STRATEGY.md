@@ -70,7 +70,7 @@ All sizes are measured against ATR, so they adapt to gold's volatility.
 
 ## 5. Selection: quality over quantity
 - **No daily limit** by default (`MaxSignalsPerDay = 0`). Set it to a number to cap signals per trading day (the day starts at 22:00 GMT).
-- Max **2 per session** (Asia 22–07, London 07–12, Overlap 12–16, New York 16–22 GMT). This spreads signals across all sessions so one session can't use up the whole day's limit.
+- Max **3 per session** (adjustable, 0 = no limit) (Asia 22–07, London 07–12, Overlap 12–16, New York 16–22 GMT). This stops one session from producing a run of signals in choppy conditions.
 - **6-bar (30 min) cooldown** between signals.
 
 ## 6. Trade plan for each signal

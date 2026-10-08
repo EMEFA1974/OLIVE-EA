@@ -16,7 +16,7 @@
 //|  Signals are evaluated on closed bars only (no repainting).      |
 //+------------------------------------------------------------------+
 #property copyright "GoldCandleConfluence"
-#property version   "1.21"
+#property version   "1.22"
 #property description "Quality-filtered candlestick reversal signals for XAUUSD M5"
 #property indicator_chart_window
 #property indicator_buffers 9
@@ -75,7 +75,7 @@ input double   GradeOffsetATR       = 0.9;   // Grade letter distance from candl
 
 input group "Signal quality"
 input int      MaxSignalsPerDay     = 0;     // Max signals per trading day, 0 = no limit (re-entries not counted)
-input int      MaxSignalsPerSession = 2;     // Max signals per session, 0 = no limit
+input int      MaxSignalsPerSession = 3;     // Max signals per session, 0 = no limit
 input int      CooldownBars         = 6;     // Min bars between signals
 input bool     AllowCounterTrend    = true;  // Allow counter-bias trades (only on major-level sweeps, graded 1 point lower)
 
