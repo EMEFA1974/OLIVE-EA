@@ -912,13 +912,11 @@ void PanelTrade(int dir)
   {
    ulong ticket;
    int cur = EAPosition(ticket);
-   if(cur == dir)
+   if(cur != 0)
      {
-      Msg("EA trade already open in that direction");
+      Msg("EA trade still running - close it first");
       return;
      }
-   if(cur != 0 && !CloseEAPositions())
-      return;
    OpenTrade(dir, "panel");
   }
 

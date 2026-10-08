@@ -99,7 +99,7 @@ Your own indicator settings (Push Alert) are kept, and you don't get duplicate a
 - **Market:** spread, ATR in pips, lot and SL/TP modes.
 - **Today:** closed P/L, trades/wins, balance/equity.
 - **Buttons:**
-  - **BUY / SELL** open an EA-managed trade with the EA's SL/TP; an opposite EA trade is closed first.
+  - **BUY / SELL** open an EA-managed trade with the EA's SL/TP. They are blocked while an EA trade is running.
   - **CLOSE EA TRADE** closes the EA's trade only.
   - **AUTO** turns signal trading on/off. Management (breakeven, trailing) keeps running either way.
 
