@@ -7,7 +7,7 @@
 #property version     "1.00"
 #property description "Olive Trade Manager - enters on confirmed arrow signals from a custom indicator"
 #property description "and manages the trade. Works with compiled .ex5 indicators (no source needed)."
-#property description "Defaults set for XAUUSD M5 (Exness, 3-digit): pip = 0.1, one trade until it closes."
+#property description "Defaults set for XAUUSD M5 (Exness, 3-digit). All distances are in points."
 
 #include <Trade/Trade.mqh>
 
@@ -28,7 +28,7 @@ enum ENUM_TM_LOTS
 enum ENUM_TM_STOP
   {
    STOP_ATR   = 0, // ATR x multiplier
-   STOP_FIXED = 1, // Fixed pips
+   STOP_FIXED = 1, // Fixed points
    STOP_NONE  = 2  // None
   };
 
@@ -42,7 +42,7 @@ enum ENUM_TM_OPPOSITE
 enum ENUM_TM_TRAIL
   {
    TRAIL_ATR   = 0, // ATR x multiplier
-   TRAIL_FIXED = 1  // Fixed pips
+   TRAIL_FIXED = 1  // Fixed points
   };
 
 //--- inputs ---------------------------------------------------------
@@ -65,12 +65,12 @@ input double           InpMaxLot          = 5.0;         // Maximum lot
 input group "=== Stop loss ==="
 input ENUM_TM_STOP     InpSLMode          = STOP_ATR;    // Stop loss mode
 input double           InpSLAtrMult       = 1.5;         // SL: ATR multiplier
-input double           InpSLPips          = 30;          // SL: fixed pips
+input double           InpSLPoints        = 3000;        // SL: fixed points
 
 input group "=== Take profit ==="
 input ENUM_TM_STOP     InpTPMode          = STOP_ATR;    // Take profit mode
 input double           InpTPAtrMult       = 3.0;         // TP: ATR multiplier
-input double           InpTPPips          = 60;          // TP: fixed pips
+input double           InpTPPoints        = 6000;        // TP: fixed points
 
 input group "=== ATR ==="
 input int              InpATRPeriod       = 14;             // ATR period
@@ -79,17 +79,17 @@ input ENUM_TIMEFRAMES  InpATRTimeframe    = PERIOD_CURRENT; // ATR timeframe
 input group "=== Trade management ==="
 input ENUM_TM_OPPOSITE InpOpposite        = OPPOSITE_IGNORE;  // Opposite signal while in a trade
 input bool             InpUseBreakEven    = false;       // Use breakeven
-input double           InpBETriggerPips   = 20;          // Breakeven: trigger at profit (pips)
-input double           InpBELockPips      = 2;           // Breakeven: lock in (pips)
+input double           InpBETriggerPoints = 2000;        // Breakeven: trigger at profit (points)
+input double           InpBELockPoints    = 200;         // Breakeven: lock in (points)
 input bool             InpUseTrailing     = false;       // Use trailing stop
 input ENUM_TM_TRAIL    InpTrailMode       = TRAIL_ATR;   // Trailing mode
-input double           InpTrailStartPips  = 30;          // Trailing: start at profit (pips)
-input double           InpTrailPips       = 20;          // Trailing: distance (fixed pips)
+input double           InpTrailStartPoints = 3000;       // Trailing: start at profit (points)
+input double           InpTrailPoints     = 2000;        // Trailing: distance (fixed points)
 input double           InpTrailAtrMult    = 2.0;         // Trailing: distance (ATR multiplier)
-input double           InpTrailStepPips   = 1;           // Trailing: minimum step (pips)
+input double           InpTrailStepPoints = 100;         // Trailing: minimum step (points)
 
 input group "=== Filters ==="
-input double           InpMaxSpreadPips   = 0;           // Max spread in pips (0 = off)
+input double           InpMaxSpreadPoints = 0;           // Max spread in points (0 = off)
 input double           InpDailyLossPct    = 0;           // Daily loss limit % of balance (0 = off)
 
 input group "=== General ==="
@@ -97,9 +97,16 @@ input bool             InpAutoTrade       = true;        // Auto-trade signals (
 input ulong            InpMagic           = 20261008;    // Magic number
 input string           InpComment         = "OliveTM";   // Order comment
 input int              InpSlippagePoints  = 50;          // Max slippage (points)
-input double           InpPipSize         = 0;           // Pip size in price (0 = auto; gold = 0.1)
 input bool             InpPopupAlerts     = true;        // Popup alerts on trades
 input bool             InpPushAlerts      = true;        // Push notifications on trades
+
+input group "=== Signal dots ==="
+input bool             InpShowDots        = true;        // Mark signal candles with dots
+input color            InpBuyDotColor     = clrAqua;     // Buy dot colour (below the candle)
+input color            InpSellDotColor    = clrMagenta;  // Sell dot colour (above the candle)
+input int              InpDotSize         = 2;           // Dot size (1-5)
+input int              InpDotGapPoints    = 300;         // Gap between candle and dot (points)
+input int              InpDotHistoryBars  = 500;         // Past candles to mark at start
 
 input group "=== Panel ==="
 input bool             InpShowPanel       = true;        // Show panel
@@ -145,7 +152,6 @@ datetime g_lastSignalBar = 0;     // candle of the last signal acted on
 int      g_lastSigDir   = 0;
 datetime g_lastSigTime  = 0;
 bool     g_auto         = true;
-double   g_pip          = 0;
 string   g_message      = "";
 double   g_dayClosed    = 0;
 int      g_dayTrades    = 0;
@@ -157,19 +163,6 @@ string   S_UP, S_DN, S_DOT, S_SEP;
 //+------------------------------------------------------------------+
 //| Helpers                                                          |
 //+------------------------------------------------------------------+
-double DetectPip()
-  {
-   if(InpPipSize > 0)
-      return InpPipSize;
-   string sym = _Symbol;
-   StringToUpper(sym);
-   if(StringFind(sym, "XAU") >= 0 || StringFind(sym, "GOLD") >= 0)
-      return 0.1;
-   int    digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
-   double point  = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   return (digits == 3 || digits == 5) ? point * 10.0 : point;
-  }
-
 double NormPrice(double p)
   {
    double ts = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
@@ -196,12 +189,12 @@ double AtrValue()
    return a[0];
   }
 
-double SpreadPips()
+double SpreadPoints()
   {
    MqlTick tk;
    if(!SymbolInfoTick(_Symbol, tk))
       return 0;
-   return (tk.ask - tk.bid) / g_pip;
+   return (tk.ask - tk.bid) / _Point;
   }
 
 void Msg(const string text)
@@ -474,19 +467,49 @@ int ReadSignal(int shift)
    return 0;
   }
 
-void FindLastSignal()
+// Dot under a buy candle's low or above a sell candle's high.
+void DrawDot(int dir, int shift)
   {
-   int maxBars = MathMin(500, Bars(_Symbol, _Period) - 1);
+   if(!InpShowDots || dir == 0)
+      return;
+   datetime t = iTime(_Symbol, _Period, shift);
+   if(t == 0)
+      return;
+   string n = PFX + "dot_" + IntegerToString((long)t);
+   double price = (dir > 0) ? iLow(_Symbol, _Period, shift) - InpDotGapPoints * _Point
+                            : iHigh(_Symbol, _Period, shift) + InpDotGapPoints * _Point;
+   if(ObjectFind(0, n) < 0)
+      ObjectCreate(0, n, OBJ_ARROW, 0, t, price);
+   ObjectSetInteger(0, n, OBJPROP_TIME, t);
+   ObjectSetDouble(0, n, OBJPROP_PRICE, price);
+   ObjectSetInteger(0, n, OBJPROP_ARROWCODE, 159);
+   ObjectSetInteger(0, n, OBJPROP_ANCHOR, dir > 0 ? ANCHOR_TOP : ANCHOR_BOTTOM);
+   ObjectSetInteger(0, n, OBJPROP_COLOR, dir > 0 ? InpBuyDotColor : InpSellDotColor);
+   ObjectSetInteger(0, n, OBJPROP_WIDTH, MathMax(1, MathMin(5, InpDotSize)));
+   ObjectSetInteger(0, n, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, n, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, n, OBJPROP_BACK, false);
+  }
+
+// Marks past signal candles with dots and remembers the most recent signal.
+void ScanHistory()
+  {
+   int maxBars = MathMin(MathMax(InpDotHistoryBars, 1), Bars(_Symbol, _Period) - 1);
    for(int s = MathMax(InpSignalBar, 1); s < maxBars; s++)
      {
       int d = ReadSignal(s);
-      if(d != 0)
+      if(d == 0)
+         continue;
+      if(g_lastSigDir == 0)
         {
          g_lastSigDir  = d;
          g_lastSigTime = iTime(_Symbol, _Period, s);
-         return;
+         if(!InpShowDots)
+            return;
         }
+      DrawDot(d, s);
      }
+   ChartRedraw();
   }
 
 void SetResolved(int source)
@@ -503,7 +526,7 @@ void SetResolved(int source)
       g_status = "Chart arrows";
       Print("Signals: reading arrow objects drawn on the chart (", CountArrowObjects(), " found)");
      }
-   FindLastSignal();
+   ScanHistory();
   }
 
 // Finds the indicator and its signal buffers; retried until it succeeds.
@@ -691,9 +714,9 @@ string EntryBlockReason()
       return "Algo Trading is off in the terminal";
    if(!MQLInfoInteger(MQL_TRADE_ALLOWED))
       return "Algo trading not allowed for this EA";
-   double spread = SpreadPips();
-   if(InpMaxSpreadPips > 0 && spread > InpMaxSpreadPips)
-      return StringFormat("spread %.1f > max %.1f pips", spread, InpMaxSpreadPips);
+   double spread = SpreadPoints();
+   if(InpMaxSpreadPoints > 0 && spread > InpMaxSpreadPoints)
+      return StringFormat("spread %.0f > max %.0f points", spread, InpMaxSpreadPoints);
    if(DailyLossHit())
       return "daily loss limit reached";
    return "";
@@ -758,12 +781,12 @@ bool OpenTrade(int dir, const string why)
       slDist = atr * InpSLAtrMult;
    else
       if(InpSLMode == STOP_FIXED)
-         slDist = InpSLPips * g_pip;
+         slDist = InpSLPoints * _Point;
    if(InpTPMode == STOP_ATR)
       tpDist = atr * InpTPAtrMult;
    else
       if(InpTPMode == STOP_FIXED)
-         tpDist = InpTPPips * g_pip;
+         tpDist = InpTPPoints * _Point;
 
    double minDist = (SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) + 2) * _Point + (tk.ask - tk.bid);
    if(slDist > 0 && slDist < minDist)
@@ -804,6 +827,7 @@ void OnSignal(int dir, datetime bar)
   {
    g_lastSigDir  = dir;
    g_lastSigTime = bar;
+   DrawDot(dir, iBarShift(_Symbol, _Period, bar));
    string side = (dir > 0) ? "BUY" : "SELL";
    Msg(side + " signal on " + TimeToString(bar, TIME_DATE | TIME_MINUTES) + " candle");
    if(!g_auto)
@@ -861,7 +885,7 @@ void ManagePositions()
    if(!SymbolInfoTick(_Symbol, tk))
       return;
    double stopLvl = (SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) + 1) * _Point;
-   double step    = MathMax(InpTrailStepPips * g_pip, _Point);
+   double step    = MathMax(InpTrailStepPoints * _Point, _Point);
 
    for(int i = PositionsTotal() - 1; i >= 0; i--)
      {
@@ -873,22 +897,22 @@ void ManagePositions()
       double sl    = PositionGetDouble(POSITION_SL);
       double tp    = PositionGetDouble(POSITION_TP);
       double cur   = isBuy ? tk.bid : tk.ask;
-      double profitPips = (isBuy ? cur - open : open - cur) / g_pip;
+      double profitPts = (isBuy ? cur - open : open - cur) / _Point;
       double newSL = sl;
       string what  = "";
 
-      if(InpUseBreakEven && profitPips >= InpBETriggerPips)
+      if(InpUseBreakEven && profitPts >= InpBETriggerPoints)
         {
-         double be = NormPrice(isBuy ? open + InpBELockPips * g_pip : open - InpBELockPips * g_pip);
+         double be = NormPrice(isBuy ? open + InpBELockPoints * _Point : open - InpBELockPoints * _Point);
          if(isBuy ? (newSL == 0 || be > newSL) : (newSL == 0 || be < newSL))
            {
             newSL = be;
             what  = "Breakeven";
            }
         }
-      if(InpUseTrailing && profitPips >= InpTrailStartPips)
+      if(InpUseTrailing && profitPts >= InpTrailStartPoints)
         {
-         double dist = (InpTrailMode == TRAIL_ATR) ? AtrValue() * InpTrailAtrMult : InpTrailPips * g_pip;
+         double dist = (InpTrailMode == TRAIL_ATR) ? AtrValue() * InpTrailAtrMult : InpTrailPoints * _Point;
          if(dist > 0)
            {
             double tr = NormPrice(isBuy ? cur - dist : cur + dist);
@@ -1117,16 +1141,16 @@ void UpdatePanel()
       SetText("v_man", "none", C_MUTED);
 
    //--- market
-   double sp = SpreadPips();
-   SetText("v_spread", StringFormat("%.1f pips", sp), (InpMaxSpreadPips > 0 && sp > InpMaxSpreadPips) ? C_SELL : C_TEXT);
+   double sp = SpreadPoints();
+   SetText("v_spread", StringFormat("%.0f points", sp), (InpMaxSpreadPoints > 0 && sp > InpMaxSpreadPoints) ? C_SELL : C_TEXT);
    double atr = AtrValue();
-   SetText("v_atr", atr > 0 ? StringFormat("%.1f pips (%d)", atr / g_pip, InpATRPeriod) : "-", C_GOLD);
+   SetText("v_atr", atr > 0 ? StringFormat("%.0f points (%d)", atr / _Point, InpATRPeriod) : "-", C_GOLD);
    SetText("v_lots", InpLotMode == LOTS_FIXED ? StringFormat("fixed %.2f", InpFixedLot)
            : StringFormat("risk %.1f%%", InpRiskPercent), C_TEXT);
    string sl = InpSLMode == STOP_ATR ? StringFormat("ATR x%.1f", InpSLAtrMult)
-               : InpSLMode == STOP_FIXED ? StringFormat("%.0f pips", InpSLPips) : "none";
+               : InpSLMode == STOP_FIXED ? StringFormat("%.0f pts", InpSLPoints) : "none";
    string tp = InpTPMode == STOP_ATR ? StringFormat("ATR x%.1f", InpTPAtrMult)
-               : InpTPMode == STOP_FIXED ? StringFormat("%.0f pips", InpTPPips) : "none";
+               : InpTPMode == STOP_FIXED ? StringFormat("%.0f pts", InpTPPoints) : "none";
    SetText("v_stops", sl + "  /  " + tp, C_TEXT);
 
    //--- today
@@ -1164,7 +1188,6 @@ int OnInit()
    if(InpSignalBar == 0)
       Print("Warning: signal candle 0 reads the live candle - arrows there can still disappear");
 
-   g_pip  = DetectPip();
    g_auto = InpAutoTrade;
    trade.SetExpertMagicNumber(InpMagic);
    trade.SetDeviationInPoints(InpSlippagePoints);
@@ -1186,7 +1209,7 @@ int OnInit()
    TryResolve();
    EventSetTimer(1);
    UpdatePanel();
-   Print("Olive Trade Manager started on ", _Symbol, " ", TfName(), ", pip size ", DoubleToString(g_pip, _Digits));
+   Print("Olive Trade Manager started on ", _Symbol, " ", TfName(), ", point ", DoubleToString(_Point, _Digits));
    return INIT_SUCCEEDED;
   }
 
