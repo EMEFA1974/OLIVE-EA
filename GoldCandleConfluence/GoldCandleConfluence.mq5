@@ -9,31 +9,43 @@
 //|    4. Score    - confluence score >= MinScore                    |
 //|  Then a daily / per-session cap and a cooldown keep only a few.  |
 //|                                                                  |
+//|  Re-entry: if a signal is stopped out before TP1 and the setup   |
+//|  is still valid (bias intact, healthy context, price reclaims    |
+//|  the zone with a reversal candle), one re-entry is signalled.    |
+//|                                                                  |
 //|  Signals are evaluated on closed bars only (no repainting).      |
 //+------------------------------------------------------------------+
 #property copyright "GoldCandleConfluence"
-#property version   "1.00"
+#property version   "1.10"
 #property description "Quality-filtered candlestick reversal signals for XAUUSD M5"
 #property indicator_chart_window
-#property indicator_buffers 6
-#property indicator_plots   6
+#property indicator_buffers 8
+#property indicator_plots   8
 
 #property indicator_label1  "Buy"
 #property indicator_type1   DRAW_ARROW
-#property indicator_color1  clrDodgerBlue
+#property indicator_color1  clrAqua
 #property indicator_width1  2
 #property indicator_label2  "Sell"
 #property indicator_type2   DRAW_ARROW
-#property indicator_color2  clrOrangeRed
+#property indicator_color2  clrMagenta
 #property indicator_width2  2
-#property indicator_label3  "SL"
-#property indicator_type3   DRAW_NONE
-#property indicator_label4  "TP1"
-#property indicator_type4   DRAW_NONE
-#property indicator_label5  "TP2"
+#property indicator_label3  "Re-entry Buy"
+#property indicator_type3   DRAW_ARROW
+#property indicator_color3  clrOrange
+#property indicator_width3  2
+#property indicator_label4  "Re-entry Sell"
+#property indicator_type4   DRAW_ARROW
+#property indicator_color4  clrYellow
+#property indicator_width4  2
+#property indicator_label5  "SL"
 #property indicator_type5   DRAW_NONE
-#property indicator_label6  "Score (+buy/-sell)"
+#property indicator_label6  "TP1"
 #property indicator_type6   DRAW_NONE
+#property indicator_label7  "TP2"
+#property indicator_type7   DRAW_NONE
+#property indicator_label8  "Score (+buy/-sell)"
+#property indicator_type8   DRAW_NONE
 
 //--- pattern flags
 #define PAT_ENGULF 1
@@ -41,15 +53,24 @@
 #define PAT_STAR   4
 #define PAT_KEYREV 8
 
+//--- hollow Wingdings arrows
+#define ARROW_UP_HOLLOW   241
+#define ARROW_DOWN_HOLLOW 242
+
 #define OBJ_PREFIX "GCC_"
 
 //================================ inputs ============================
 input group "Signal quality"
 input int      MinScore             = 7;     // Min confluence score (raise = fewer, cleaner signals)
-input int      MaxSignalsPerDay     = 5;     // Max signals per trading day
+input int      MaxSignalsPerDay     = 5;     // Max signals per trading day (re-entries not counted)
 input int      MaxSignalsPerSession = 2;     // Max signals per session (spreads signals across sessions)
 input int      CooldownBars         = 6;     // Min bars between signals
 input bool     AllowCounterTrend    = true;  // Allow counter-bias trades (only on major-level sweeps, +1 score needed)
+
+input group "Re-entry"
+input bool     EnableReentry        = true;  // Signal a re-entry after SL if the setup is still valid
+input int      ReentryWindowBars    = 12;    // Bars after SL hit to wait for re-entry (12 = 1h)
+input double   MaxReentrySweepATR   = 1.5;   // Cancel if price runs this far beyond the old SL (x ATR)
 
 input group "Context"
 input ENUM_TIMEFRAMES BiasTF        = PERIOD_H1; // Higher-timeframe bias timeframe
@@ -88,19 +109,38 @@ input double   TP1_R                = 1.0;   // TP1 in R
 input double   TP2_R                = 2.0;   // TP2 in R
 input double   RoomR                = 0.7;   // Penalise if a major level sits within this many R toward target
 input double   SpreadCost           = 0.30;  // Assumed round-trip cost in price for stats ($)
-input int      MaxHoldBars          = 48;    // Stats: close trade after N bars (48 = 4h)
+input int      MaxHoldBars          = 48;    // Close trade after N bars (48 = 4h)
+
+input group "Arrows"
+input color    BuyColor             = clrAqua;     // Buy arrow
+input color    SellColor            = clrMagenta;  // Sell arrow
+input color    ReBuyColor           = clrOrange;   // Re-entry buy arrow
+input color    ReSellColor          = clrYellow;   // Re-entry sell arrow
+input int      ArrowSize            = 2;           // Arrow size (1-5)
+
+input group "Trade zones"
+input bool     ShowZones            = true;            // Draw SL / TP zone boxes
+input bool     ZoneFill             = true;            // Filled boxes (false = outline)
+input color    ZoneSLColor          = C'110,35,35';    // Risk zone (Entry -> SL)
+input color    ZoneTP1Color         = C'25,95,55';     // Reward zone (Entry -> TP1)
+input color    ZoneTP2Color         = C'25,75,105';    // Extension zone (TP1 -> TP2)
+input color    EntryLineColor       = clrSilver;       // Entry line / label
+input color    SLLineColor          = clrRed;          // SL line / label
+input color    TPLineColor          = clrLime;         // TP lines / labels
+input int      ZoneMinBars          = 12;              // Min box width in bars
+input bool     ShowLevelPrices      = true;            // Print Entry/SL/TP prices at box edge
 
 input group "Display / alerts"
 input int      MaxBars              = 10000; // Bars of history to evaluate
-input int      DrawLastN            = 40;    // Draw SL/TP for the last N signals
-input bool     ShowLabels           = true;  // Show score/pattern text
+input int      DrawLastN            = 40;    // Draw zones for the last N signals
+input bool     ShowLabels           = true;  // Show score/pattern text under arrows
 input bool     ShowPanel            = true;  // Show stats panel
 input bool     AlertPopup           = true;
 input bool     AlertPush            = false;
 input bool     AlertEmail           = false;
 
 //================================ buffers ===========================
-double BufBuy[], BufSell[], BufSL[], BufTP1[], BufTP2[], BufScore[];
+double BufBuy[], BufSell[], BufReBuy[], BufReSell[], BufSL[], BufTP1[], BufTP2[], BufScore[];
 
 //================================ state =============================
 struct Level
@@ -119,9 +159,25 @@ struct Signal
    datetime time;
    int      dir;
    double   entry, sl, tp1, tp2;
+   double   ext;       // pattern extreme the SL was built from
    int      score;
    int      session;
+   bool     counter;   // against HTF bias
+   bool     reentry;
    string   tag;
+};
+
+// Tracks a primary signal so a re-entry can follow its stop-out
+struct Watch
+{
+   int    dir;
+   double entry, sl, tp1, ext;
+   int    score;
+   bool   counter;
+   int    startBar;
+   int    state;      // 0 live, 1 stopped out (waiting for re-entry), 2 finished
+   int    armedBar;
+   double sweepExt;   // furthest price beyond the old SL since the stop-out
 };
 
 // Price series (index 0 = newest bar)
@@ -137,6 +193,8 @@ Level    g_lv[64];
 int      g_lvCount = 0;
 Signal   g_sig[];
 int      g_sigCount = 0;
+Watch    g_watch[];
+int      g_watchCount = 0;
 datetime g_lastBarTime = 0;
 datetime g_lastAlert = 0;
 int      g_asiaS = 0, g_asiaE = 0;
@@ -144,17 +202,28 @@ bool     g_asiaValid = false;
 int      g_days = 0;
 
 //+------------------------------------------------------------------+
+void SetupArrowPlot(int plot, int code, color c)
+{
+   PlotIndexSetInteger(plot, PLOT_ARROW, code);
+   PlotIndexSetInteger(plot, PLOT_LINE_COLOR, c);
+   PlotIndexSetInteger(plot, PLOT_LINE_WIDTH, ArrowSize);
+}
+
 int OnInit()
 {
-   SetIndexBuffer(0, BufBuy,   INDICATOR_DATA);
-   SetIndexBuffer(1, BufSell,  INDICATOR_DATA);
-   SetIndexBuffer(2, BufSL,    INDICATOR_DATA);
-   SetIndexBuffer(3, BufTP1,   INDICATOR_DATA);
-   SetIndexBuffer(4, BufTP2,   INDICATOR_DATA);
-   SetIndexBuffer(5, BufScore, INDICATOR_DATA);
-   PlotIndexSetInteger(0, PLOT_ARROW, 233);
-   PlotIndexSetInteger(1, PLOT_ARROW, 234);
-   for(int b = 0; b < 6; b++) PlotIndexSetDouble(b, PLOT_EMPTY_VALUE, EMPTY_VALUE);
+   SetIndexBuffer(0, BufBuy,    INDICATOR_DATA);
+   SetIndexBuffer(1, BufSell,   INDICATOR_DATA);
+   SetIndexBuffer(2, BufReBuy,  INDICATOR_DATA);
+   SetIndexBuffer(3, BufReSell, INDICATOR_DATA);
+   SetIndexBuffer(4, BufSL,     INDICATOR_DATA);
+   SetIndexBuffer(5, BufTP1,    INDICATOR_DATA);
+   SetIndexBuffer(6, BufTP2,    INDICATOR_DATA);
+   SetIndexBuffer(7, BufScore,  INDICATOR_DATA);
+   SetupArrowPlot(0, ARROW_UP_HOLLOW,   BuyColor);
+   SetupArrowPlot(1, ARROW_DOWN_HOLLOW, SellColor);
+   SetupArrowPlot(2, ARROW_UP_HOLLOW,   ReBuyColor);
+   SetupArrowPlot(3, ARROW_DOWN_HOLLOW, ReSellColor);
+   for(int b = 0; b < 8; b++) PlotIndexSetDouble(b, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
    hATR  = iATR(_Symbol, _Period, ATRPeriod);
    hRSI  = iRSI(_Symbol, _Period, RSIPeriod, PRICE_CLOSE);
@@ -323,6 +392,37 @@ bool BearKeyRev(int i, double atr, bool &strong)
    return true;
 }
 
+// All patterns on bar i for a direction; returns flag mask and the pattern extreme
+int DetectPatterns(int i, int dir, double atr, bool &strong, double &ext)
+{
+   int mask = 0;
+   ext = (dir > 0) ? DBL_MAX : -DBL_MAX;
+   if(dir > 0)
+   {
+      if(BullEngulf(i, atr, strong))  { mask |= PAT_ENGULF; ext = MathMin(ext, MathMin(Lo[i], Lo[i+1])); }
+      if(BullPin(i, atr, strong))     { mask |= PAT_PIN;    ext = MathMin(ext, Lo[i]); }
+      if(MorningStar(i, atr, strong)) { mask |= PAT_STAR;   ext = MathMin(ext, MathMin(Lo[i], MathMin(Lo[i+1], Lo[i+2]))); }
+      if(BullKeyRev(i, atr, strong))  { mask |= PAT_KEYREV; ext = MathMin(ext, Lo[i]); }
+   }
+   else
+   {
+      if(BearEngulf(i, atr, strong))  { mask |= PAT_ENGULF; ext = MathMax(ext, MathMax(Hi[i], Hi[i+1])); }
+      if(BearPin(i, atr, strong))     { mask |= PAT_PIN;    ext = MathMax(ext, Hi[i]); }
+      if(EveningStar(i, atr, strong)) { mask |= PAT_STAR;   ext = MathMax(ext, MathMax(Hi[i], MathMax(Hi[i+1], Hi[i+2]))); }
+      if(BearKeyRev(i, atr, strong))  { mask |= PAT_KEYREV; ext = MathMax(ext, Hi[i]); }
+   }
+   return mask;
+}
+
+// Strong directional candle that closes beyond the prior bar (used to confirm a reclaim)
+bool ReclaimBar(int k, int dir)
+{
+   double r = Rng(k);
+   if(r <= 0 || Body(k) < 0.55 * r) return false;
+   if(dir > 0) return (Cl[k] > Op[k] && Cl[k] > Hi[k+1]);
+   return (Cl[k] < Op[k] && Cl[k] < Lo[k+1]);
+}
+
 string PatternNames(int mask)
 {
    string s = "";
@@ -465,27 +565,13 @@ int LocationScore(int dir, double ext, double c, double atr, bool &sweep, bool &
 }
 
 //============================ evaluation ============================
-bool Evaluate(int i, int dir, int bias, int &score, double &sl, double &tp1, double &tp2, string &tag)
+// Primary signal: pattern + location + confluence score
+bool Evaluate(int i, int dir, int bias, Signal &out)
 {
    double atr = g_atr[i+1];
    bool strong = false;
-   int mask = 0;
-   double ext = (dir > 0) ? DBL_MAX : -DBL_MAX;
-
-   if(dir > 0)
-   {
-      if(BullEngulf(i, atr, strong))  { mask |= PAT_ENGULF; ext = MathMin(ext, MathMin(Lo[i], Lo[i+1])); }
-      if(BullPin(i, atr, strong))     { mask |= PAT_PIN;    ext = MathMin(ext, Lo[i]); }
-      if(MorningStar(i, atr, strong)) { mask |= PAT_STAR;   ext = MathMin(ext, MathMin(Lo[i], MathMin(Lo[i+1], Lo[i+2]))); }
-      if(BullKeyRev(i, atr, strong))  { mask |= PAT_KEYREV; ext = MathMin(ext, Lo[i]); }
-   }
-   else
-   {
-      if(BearEngulf(i, atr, strong))  { mask |= PAT_ENGULF; ext = MathMax(ext, MathMax(Hi[i], Hi[i+1])); }
-      if(BearPin(i, atr, strong))     { mask |= PAT_PIN;    ext = MathMax(ext, Hi[i]); }
-      if(EveningStar(i, atr, strong)) { mask |= PAT_STAR;   ext = MathMax(ext, MathMax(Hi[i], MathMax(Hi[i+1], Hi[i+2]))); }
-      if(BearKeyRev(i, atr, strong))  { mask |= PAT_KEYREV; ext = MathMax(ext, Hi[i]); }
-   }
+   double ext;
+   int mask = DetectPatterns(i, dir, atr, strong, ext);
    if(mask == 0) return false;
 
    // 1. Pattern quality (2..4)
@@ -543,20 +629,149 @@ bool Evaluate(int i, int dir, int bias, int &score, double &sl, double &tp1, dou
 
    if(sc < need) return false;
 
-   score = sc;
-   sl  = s;
-   tp1 = entry + dir * TP1_R * risk;
-   tp2 = entry + dir * TP2_R * risk;
-   tag = PatternNames(mask) + " @ " + names + (sweep ? " sweep" : "") + (counter ? " CT" : "") + (blocked ? " tight" : "");
+   out.bar     = i;
+   out.time    = Tm[i];
+   out.dir     = dir;
+   out.entry   = entry;
+   out.sl      = s;
+   out.tp1     = entry + dir * TP1_R * risk;
+   out.tp2     = entry + dir * TP2_R * risk;
+   out.ext     = ext;
+   out.score   = sc;
+   out.session = Session(Tm[i]);
+   out.counter = counter;
+   out.reentry = false;
+   out.tag     = PatternNames(mask) + " @ " + names + (sweep ? " sweep" : "") + (counter ? " CT" : "") + (blocked ? " tight" : "");
    return true;
+}
+
+//============================ signals ===============================
+void AddSignal(const Signal &sg)
+{
+   ArrayResize(g_sig, g_sigCount + 1, 512);
+   g_sig[g_sigCount++] = sg;
+
+   int i = sg.bar;
+   double off = 0.3 * g_atr[i+1];
+   if(sg.dir > 0)
+   {
+      if(sg.reentry) BufReBuy[i] = Lo[i] - off; else BufBuy[i] = Lo[i] - off;
+   }
+   else
+   {
+      if(sg.reentry) BufReSell[i] = Hi[i] + off; else BufSell[i] = Hi[i] + off;
+   }
+   BufSL[i] = sg.sl; BufTP1[i] = sg.tp1; BufTP2[i] = sg.tp2;
+   BufScore[i] = sg.dir * sg.score;
+}
+
+void AddWatch(const Signal &sg)
+{
+   ArrayResize(g_watch, g_watchCount + 1, 256);
+   g_watch[g_watchCount].dir      = sg.dir;
+   g_watch[g_watchCount].entry    = sg.entry;
+   g_watch[g_watchCount].sl       = sg.sl;
+   g_watch[g_watchCount].tp1      = sg.tp1;
+   g_watch[g_watchCount].ext      = sg.ext;
+   g_watch[g_watchCount].score    = sg.score;
+   g_watch[g_watchCount].counter  = sg.counter;
+   g_watch[g_watchCount].startBar = sg.bar;
+   g_watch[g_watchCount].state    = 0;
+   g_watch[g_watchCount].armedBar = -1;
+   g_watch[g_watchCount].sweepExt = 0;
+   g_watchCount++;
+}
+
+// Advance every tracked trade by closed bar k. Returns true if a re-entry fired on k.
+//  - Stop hit before TP1 -> arm a re-entry window
+//  - Re-entry fires when, inside the window, a closed bar:
+//      * closes back beyond the ORIGINAL pattern extreme (zone reclaimed)
+//      * is a reversal pattern or a strong reclaim candle
+//      * the HTF bias has not turned against the trade (unless it was a CT trade)
+//      * context is healthy (volatility, no shock, no rollover)
+//      * the new stop fits the risk limits
+//  - Cancelled if price runs too far beyond the old stop, TP1 is hit first, or the window expires
+bool ProcessWatches(int k, bool ctxOK)
+{
+   bool fired = false;
+   double atr = g_atr[k+1];
+
+   for(int w = 0; w < g_watchCount; w++)
+   {
+      if(g_watch[w].state == 2 || g_watch[w].startBar <= k) continue;
+      int dir = g_watch[w].dir;
+
+      if(g_watch[w].state == 0)
+      {
+         if(g_watch[w].startBar - k > MaxHoldBars) { g_watch[w].state = 2; continue; }
+         bool slHit = (dir > 0) ? Lo[k] <= g_watch[w].sl  : Hi[k] >= g_watch[w].sl;
+         bool t1Hit = (dir > 0) ? Hi[k] >= g_watch[w].tp1 : Lo[k] <= g_watch[w].tp1;
+         if(!slHit)
+         {
+            if(t1Hit) g_watch[w].state = 2;   // worked - no re-entry needed
+            continue;
+         }
+         g_watch[w].state    = 1;
+         g_watch[w].armedBar = k;
+         g_watch[w].sweepExt = (dir > 0) ? Lo[k] : Hi[k];
+      }
+      else
+      {
+         g_watch[w].sweepExt = (dir > 0) ? MathMin(g_watch[w].sweepExt, Lo[k]) : MathMax(g_watch[w].sweepExt, Hi[k]);
+      }
+
+      // Armed: check expiry and invalidation
+      if(g_watch[w].armedBar - k > ReentryWindowBars) { g_watch[w].state = 2; continue; }
+      if(atr <= 0) continue;
+      if(dir * (g_watch[w].sl - g_watch[w].sweepExt) > MaxReentrySweepATR * atr) { g_watch[w].state = 2; continue; }
+
+      if(fired || !ctxOK) continue;
+      if(!g_watch[w].counter && Bias(k) == -dir) continue;
+
+      // Zone reclaimed: close back beyond the original pattern extreme
+      if(dir * (Cl[k] - g_watch[w].ext) <= 0) continue;
+
+      bool strong = false;
+      double pext;
+      int mask = DetectPatterns(k, dir, atr, strong, pext);
+      if(mask == 0 && !ReclaimBar(k, dir)) continue;
+
+      // New stop beyond the sweep low/high
+      double entry = Cl[k];
+      double ext   = g_watch[w].sweepExt;
+      double s     = ext - dir * SLBufferATR * atr;
+      double risk  = dir * (entry - s);
+      if(risk < MinRiskATR * atr) { risk = MinRiskATR * atr; s = entry - dir * risk; }
+      if(risk > MaxRiskATR * atr) continue;
+
+      Signal sg;
+      sg.bar     = k;
+      sg.time    = Tm[k];
+      sg.dir     = dir;
+      sg.entry   = entry;
+      sg.sl      = s;
+      sg.tp1     = entry + dir * TP1_R * risk;
+      sg.tp2     = entry + dir * TP2_R * risk;
+      sg.ext     = ext;
+      sg.score   = g_watch[w].score;
+      sg.session = Session(Tm[k]);
+      sg.counter = g_watch[w].counter;
+      sg.reentry = true;
+      sg.tag     = "RE " + (mask != 0 ? PatternNames(mask) : "Reclaim") + " after SL";
+      AddSignal(sg);
+
+      g_watch[w].state = 2;   // one re-entry per original signal
+      fired = true;
+   }
+   return fired;
 }
 
 //============================ stats =================================
 // Outcome in R: 50% off at TP1 + SL to breakeven, rest at TP2.
 // Same-bar SL/TP ambiguity resolved as a loss. done=false if still running.
-double Simulate(const Signal &sg, bool &tp1hit, bool &done)
+double Simulate(const Signal &sg, bool &tp1hit, bool &done, int &exitBar)
 {
-   tp1hit = false; done = false;
+   tp1hit = false; done = false; exitBar = 0;
    double risk = sg.dir * (sg.entry - sg.sl);
    if(risk <= 0) return 0;
    int phase = 0;
@@ -584,6 +799,7 @@ double Simulate(const Signal &sg, bool &tp1hit, bool &done)
          if(be)      { r = 0.5 * TP1_R; done = true; }
          else if(t2) { r = 0.5 * TP1_R + 0.5 * TP2_R; done = true; }
       }
+      if(done) exitBar = k;
    }
 
    if(!done && sg.bar - MaxHoldBars >= 1)   // time stop
@@ -591,43 +807,87 @@ double Simulate(const Signal &sg, bool &tp1hit, bool &done)
       double mtm = sg.dir * (Cl[last] - sg.entry) / risk;
       r = (phase == 0) ? mtm : 0.5 * TP1_R + 0.5 * mtm;
       done = true;
+      exitBar = last;
    }
    if(done) r -= SpreadCost / risk;
    return r;
 }
 
 //============================ drawing ===============================
+void DrawRect(string name, datetime t1, double p1, datetime t2, double p2, color c)
+{
+   ObjectCreate(0, name, OBJ_RECTANGLE, 0, t1, p1, t2, p2);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, c);
+   ObjectSetInteger(0, name, OBJPROP_FILL, ZoneFill);
+   ObjectSetInteger(0, name, OBJPROP_BACK, true);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+}
+
 void DrawLine(string name, datetime t1, datetime t2, double p, color c, ENUM_LINE_STYLE style)
 {
    ObjectCreate(0, name, OBJ_TREND, 0, t1, p, t2, p);
    ObjectSetInteger(0, name, OBJPROP_COLOR, c);
    ObjectSetInteger(0, name, OBJPROP_STYLE, style);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
    ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0, name, OBJPROP_BACK, true);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
 }
 
-void DrawSignal(const Signal &sg, int idx)
+void DrawText(string name, datetime t, double p, string text, color c, ENUM_ANCHOR_POINT anchor)
+{
+   ObjectCreate(0, name, OBJ_TEXT, 0, t, p);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetString(0, name, OBJPROP_FONT, "Arial");
+   ObjectSetInteger(0, name, OBJPROP_COLOR, c);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 7);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, anchor);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+}
+
+// Zone boxes run from the signal bar to the trade's exit (or to now if still live)
+void DrawSignal(const Signal &sg, int idx, bool done, int exitBar)
 {
    string p = OBJ_PREFIX + IntegerToString(idx) + "_";
-   datetime t2 = sg.time + 12 * PeriodSeconds();
-   DrawLine(p + "E",  sg.time, t2, sg.entry, clrSilver,    STYLE_DOT);
-   DrawLine(p + "SL", sg.time, t2, sg.sl,    clrRed,       STYLE_SOLID);
-   DrawLine(p + "T1", sg.time, t2, sg.tp1,   clrLimeGreen, STYLE_DASH);
-   DrawLine(p + "T2", sg.time, t2, sg.tp2,   clrLimeGreen, STYLE_SOLID);
+   int ps = PeriodSeconds();
+   datetime t1 = sg.time;
+   datetime t2 = done ? Tm[exitBar] : Tm[0] + 3 * ps;
+   if(t2 < t1 + ZoneMinBars * ps) t2 = t1 + ZoneMinBars * ps;
+
+   if(ShowZones)
+   {
+      DrawRect(p + "ZSL", t1, sg.entry, t2, sg.sl,  ZoneSLColor);
+      DrawRect(p + "ZT1", t1, sg.entry, t2, sg.tp1, ZoneTP1Color);
+      DrawRect(p + "ZT2", t1, sg.tp1,   t2, sg.tp2, ZoneTP2Color);
+
+      DrawLine(p + "LE",  t1, t2, sg.entry, EntryLineColor, STYLE_DOT);
+      DrawLine(p + "LSL", t1, t2, sg.sl,    SLLineColor,    STYLE_SOLID);
+      DrawLine(p + "LT1", t1, t2, sg.tp1,   TPLineColor,    STYLE_DASH);
+      DrawLine(p + "LT2", t1, t2, sg.tp2,   TPLineColor,    STYLE_SOLID);
+
+      if(ShowLevelPrices)
+      {
+         DrawText(p + "PE",  t2, sg.entry, " Entry " + DoubleToString(sg.entry, _Digits), EntryLineColor, ANCHOR_LEFT);
+         DrawText(p + "PSL", t2, sg.sl,    " SL "    + DoubleToString(sg.sl,    _Digits), SLLineColor,    ANCHOR_LEFT);
+         DrawText(p + "PT1", t2, sg.tp1,   " TP1 "   + DoubleToString(sg.tp1,   _Digits), TPLineColor,    ANCHOR_LEFT);
+         DrawText(p + "PT2", t2, sg.tp2,   " TP2 "   + DoubleToString(sg.tp2,   _Digits), TPLineColor,    ANCHOR_LEFT);
+      }
+   }
 
    if(ShowLabels)
    {
       double atr = g_atr[sg.bar + 1];
       double y = (sg.dir > 0) ? Lo[sg.bar] - 1.2 * atr : Hi[sg.bar] + 1.2 * atr;
-      string n = p + "T";
-      ObjectCreate(0, n, OBJ_TEXT, 0, sg.time, y);
-      ObjectSetString(0, n, OBJPROP_TEXT, IntegerToString(sg.score) + " " + sg.tag);
-      ObjectSetInteger(0, n, OBJPROP_COLOR, sg.dir > 0 ? clrDodgerBlue : clrOrangeRed);
-      ObjectSetInteger(0, n, OBJPROP_FONTSIZE, 7);
-      ObjectSetInteger(0, n, OBJPROP_ANCHOR, ANCHOR_CENTER);
-      ObjectSetInteger(0, n, OBJPROP_SELECTABLE, false);
+      color c = sg.dir > 0 ? (sg.reentry ? ReBuyColor : BuyColor) : (sg.reentry ? ReSellColor : SellColor);
+      DrawText(p + "T", sg.time, y, IntegerToString(sg.score) + " " + sg.tag, c, ANCHOR_CENTER);
    }
+}
+
+string SignalName(const Signal &sg)
+{
+   return (sg.reentry ? "RE-ENTRY " : "") + (sg.dir > 0 ? "BUY" : "SELL");
 }
 
 //============================ data loading ==========================
@@ -649,7 +909,7 @@ bool LoadData(int rates_total, int n)
    if(CopyBuffer(hRSI, 0, 0, n, g_rsi) != n) return false;
    if(CopyBuffer(hEMA, 0, 0, n, g_ema) != n) return false;
 
-   // Baseline ATR: rolling mean of ATRAvgPeriod bars (series indexing)
+   // Baseline ATR: rolling mean of ATRAvgPeriod bars (index = bar shift)
    ArraySetAsSeries(g_atrAvg, false);
    ArrayResize(g_atrAvg, n);
    double sum = 0;
@@ -696,16 +956,18 @@ int OnCalculate(const int rates_total,
    if(!LoadData(rates_total, n)) return(0);
    g_lastBarTime = time[0];
 
-   ArraySetAsSeries(BufBuy, true);  ArraySetAsSeries(BufSell, true);
-   ArraySetAsSeries(BufSL, true);   ArraySetAsSeries(BufTP1, true);
-   ArraySetAsSeries(BufTP2, true);  ArraySetAsSeries(BufScore, true);
-   ArrayInitialize(BufBuy, EMPTY_VALUE);  ArrayInitialize(BufSell, EMPTY_VALUE);
-   ArrayInitialize(BufSL, EMPTY_VALUE);   ArrayInitialize(BufTP1, EMPTY_VALUE);
-   ArrayInitialize(BufTP2, EMPTY_VALUE);  ArrayInitialize(BufScore, EMPTY_VALUE);
+   ArraySetAsSeries(BufBuy, true);   ArraySetAsSeries(BufSell, true);
+   ArraySetAsSeries(BufReBuy, true); ArraySetAsSeries(BufReSell, true);
+   ArraySetAsSeries(BufSL, true);    ArraySetAsSeries(BufTP1, true);
+   ArraySetAsSeries(BufTP2, true);   ArraySetAsSeries(BufScore, true);
+   ArrayInitialize(BufBuy, EMPTY_VALUE);   ArrayInitialize(BufSell, EMPTY_VALUE);
+   ArrayInitialize(BufReBuy, EMPTY_VALUE); ArrayInitialize(BufReSell, EMPTY_VALUE);
+   ArrayInitialize(BufSL, EMPTY_VALUE);    ArrayInitialize(BufTP1, EMPTY_VALUE);
+   ArrayInitialize(BufTP2, EMPTY_VALUE);   ArrayInitialize(BufScore, EMPTY_VALUE);
    ObjectsDeleteAll(0, OBJ_PREFIX);
 
-   g_sigCount = 0;
-   ArrayResize(g_sig, 0, 512);
+   g_sigCount = 0;   ArrayResize(g_sig, 0, 512);
+   g_watchCount = 0; ArrayResize(g_watch, 0, 256);
    g_days = 0;
    int lastSigBar = -1, curDay = -1, dayCnt = 0, sessKey = -1, sessCnt = 0;
 
@@ -717,67 +979,67 @@ int OnCalculate(const int rates_total,
       int sk = dk * 4 + Session(Tm[i]);
       if(sk != sessKey) { sessKey = sk; sessCnt = 0; }
 
+      // Context gate (shared by primary signals and re-entries)
+      double atr = g_atr[i+1];
+      bool ctxOK = (atr > 0 && g_atrAvg[i+1] > 0);
+      if(ctxOK)
+      {
+         double vr = atr / g_atrAvg[i+1];
+         if(vr < MinVolRatio || vr > MaxVolRatio) ctxOK = false;
+      }
+      if(ctxOK)
+         for(int k = i; k <= i + 3; k++) if(Rng(k) > ShockRangeATR * atr) ctxOK = false;
+      if(SkipRollover && InRollover(Tm[i])) ctxOK = false;
+
+      // Track open trades; a re-entry takes this bar
+      if(EnableReentry && ProcessWatches(i, ctxOK)) { lastSigBar = i; continue; }
+
+      if(!ctxOK) continue;
       if(dayCnt >= MaxSignalsPerDay || sessCnt >= MaxSignalsPerSession) continue;
       if(lastSigBar != -1 && lastSigBar - i < CooldownBars) continue;
-      if(SkipRollover && InRollover(Tm[i])) continue;
-
-      // Volatility regime gate
-      double atr = g_atr[i+1];
-      if(atr <= 0 || g_atrAvg[i+1] <= 0) continue;
-      double vr = atr / g_atrAvg[i+1];
-      if(vr < MinVolRatio || vr > MaxVolRatio) continue;
       if(Rng(i) < 0.5 * atr) continue;
-      bool shock = false;
-      for(int k = i; k <= i + 3; k++) if(Rng(k) > ShockRangeATR * atr) shock = true;
-      if(shock) continue;
 
       int bias = Bias(i);
       BuildLevels(i, bias);
 
-      int    bS = 0, sS = 0;
-      double bSL = 0, bT1 = 0, bT2 = 0, sSL = 0, sT1 = 0, sT2 = 0;
-      string bTag = "", sTag = "";
-      bool isBuy  = Evaluate(i,  1, bias, bS, bSL, bT1, bT2, bTag);
-      bool isSell = Evaluate(i, -1, bias, sS, sSL, sT1, sT2, sTag);
+      Signal buy, sell;
+      bool isBuy  = Evaluate(i,  1, bias, buy);
+      bool isSell = Evaluate(i, -1, bias, sell);
       if(isBuy && isSell)
       {
-         if(bS == sS) continue;          // conflicting evidence - stand aside
-         if(bS > sS) isSell = false; else isBuy = false;
+         if(buy.score == sell.score) continue;   // conflicting evidence - stand aside
+         if(buy.score > sell.score) isSell = false; else isBuy = false;
       }
       if(!isBuy && !isSell) continue;
 
-      Signal sg;
-      sg.bar = i; sg.time = Tm[i]; sg.entry = Cl[i]; sg.session = Session(Tm[i]);
-      if(isBuy) { sg.dir = 1;  sg.sl = bSL; sg.tp1 = bT1; sg.tp2 = bT2; sg.score = bS; sg.tag = bTag; }
-      else      { sg.dir = -1; sg.sl = sSL; sg.tp1 = sT1; sg.tp2 = sT2; sg.score = sS; sg.tag = sTag; }
-
-      ArrayResize(g_sig, g_sigCount + 1, 512);
-      g_sig[g_sigCount++] = sg;
+      if(isBuy) { AddSignal(buy);  AddWatch(buy); }
+      else      { AddSignal(sell); AddWatch(sell); }
       lastSigBar = i; dayCnt++; sessCnt++;
-
-      if(sg.dir > 0) BufBuy[i]  = Lo[i] - 0.3 * atr;
-      else           BufSell[i] = Hi[i] + 0.3 * atr;
-      BufSL[i] = sg.sl; BufTP1[i] = sg.tp1; BufTP2[i] = sg.tp2;
-      BufScore[i] = sg.dir * sg.score;
    }
 
-   // Stats + drawing
-   int closed = 0, wins = 0, tp1Hits = 0;
-   double netR = 0;
+   // Stats + drawing. Index 0 = primary signals, 1 = re-entries
+   int closed[2]  = {0, 0};
+   int wins[2]    = {0, 0};
+   int tp1Hits[2] = {0, 0};
+   int count[2]   = {0, 0};
+   double netR[2] = {0, 0};
    int sessN[4] = {0, 0, 0, 0};
    double sessR[4] = {0, 0, 0, 0};
    for(int s = 0; s < g_sigCount; s++)
    {
       bool t1 = false, done = false;
-      double r = Simulate(g_sig[s], t1, done);
+      int exitBar = 0;
+      double r = Simulate(g_sig[s], t1, done, exitBar);
+      int t = g_sig[s].reentry ? 1 : 0;
+      count[t]++;
       if(done)
       {
-         closed++; netR += r;
-         if(r > 0) wins++;
-         if(t1) tp1Hits++;
+         closed[t]++; netR[t] += r;
+         if(r > 0) wins[t]++;
+         if(t1) tp1Hits[t]++;
          sessN[g_sig[s].session]++; sessR[g_sig[s].session] += r;
       }
-      if(s >= g_sigCount - DrawLastN) DrawSignal(g_sig[s], s);
+      if(s >= g_sigCount - DrawLastN) DrawSignal(g_sig[s], s, done, exitBar);
    }
 
    // Alert on a fresh signal on the just-closed bar
@@ -788,7 +1050,7 @@ int OnCalculate(const int rates_total,
       {
          g_lastAlert = last.time;
          string msg = StringFormat("%s M5 %s @ %s | SL %s | TP1 %s | TP2 %s | score %d | %s",
-                                   _Symbol, last.dir > 0 ? "BUY" : "SELL",
+                                   _Symbol, SignalName(last),
                                    DoubleToString(last.entry, _Digits), DoubleToString(last.sl, _Digits),
                                    DoubleToString(last.tp1, _Digits), DoubleToString(last.tp2, _Digits),
                                    last.score, last.tag);
@@ -800,8 +1062,9 @@ int OnCalculate(const int rates_total,
 
    if(ShowPanel)
    {
-      int today = 0, dkNow = DayKey(Tm[1]);
-      for(int s = 0; s < g_sigCount; s++) if(DayKey(g_sig[s].time) == dkNow) today++;
+      int today = 0, todayRe = 0, dkNow = DayKey(Tm[1]);
+      for(int s = 0; s < g_sigCount; s++)
+         if(DayKey(g_sig[s].time) == dkNow) { if(g_sig[s].reentry) todayRe++; else today++; }
       int b = Bias(1);
       double vrNow = (g_atrAvg[1] > 0) ? g_atr[1] / g_atrAvg[1] : 0;
 
@@ -809,19 +1072,22 @@ int OnCalculate(const int rates_total,
       txt += StringFormat("Bias %s: %s   |   Vol regime: %.2f %s\n", EnumToString(BiasTF),
                           b > 0 ? "BULL" : (b < 0 ? "BEAR" : "NEUTRAL"), vrNow,
                           (vrNow >= MinVolRatio && vrNow <= MaxVolRatio) ? "(ok)" : "(filtered)");
-      txt += StringFormat("Today: %d / %d signals\n", today, MaxSignalsPerDay);
-      txt += StringFormat("History: %d signals over %d days = %.1f / day\n", g_sigCount, g_days,
-                          g_days > 0 ? (double)g_sigCount / g_days : 0.0);
-      if(closed > 0)
-         txt += StringFormat("Closed %d | TP1 hit %.0f%% | Win %.0f%% | Net %+.1fR | Avg %+.2fR (after cost)\n",
-                             closed, 100.0 * tp1Hits / closed, 100.0 * wins / closed, netR, netR / closed);
+      txt += StringFormat("Today: %d / %d signals  +%d re-entries\n", today, MaxSignalsPerDay, todayRe);
+      txt += StringFormat("History: %d signals + %d re-entries over %d days = %.1f signals / day\n",
+                          count[0], count[1], g_days, g_days > 0 ? (double)count[0] / g_days : 0.0);
+      string kind[2] = {"Signals  ", "Re-entry "};
+      for(int t = 0; t < 2; t++)
+         if(closed[t] > 0)
+            txt += StringFormat("%s closed %d | TP1 hit %.0f%% | Win %.0f%% | Net %+.1fR | Avg %+.2fR\n",
+                                kind[t], closed[t], 100.0 * tp1Hits[t] / closed[t], 100.0 * wins[t] / closed[t],
+                                netR[t], netR[t] / closed[t]);
       txt += "By session (n / R):";
       for(int s = 0; s < 4; s++) txt += StringFormat("  %s %d/%+.1f", SessionName(s), sessN[s], sessR[s]);
       txt += "\n";
       if(g_sigCount > 0)
       {
          Signal ls = g_sig[g_sigCount - 1];
-         txt += StringFormat("Last: %s %s  score %d  [%s]", ls.dir > 0 ? "BUY" : "SELL",
+         txt += StringFormat("Last: %s %s  score %d  [%s]", SignalName(ls),
                              TimeToString(ls.time, TIME_DATE | TIME_MINUTES), ls.score, ls.tag);
       }
       Comment(txt);

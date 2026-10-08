@@ -66,6 +66,30 @@ All sizes are measured against ATR, so they adapt to gold's volatility.
 - **TP1 = 1R**: take 50% off and move the SL to breakeven. **TP2 = 2R** for the rest.
 - **Time stop**: 4 hours.
 
+## 7. Re-entry after a stop-out (MT5)
+If a signal hits its SL **before TP1**, it gets a re-entry window of 12 bars (1 hour).
+One re-entry is signalled if, on a closed bar inside that window, all of these hold:
+- Price **reclaims the zone**: the bar closes back beyond the original pattern's low (buys) or high (sells). This means the stop-out was a liquidity sweep, not a breakdown.
+- The bar is a reversal pattern (engulfing, pin, star or key reversal) or a strong reclaim candle (body ≥ 55% of its range, closing beyond the prior bar).
+- The H1 bias has not turned against the trade. This is not required if the original trade was already counter-trend.
+- The context gate still passes (volatility, no news shock, no rollover).
+- The new SL, placed beyond the sweep extreme, is within the 2.5 × ATR risk limit.
+
+The re-entry is cancelled if:
+- price runs more than 1.5 × ATR beyond the old SL,
+- TP1 was hit first,
+- or the window expires.
+
+There is at most one re-entry per signal. Re-entries don't count toward the daily or session caps, and the panel tracks them separately.
+
+## Chart display (MT5)
+- Hollow arrows: **Aqua** = Buy, **Magenta** = Sell, **Orange** = Re-entry Buy, **Yellow** = Re-entry Sell.
+- Zone boxes from the signal bar to the trade's exit:
+  - red = risk zone (Entry → SL)
+  - green = Entry → TP1
+  - blue = TP1 → TP2
+- Each box has Entry, SL, TP1 and TP2 lines, with prices printed at the right edge.
+
 ## Built-in self-check
 The panel replays every historical signal on the chart using the trade plan above.
 The rules are conservative:
@@ -86,5 +110,14 @@ Strategy Tester (or forward-test on demo for at least 4 weeks) on your broker's 
 - **MT5**: `GoldCandleConfluence.mq5` goes in `MQL5/Indicators/`. **MT4**: `GoldCandleConfluence.mq4` goes in `MQL4/Indicators/`. Same logic in both.
 - Set `ServerGMTOffset` to your broker's offset. Most brokers are GMT+2 in winter and GMT+3 in summer. This offset sets the session, Asian range and rollover times.
 - Keep H1 and D1 history loaded. The indicator reads the H1 bias and the D1 previous-day levels.
-- Buffers for an EA (`iCustom` + `CopyBuffer` on MT5): 0 = buy arrow, 1 = sell arrow, 2 = SL, 3 = TP1, 4 = TP2,
-  5 = score (+ buy / − sell). Read shift 1.
+- Buffers for an EA (`iCustom` + `CopyBuffer` on MT5), read at shift 1:
+  - 0 = buy
+  - 1 = sell
+  - 2 = re-entry buy
+  - 3 = re-entry sell
+  - 4 = SL
+  - 5 = TP1
+  - 6 = TP2
+  - 7 = score (+ buy / − sell)
+
+  The MT4 file still uses the older 6-buffer layout and has no re-entries.
