@@ -83,7 +83,8 @@ Use it to tune the settings:
 Strategy Tester (or forward-test on demo for at least 4 weeks) on your broker's data.
 
 ## Setup notes
+- **MT5**: `GoldCandleConfluence.mq5` goes in `MQL5/Indicators/`. **MT4**: `GoldCandleConfluence.mq4` goes in `MQL4/Indicators/`. Same logic in both.
 - Set `ServerGMTOffset` to your broker's offset. Most brokers are GMT+2 in winter and GMT+3 in summer. This offset sets the session, Asian range and rollover times.
 - Keep H1 and D1 history loaded. The indicator reads the H1 bias and the D1 previous-day levels.
-- Buffers for an EA (`iCustom`): 0 = buy arrow, 1 = sell arrow, 2 = SL, 3 = TP1, 4 = TP2,
+- Buffers for an EA (`iCustom` + `CopyBuffer` on MT5): 0 = buy arrow, 1 = sell arrow, 2 = SL, 3 = TP1, 4 = TP2,
   5 = score (+ buy / − sell). Read shift 1.
