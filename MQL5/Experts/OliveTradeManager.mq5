@@ -7,6 +7,7 @@
 #property version     "1.00"
 #property description "Olive Trade Manager - enters on confirmed arrow signals from a custom indicator"
 #property description "and manages the trade. Works with compiled .ex5 indicators (no source needed)."
+#property description "Defaults set for XAUUSD M5 (Exness, 3-digit): pip = 0.1, one trade until it closes."
 
 #include <Trade/Trade.mqh>
 
@@ -35,7 +36,7 @@ enum ENUM_TM_OPPOSITE
   {
    OPPOSITE_REVERSE = 0, // Close and reverse
    OPPOSITE_CLOSE   = 1, // Close only
-   OPPOSITE_IGNORE  = 2  // Ignore
+   OPPOSITE_IGNORE  = 2  // Ignore - wait until the trade closes
   };
 
 enum ENUM_TM_TRAIL
@@ -76,7 +77,7 @@ input int              InpATRPeriod       = 14;             // ATR period
 input ENUM_TIMEFRAMES  InpATRTimeframe    = PERIOD_CURRENT; // ATR timeframe
 
 input group "=== Trade management ==="
-input ENUM_TM_OPPOSITE InpOpposite        = OPPOSITE_REVERSE; // Opposite signal while in a trade
+input ENUM_TM_OPPOSITE InpOpposite        = OPPOSITE_IGNORE;  // Opposite signal while in a trade
 input bool             InpUseBreakEven    = false;       // Use breakeven
 input double           InpBETriggerPips   = 20;          // Breakeven: trigger at profit (pips)
 input double           InpBELockPips      = 2;           // Breakeven: lock in (pips)
@@ -95,10 +96,10 @@ input group "=== General ==="
 input bool             InpAutoTrade       = true;        // Auto-trade signals (also a panel button)
 input ulong            InpMagic           = 20261008;    // Magic number
 input string           InpComment         = "OliveTM";   // Order comment
-input int              InpSlippagePoints  = 30;          // Max slippage (points)
+input int              InpSlippagePoints  = 50;          // Max slippage (points)
 input double           InpPipSize         = 0;           // Pip size in price (0 = auto; gold = 0.1)
 input bool             InpPopupAlerts     = true;        // Popup alerts on trades
-input bool             InpPushAlerts      = false;       // Push notifications on trades
+input bool             InpPushAlerts      = true;        // Push notifications on trades
 
 input group "=== Panel ==="
 input bool             InpShowPanel       = true;        // Show panel
@@ -810,12 +811,13 @@ void OnSignal(int dir, datetime bar)
 
    ulong ticket;
    int cur = EAPosition(ticket);
-   if(cur == dir)
+   if(cur != 0 && (cur == dir || InpOpposite == OPPOSITE_IGNORE))
+     {
+      Msg(side + " signal ignored - trade still running");
       return;
+     }
    if(cur != 0)
      {
-      if(InpOpposite == OPPOSITE_IGNORE)
-         return;
       if(!CloseEAPositions())
          return;
       if(InpOpposite == OPPOSITE_CLOSE)

@@ -4,6 +4,11 @@ An Expert Advisor that takes **confirmed arrow signals** from a custom indicator
 opens one trade at a time and manages it. It is built for compiled `.ex5`
 indicators like **CharisGold FX**, so you don't need the indicator's source code.
 
+The defaults are set for **XAUUSD on M5 with Exness (3-digit prices)**:
+- 1 pip = 0.1 (10 points), and symbol suffixes such as `XAUUSDm` are recognised.
+- **One trade at a time.** All signals are ignored until the running trade closes (manually, by TP or by SL).
+- **Push notifications are on.**
+
 | File | What it is |
 |---|---|
 | `MQL5/Experts/OliveTradeManager.mq5` | The trade manager EA |
@@ -36,8 +41,10 @@ Your own indicator settings (Push Alert) are kept, and you don't get duplicate a
   and then vanish while a candle is forming are ignored.
 - A signal that is already on the chart when the EA starts is **not** traded. The EA waits for the
   next new arrow.
-- **One EA trade at a time.** A signal in the same direction as the open trade is ignored.
-  An opposite signal **closes the trade and reverses** by default; you can change this to close only, or ignore.
+- **One EA trade at a time.** While an EA trade is running, **every new signal is ignored**, in either
+  direction, until that trade closes (manually, by TP or by SL). Signals that came while the trade
+  was open are never traded later; the EA waits for the next fresh arrow. You can switch
+  *Opposite signal* to *Close and reverse* or *Close only* if you ever want that.
 - **Manual trades are allowed alongside the EA.** The EA never touches them and they don't block its
   entries. The panel shows how many there are and their P/L.
 
@@ -66,14 +73,23 @@ Your own indicator settings (Push Alert) are kept, and you don't get duplicate a
 ### Trade management and filters
 | Input | Default | Meaning |
 |---|---|---|
-| Opposite signal | Close and reverse | Or *Close only* / *Ignore* |
+| Opposite signal | Ignore (wait until the trade closes) | Or *Close and reverse* / *Close only* |
 | Breakeven | off | Trigger at X pips of profit, lock in Y pips |
 | Trailing stop | off | ATR × multiplier or fixed pips; starts at X pips of profit |
 | Max spread | 0 (off) | Skips entries when the spread is wider |
 | Daily loss limit % | 0 (off) | Stops new entries for the day once EA losses reach this % |
-| Pip size | 0 (auto) | Auto: gold (XAU/GOLD) = 0.1, 5/3-digit FX = 10 points. Set it to override. |
+| Pip size | 0 (auto) | Auto: gold (XAU/GOLD) = 0.1, i.e. 10 points on 3-digit XAUUSD. 5/3-digit FX = 10 points. Set it to override. |
 | Magic number | 20261008 | Identifies the EA's trades. Use a different one on each chart. |
-| Popup / Push alerts | on / off | Alerts when the EA opens or closes a trade. Push needs MT5 notifications set up. |
+| Popup / Push alerts | on / on | Alerts when the EA opens or closes a trade. Push needs your MetaQuotes ID in MT5 (see below). |
+| Max slippage | 50 points | 0.05 on XAUUSD. Exness gold uses market execution, so this is usually ignored. |
+
+## XAUUSD M5 on Exness
+
+- With 1 pip = 0.1: SL 30 pips = $3.00 price move, TP 60 pips = $6.00. With 0.01 lot, $1 of price move is about $1.00 of P/L.
+- The ATR modes adapt to volatility automatically. On M5 gold, ATR(14) is often 15-40 pips, so SL = 1.5 x ATR and TP = 3 x ATR.
+- Gold spreads widen sharply around news and the daily rollover. Consider setting *Max spread* (e.g. 4-5 pips) to skip entries then.
+- **Push notifications:** in the MT5 mobile app, open *Settings → Messages* and copy your **MetaQuotes ID**.
+  In desktop MT5, go to *Tools → Options → Notifications*, tick *Enable Push Notifications* and paste the ID.
 
 ## The panel
 
