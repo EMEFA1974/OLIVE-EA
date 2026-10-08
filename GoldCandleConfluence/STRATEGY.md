@@ -62,14 +62,14 @@ All sizes are measured against ATR, so they adapt to gold's volatility.
 
 - Each grade has its own on/off switch, and you can change the score thresholds in the inputs.
 - A grade that is switched off is completely ignored: it doesn't use up the daily/session limit or trigger the cooldown.
-- With C switched on you get more signals. But C signals can use up the daily limit before a later A/B appears that day.
+- With C switched on you get more signals. But C signals can use up the per-session limit before a later A/B appears in that session.
 - The grade letter is printed in faint grey **under each buy** signal and **above each sell** signal.
 - Re-entries inherit the grade of the original signal.
 - The panel shows count, win % and average R for each grade, so you can check whether C is worth turning on.
 - If a buy and a sell both qualify on the same bar, the higher score wins. A tie means no trade.
 
 ## 5. Selection: quality over quantity
-- Max **5 signals per trading day** (the day starts at 22:00 GMT).
+- **No daily limit** by default (`MaxSignalsPerDay = 0`). Set it to a number to cap signals per trading day (the day starts at 22:00 GMT).
 - Max **2 per session** (Asia 22–07, London 07–12, Overlap 12–16, New York 16–22 GMT). This spreads signals across all sessions so one session can't use up the whole day's limit.
 - **6-bar (30 min) cooldown** between signals.
 

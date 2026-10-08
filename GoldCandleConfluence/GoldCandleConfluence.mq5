@@ -16,7 +16,7 @@
 //|  Signals are evaluated on closed bars only (no repainting).      |
 //+------------------------------------------------------------------+
 #property copyright "GoldCandleConfluence"
-#property version   "1.20"
+#property version   "1.21"
 #property description "Quality-filtered candlestick reversal signals for XAUUSD M5"
 #property indicator_chart_window
 #property indicator_buffers 9
@@ -74,8 +74,8 @@ input int      GradeFontSize        = 9;     // Grade letter size
 input double   GradeOffsetATR       = 0.9;   // Grade letter distance from candle (x ATR)
 
 input group "Signal quality"
-input int      MaxSignalsPerDay     = 5;     // Max signals per trading day (re-entries not counted)
-input int      MaxSignalsPerSession = 2;     // Max signals per session (spreads signals across sessions)
+input int      MaxSignalsPerDay     = 0;     // Max signals per trading day, 0 = no limit (re-entries not counted)
+input int      MaxSignalsPerSession = 2;     // Max signals per session, 0 = no limit
 input int      CooldownBars         = 6;     // Min bars between signals
 input bool     AllowCounterTrend    = true;  // Allow counter-bias trades (only on major-level sweeps, graded 1 point lower)
 
@@ -1059,7 +1059,8 @@ int OnCalculate(const int rates_total,
       if(EnableReentry && ProcessWatches(i, ctxOK)) { lastSigBar = i; continue; }
 
       if(!ctxOK) continue;
-      if(dayCnt >= MaxSignalsPerDay || sessCnt >= MaxSignalsPerSession) continue;
+      if(MaxSignalsPerDay > 0 && dayCnt >= MaxSignalsPerDay) continue;
+      if(MaxSignalsPerSession > 0 && sessCnt >= MaxSignalsPerSession) continue;
       if(lastSigBar != -1 && lastSigBar - i < CooldownBars) continue;
       if(Rng(i) < 0.5 * atr) continue;
 
@@ -1144,7 +1145,8 @@ int OnCalculate(const int rates_total,
       txt += StringFormat("Bias %s: %s   |   Vol regime: %.2f %s\n", EnumToString(BiasTF),
                           b > 0 ? "BULL" : (b < 0 ? "BEAR" : "NEUTRAL"), vrNow,
                           (vrNow >= MinVolRatio && vrNow <= MaxVolRatio) ? "(ok)" : "(filtered)");
-      txt += StringFormat("Today: %d / %d signals  +%d re-entries\n", today, MaxSignalsPerDay, todayRe);
+      txt += StringFormat("Today: %d%s signals  +%d re-entries\n", today,
+                          MaxSignalsPerDay > 0 ? StringFormat(" / %d", MaxSignalsPerDay) : " (no daily limit)", todayRe);
       txt += StringFormat("History: %d signals + %d re-entries over %d days = %.1f signals / day\n",
                           count[0], count[1], g_days, g_days > 0 ? (double)count[0] / g_days : 0.0);
       string kind[2] = {"Signals  ", "Re-entry "};
