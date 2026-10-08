@@ -7,7 +7,7 @@
 #property version     "1.00"
 #property description "Olive Trade Manager - enters on confirmed arrow signals from a custom indicator"
 #property description "and manages the trade. Works with compiled .ex5 indicators (no source needed)."
-#property description "Defaults set for XAUUSD M5 (Exness, 3-digit). All distances are in points."
+#property description "Defaults set for XAUUSD M5 (Exness, 3-digit). All distances are in pips (gold: 1 pip = 0.1)."
 
 #include <Trade/Trade.mqh>
 
@@ -28,7 +28,7 @@ enum ENUM_TM_LOTS
 enum ENUM_TM_STOP
   {
    STOP_ATR   = 0, // ATR x multiplier
-   STOP_FIXED = 1, // Fixed points
+   STOP_FIXED = 1, // Fixed pips
    STOP_NONE  = 2  // None
   };
 
@@ -42,7 +42,7 @@ enum ENUM_TM_OPPOSITE
 enum ENUM_TM_TRAIL
   {
    TRAIL_ATR   = 0, // ATR x multiplier
-   TRAIL_FIXED = 1  // Fixed points
+   TRAIL_FIXED = 1  // Fixed pips
   };
 
 //--- inputs ---------------------------------------------------------
@@ -65,12 +65,12 @@ input double           InpMaxLot          = 5.0;         // Maximum lot
 input group "=== Stop loss ==="
 input ENUM_TM_STOP     InpSLMode          = STOP_ATR;    // Stop loss mode
 input double           InpSLAtrMult       = 1.5;         // SL: ATR multiplier
-input double           InpSLPoints        = 3000;        // SL: fixed points
+input double           InpSLPips          = 30;          // SL: fixed pips
 
 input group "=== Take profit ==="
 input ENUM_TM_STOP     InpTPMode          = STOP_ATR;    // Take profit mode
 input double           InpTPAtrMult       = 3.0;         // TP: ATR multiplier
-input double           InpTPPoints        = 6000;        // TP: fixed points
+input double           InpTPPips          = 60;          // TP: fixed pips
 
 input group "=== ATR ==="
 input int              InpATRPeriod       = 14;             // ATR period
@@ -79,24 +79,25 @@ input ENUM_TIMEFRAMES  InpATRTimeframe    = PERIOD_CURRENT; // ATR timeframe
 input group "=== Trade management ==="
 input ENUM_TM_OPPOSITE InpOpposite        = OPPOSITE_IGNORE;  // Opposite signal while in a trade
 input bool             InpUseBreakEven    = false;       // Use breakeven
-input double           InpBETriggerPoints = 2000;        // Breakeven: trigger at profit (points)
-input double           InpBELockPoints    = 200;         // Breakeven: lock in (points)
+input double           InpBETriggerPips   = 20;          // Breakeven: trigger at profit (pips)
+input double           InpBELockPips      = 2;           // Breakeven: lock in (pips)
 input bool             InpUseTrailing     = false;       // Use trailing stop
 input ENUM_TM_TRAIL    InpTrailMode       = TRAIL_ATR;   // Trailing mode
-input double           InpTrailStartPoints = 3000;       // Trailing: start at profit (points)
-input double           InpTrailPoints     = 2000;        // Trailing: distance (fixed points)
+input double           InpTrailStartPips  = 30;          // Trailing: start at profit (pips)
+input double           InpTrailPips       = 20;          // Trailing: distance (fixed pips)
 input double           InpTrailAtrMult    = 2.0;         // Trailing: distance (ATR multiplier)
-input double           InpTrailStepPoints = 100;         // Trailing: minimum step (points)
+input double           InpTrailStepPips   = 1;           // Trailing: minimum step (pips)
 
 input group "=== Filters ==="
-input double           InpMaxSpreadPoints = 0;           // Max spread in points (0 = off)
+input double           InpMaxSpreadPips   = 0;           // Max spread in pips (0 = off)
 input double           InpDailyLossPct    = 0;           // Daily loss limit % of balance (0 = off)
 
 input group "=== General ==="
 input bool             InpAutoTrade       = true;        // Auto-trade signals (also a panel button)
 input ulong            InpMagic           = 20261008;    // Magic number
 input string           InpComment         = "OliveTM";   // Order comment
-input int              InpSlippagePoints  = 50;          // Max slippage (points)
+input double           InpSlippagePips    = 3;           // Max slippage (pips)
+input double           InpPipSize         = 0;           // Pip size in price (0 = auto: gold 0.1, FX 5/3-digit = 10 points)
 input bool             InpPopupAlerts     = true;        // Popup alerts on trades
 input bool             InpPushAlerts      = true;        // Push notifications on trades
 
@@ -106,7 +107,7 @@ input color            InpBuyDotColor     = clrAqua;     // Buy dot colour (belo
 input color            InpSellDotColor    = clrMagenta;  // Sell dot colour (above the candle)
 input color            InpSkipDotColor    = clrYellow;   // Skipped signal dot colour (no trade opened)
 input int              InpDotSize         = 2;           // Dot size (1-5)
-input int              InpDotGapPoints    = 300;         // Gap between candle and dot (points)
+input double           InpDotGapPips      = 3;           // Gap between candle and dot (pips)
 input int              InpDotHistoryBars  = 500;         // Past candles to mark at start
 
 input group "=== Panel ==="
@@ -154,6 +155,7 @@ int      g_lastSigDir   = 0;
 datetime g_lastSigTime  = 0;
 bool     g_auto         = true;
 string   g_message      = "";
+double   g_pip          = 0;
 double   g_dayClosed    = 0;
 int      g_dayTrades    = 0;
 int      g_dayWins      = 0;
@@ -164,6 +166,18 @@ string   S_UP, S_DN, S_DOT, S_SEP;
 //+------------------------------------------------------------------+
 //| Helpers                                                          |
 //+------------------------------------------------------------------+
+double DetectPip()
+  {
+   if(InpPipSize > 0)
+      return InpPipSize;
+   string sym = _Symbol;
+   StringToUpper(sym);
+   if(StringFind(sym, "XAU") >= 0 || StringFind(sym, "GOLD") >= 0)
+      return 0.1;
+   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   return (digits == 3 || digits == 5) ? _Point * 10.0 : _Point;
+  }
+
 double NormPrice(double p)
   {
    double ts = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
@@ -190,12 +204,12 @@ double AtrValue()
    return a[0];
   }
 
-double SpreadPoints()
+double SpreadPips()
   {
    MqlTick tk;
    if(!SymbolInfoTick(_Symbol, tk))
       return 0;
-   return (tk.ask - tk.bid) / _Point;
+   return (tk.ask - tk.bid) / g_pip;
   }
 
 void Msg(const string text)
@@ -478,8 +492,8 @@ void DrawDot(int dir, int shift, bool skipped = false)
    if(t == 0)
       return;
    string n = PFX + "dot_" + IntegerToString((long)t);
-   double price = (dir > 0) ? iLow(_Symbol, _Period, shift) - InpDotGapPoints * _Point
-                            : iHigh(_Symbol, _Period, shift) + InpDotGapPoints * _Point;
+   double price = (dir > 0) ? iLow(_Symbol, _Period, shift) - InpDotGapPips * g_pip
+                            : iHigh(_Symbol, _Period, shift) + InpDotGapPips * g_pip;
    if(ObjectFind(0, n) < 0)
       ObjectCreate(0, n, OBJ_ARROW, 0, t, price);
    ObjectSetInteger(0, n, OBJPROP_TIME, t);
@@ -716,9 +730,9 @@ string EntryBlockReason()
       return "Algo Trading is off in the terminal";
    if(!MQLInfoInteger(MQL_TRADE_ALLOWED))
       return "Algo trading not allowed for this EA";
-   double spread = SpreadPoints();
-   if(InpMaxSpreadPoints > 0 && spread > InpMaxSpreadPoints)
-      return StringFormat("spread %.0f > max %.0f points", spread, InpMaxSpreadPoints);
+   double spread = SpreadPips();
+   if(InpMaxSpreadPips > 0 && spread > InpMaxSpreadPips)
+      return StringFormat("spread %.1f > max %.1f pips", spread, InpMaxSpreadPips);
    if(DailyLossHit())
       return "daily loss limit reached";
    return "";
@@ -783,12 +797,12 @@ bool OpenTrade(int dir, const string why)
       slDist = atr * InpSLAtrMult;
    else
       if(InpSLMode == STOP_FIXED)
-         slDist = InpSLPoints * _Point;
+         slDist = InpSLPips * g_pip;
    if(InpTPMode == STOP_ATR)
       tpDist = atr * InpTPAtrMult;
    else
       if(InpTPMode == STOP_FIXED)
-         tpDist = InpTPPoints * _Point;
+         tpDist = InpTPPips * g_pip;
 
    double minDist = (SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) + 2) * _Point + (tk.ask - tk.bid);
    if(slDist > 0 && slDist < minDist)
@@ -897,7 +911,7 @@ void ManagePositions()
    if(!SymbolInfoTick(_Symbol, tk))
       return;
    double stopLvl = (SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) + 1) * _Point;
-   double step    = MathMax(InpTrailStepPoints * _Point, _Point);
+   double step    = MathMax(InpTrailStepPips * g_pip, _Point);
 
    for(int i = PositionsTotal() - 1; i >= 0; i--)
      {
@@ -909,22 +923,22 @@ void ManagePositions()
       double sl    = PositionGetDouble(POSITION_SL);
       double tp    = PositionGetDouble(POSITION_TP);
       double cur   = isBuy ? tk.bid : tk.ask;
-      double profitPts = (isBuy ? cur - open : open - cur) / _Point;
+      double profitPips = (isBuy ? cur - open : open - cur) / g_pip;
       double newSL = sl;
       string what  = "";
 
-      if(InpUseBreakEven && profitPts >= InpBETriggerPoints)
+      if(InpUseBreakEven && profitPips >= InpBETriggerPips)
         {
-         double be = NormPrice(isBuy ? open + InpBELockPoints * _Point : open - InpBELockPoints * _Point);
+         double be = NormPrice(isBuy ? open + InpBELockPips * g_pip : open - InpBELockPips * g_pip);
          if(isBuy ? (newSL == 0 || be > newSL) : (newSL == 0 || be < newSL))
            {
             newSL = be;
             what  = "Breakeven";
            }
         }
-      if(InpUseTrailing && profitPts >= InpTrailStartPoints)
+      if(InpUseTrailing && profitPips >= InpTrailStartPips)
         {
-         double dist = (InpTrailMode == TRAIL_ATR) ? AtrValue() * InpTrailAtrMult : InpTrailPoints * _Point;
+         double dist = (InpTrailMode == TRAIL_ATR) ? AtrValue() * InpTrailAtrMult : InpTrailPips * g_pip;
          if(dist > 0)
            {
             double tr = NormPrice(isBuy ? cur - dist : cur + dist);
@@ -1047,7 +1061,7 @@ void PanelCreate()
    Rect("bg", x, y, w, 100, C_BG, C_BORDER);
    Rect("hdr", x + 1, y + 1, w - 2, 46, C_HEADER, C_HEADER);
    Rect("stripe", x + 1, y + 47, w - 2, 3, C_STRIPE, C_STRIPE);
-   Label("title", x + 12, y + 7, "OLIVE TRADE MANAGER", clrWhite, 11, "Arial Black");
+   Label("title", x + 12, y + 9, "OLIVE TRADE MANAGER", clrWhite, 8, "Arial Bold");
    Label("sub", x + 12, y + 28, _Symbol + "  " + S_SEP + "  " + TfName(), C'215,205,255', 8);
    Label("state", x + w - 12, y + 28, "", C_WARN, 8, "Arial Bold", ANCHOR_RIGHT_UPPER);
 
@@ -1153,16 +1167,16 @@ void UpdatePanel()
       SetText("v_man", "none", C_MUTED);
 
    //--- market
-   double sp = SpreadPoints();
-   SetText("v_spread", StringFormat("%.0f points", sp), (InpMaxSpreadPoints > 0 && sp > InpMaxSpreadPoints) ? C_SELL : C_TEXT);
+   double sp = SpreadPips();
+   SetText("v_spread", StringFormat("%.1f pips", sp), (InpMaxSpreadPips > 0 && sp > InpMaxSpreadPips) ? C_SELL : C_TEXT);
    double atr = AtrValue();
-   SetText("v_atr", atr > 0 ? StringFormat("%.0f points (%d)", atr / _Point, InpATRPeriod) : "-", C_GOLD);
+   SetText("v_atr", atr > 0 ? StringFormat("%.1f pips (%d)", atr / g_pip, InpATRPeriod) : "-", C_GOLD);
    SetText("v_lots", InpLotMode == LOTS_FIXED ? StringFormat("fixed %.2f", InpFixedLot)
            : StringFormat("risk %.1f%%", InpRiskPercent), C_TEXT);
    string sl = InpSLMode == STOP_ATR ? StringFormat("ATR x%.1f", InpSLAtrMult)
-               : InpSLMode == STOP_FIXED ? StringFormat("%.0f pts", InpSLPoints) : "none";
+               : InpSLMode == STOP_FIXED ? StringFormat("%.0f pips", InpSLPips) : "none";
    string tp = InpTPMode == STOP_ATR ? StringFormat("ATR x%.1f", InpTPAtrMult)
-               : InpTPMode == STOP_FIXED ? StringFormat("%.0f pts", InpTPPoints) : "none";
+               : InpTPMode == STOP_FIXED ? StringFormat("%.0f pips", InpTPPips) : "none";
    SetText("v_stops", sl + "  /  " + tp, C_TEXT);
 
    //--- today
@@ -1202,7 +1216,8 @@ int OnInit()
 
    g_auto = InpAutoTrade;
    trade.SetExpertMagicNumber(InpMagic);
-   trade.SetDeviationInPoints(InpSlippagePoints);
+   g_pip = DetectPip();
+   trade.SetDeviationInPoints((ulong)MathRound(InpSlippagePips * g_pip / _Point));
    trade.SetTypeFillingBySymbol(_Symbol);
 
    g_atr = iATR(_Symbol, InpATRTimeframe, InpATRPeriod);
@@ -1221,7 +1236,7 @@ int OnInit()
    TryResolve();
    EventSetTimer(1);
    UpdatePanel();
-   Print("Olive Trade Manager started on ", _Symbol, " ", TfName(), ", point ", DoubleToString(_Point, _Digits));
+   Print("Olive Trade Manager started on ", _Symbol, " ", TfName(), ", pip size ", DoubleToString(g_pip, _Digits));
    return INIT_SUCCEEDED;
   }
 
