@@ -6,7 +6,7 @@
 //|    1. Context  - healthy volatility, no news shock, no rollover  |
 //|    2. Location - pattern forms at / sweeps a real level          |
 //|    3. Trigger  - clean reversal candle pattern on a CLOSED bar   |
-//|    4. Score    - confluence score >= MinScore                    |
+//|    4. Score    - confluence score graded A / B / C               |
 //|  Then a daily / per-session cap and a cooldown keep only a few.  |
 //|                                                                  |
 //|  Re-entry: if a signal is stopped out before TP1 and the setup   |
@@ -16,11 +16,11 @@
 //|  Signals are evaluated on closed bars only (no repainting).      |
 //+------------------------------------------------------------------+
 #property copyright "GoldCandleConfluence"
-#property version   "1.10"
+#property version   "1.20"
 #property description "Quality-filtered candlestick reversal signals for XAUUSD M5"
 #property indicator_chart_window
-#property indicator_buffers 8
-#property indicator_plots   8
+#property indicator_buffers 9
+#property indicator_plots   9
 
 #property indicator_label1  "Buy"
 #property indicator_type1   DRAW_ARROW
@@ -46,6 +46,8 @@
 #property indicator_type7   DRAW_NONE
 #property indicator_label8  "Score (+buy/-sell)"
 #property indicator_type8   DRAW_NONE
+#property indicator_label9  "Grade (1=A 2=B 3=C)"
+#property indicator_type9   DRAW_NONE
 
 //--- pattern flags
 #define PAT_ENGULF 1
@@ -60,12 +62,22 @@
 #define OBJ_PREFIX "GCC_"
 
 //================================ inputs ============================
+input group "Signal grades"
+input bool     ShowGradeA           = true;  // Show grade A signals (best)
+input bool     ShowGradeB           = true;  // Show grade B signals (good)
+input bool     ShowGradeC           = false; // Show grade C signals (acceptable, more frequent)
+input int      GradeA_MinScore      = 9;     // Min score for grade A
+input int      GradeB_MinScore      = 7;     // Min score for grade B
+input int      GradeC_MinScore      = 5;     // Min score for grade C
+input color    GradeTextColor       = C'105,105,105'; // Grade letter colour (faint grey)
+input int      GradeFontSize        = 9;     // Grade letter size
+input double   GradeOffsetATR       = 0.9;   // Grade letter distance from candle (x ATR)
+
 input group "Signal quality"
-input int      MinScore             = 7;     // Min confluence score (raise = fewer, cleaner signals)
 input int      MaxSignalsPerDay     = 5;     // Max signals per trading day (re-entries not counted)
 input int      MaxSignalsPerSession = 2;     // Max signals per session (spreads signals across sessions)
 input int      CooldownBars         = 6;     // Min bars between signals
-input bool     AllowCounterTrend    = true;  // Allow counter-bias trades (only on major-level sweeps, +1 score needed)
+input bool     AllowCounterTrend    = true;  // Allow counter-bias trades (only on major-level sweeps, graded 1 point lower)
 
 input group "Re-entry"
 input bool     EnableReentry        = true;  // Signal a re-entry after SL if the setup is still valid
@@ -133,14 +145,14 @@ input bool     ShowLevelPrices      = true;            // Print Entry/SL/TP pric
 input group "Display / alerts"
 input int      MaxBars              = 10000; // Bars of history to evaluate
 input int      DrawLastN            = 40;    // Draw zones for the last N signals
-input bool     ShowLabels           = true;  // Show score/pattern text under arrows
+input bool     ShowLabels           = false; // Show score/pattern text (beyond the grade letter)
 input bool     ShowPanel            = true;  // Show stats panel
 input bool     AlertPopup           = true;
 input bool     AlertPush            = false;
 input bool     AlertEmail           = false;
 
 //================================ buffers ===========================
-double BufBuy[], BufSell[], BufReBuy[], BufReSell[], BufSL[], BufTP1[], BufTP2[], BufScore[];
+double BufBuy[], BufSell[], BufReBuy[], BufReSell[], BufSL[], BufTP1[], BufTP2[], BufScore[], BufGrade[];
 
 //================================ state =============================
 struct Level
@@ -161,6 +173,7 @@ struct Signal
    double   entry, sl, tp1, tp2;
    double   ext;       // pattern extreme the SL was built from
    int      score;
+   int      grade;     // 1 = A, 2 = B, 3 = C
    int      session;
    bool     counter;   // against HTF bias
    bool     reentry;
@@ -173,6 +186,7 @@ struct Watch
    int    dir;
    double entry, sl, tp1, ext;
    int    score;
+   int    grade;
    bool   counter;
    int    startBar;
    int    state;      // 0 live, 1 stopped out (waiting for re-entry), 2 finished
@@ -219,11 +233,12 @@ int OnInit()
    SetIndexBuffer(5, BufTP1,    INDICATOR_DATA);
    SetIndexBuffer(6, BufTP2,    INDICATOR_DATA);
    SetIndexBuffer(7, BufScore,  INDICATOR_DATA);
+   SetIndexBuffer(8, BufGrade,  INDICATOR_DATA);
    SetupArrowPlot(0, ARROW_UP_HOLLOW,   BuyColor);
    SetupArrowPlot(1, ARROW_DOWN_HOLLOW, SellColor);
    SetupArrowPlot(2, ARROW_UP_HOLLOW,   ReBuyColor);
    SetupArrowPlot(3, ARROW_DOWN_HOLLOW, ReSellColor);
-   for(int b = 0; b < 8; b++) PlotIndexSetDouble(b, PLOT_EMPTY_VALUE, EMPTY_VALUE);
+   for(int b = 0; b < 9; b++) PlotIndexSetDouble(b, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
    hATR  = iATR(_Symbol, _Period, ATRPeriod);
    hRSI  = iRSI(_Symbol, _Period, RSIPeriod, PRICE_CLOSE);
@@ -564,6 +579,32 @@ int LocationScore(int dir, double ext, double c, double atr, bool &sweep, bool &
    return MathMin(sc, 3);
 }
 
+//============================ grades ================================
+// 1 = A, 2 = B, 3 = C, 0 = below every grade
+int GradeOf(int score)
+{
+   if(score >= GradeA_MinScore) return 1;
+   if(score >= GradeB_MinScore) return 2;
+   if(score >= GradeC_MinScore) return 3;
+   return 0;
+}
+
+bool GradeEnabled(int g)
+{
+   if(g == 1) return ShowGradeA;
+   if(g == 2) return ShowGradeB;
+   if(g == 3) return ShowGradeC;
+   return false;
+}
+
+string GradeLetter(int g)
+{
+   if(g == 1) return "A";
+   if(g == 2) return "B";
+   if(g == 3) return "C";
+   return "?";
+}
+
 //============================ evaluation ============================
 // Primary signal: pattern + location + confluence score
 bool Evaluate(int i, int dir, int bias, Signal &out)
@@ -585,13 +626,11 @@ bool Evaluate(int i, int dir, int bias, Signal &out)
    sc += loc + (sweep ? 1 : 0);
 
    // 3. Higher-timeframe bias
-   int need = MinScore;
    bool counter = false;
    if(bias == dir) sc += 2;
    else if(bias == -dir)
    {
       if(!AllowCounterTrend || !majorSweep) return false;
-      need = MinScore + 1;
       counter = true;
    }
 
@@ -627,7 +666,9 @@ bool Evaluate(int i, int dir, int bias, Signal &out)
    }
    if(blocked) sc--;
 
-   if(sc < need) return false;
+   // Grade: counter-trend setups are graded one point lower
+   int grade = GradeOf(sc - (counter ? 1 : 0));
+   if(!GradeEnabled(grade)) return false;
 
    out.bar     = i;
    out.time    = Tm[i];
@@ -638,6 +679,7 @@ bool Evaluate(int i, int dir, int bias, Signal &out)
    out.tp2     = entry + dir * TP2_R * risk;
    out.ext     = ext;
    out.score   = sc;
+   out.grade   = grade;
    out.session = Session(Tm[i]);
    out.counter = counter;
    out.reentry = false;
@@ -663,6 +705,7 @@ void AddSignal(const Signal &sg)
    }
    BufSL[i] = sg.sl; BufTP1[i] = sg.tp1; BufTP2[i] = sg.tp2;
    BufScore[i] = sg.dir * sg.score;
+   BufGrade[i] = sg.grade;
 }
 
 void AddWatch(const Signal &sg)
@@ -674,6 +717,7 @@ void AddWatch(const Signal &sg)
    g_watch[g_watchCount].tp1      = sg.tp1;
    g_watch[g_watchCount].ext      = sg.ext;
    g_watch[g_watchCount].score    = sg.score;
+   g_watch[g_watchCount].grade    = sg.grade;
    g_watch[g_watchCount].counter  = sg.counter;
    g_watch[g_watchCount].startBar = sg.bar;
    g_watch[g_watchCount].state    = 0;
@@ -754,6 +798,7 @@ bool ProcessWatches(int k, bool ctxOK)
       sg.tp2     = entry + dir * TP2_R * risk;
       sg.ext     = ext;
       sg.score   = g_watch[w].score;
+      sg.grade   = g_watch[w].grade;
       sg.session = Session(Tm[k]);
       sg.counter = g_watch[w].counter;
       sg.reentry = true;
@@ -879,15 +924,32 @@ void DrawSignal(const Signal &sg, int idx, bool done, int exitBar)
    if(ShowLabels)
    {
       double atr = g_atr[sg.bar + 1];
-      double y = (sg.dir > 0) ? Lo[sg.bar] - 1.2 * atr : Hi[sg.bar] + 1.2 * atr;
+      double y = (sg.dir > 0) ? Lo[sg.bar] - 1.9 * atr : Hi[sg.bar] + 1.9 * atr;
       color c = sg.dir > 0 ? (sg.reentry ? ReBuyColor : BuyColor) : (sg.reentry ? ReSellColor : SellColor);
-      DrawText(p + "T", sg.time, y, IntegerToString(sg.score) + " " + sg.tag, c, ANCHOR_CENTER);
+      DrawText(p + "T", sg.time, y, IntegerToString(sg.score) + " " + sg.tag, c, sg.dir > 0 ? ANCHOR_UPPER : ANCHOR_LOWER);
    }
+}
+
+// Faint grade letter: under the arrow for buys, above the arrow for sells
+void DrawGrade(const Signal &sg, int idx)
+{
+   string n = OBJ_PREFIX + "G" + IntegerToString(idx);
+   double atr = g_atr[sg.bar + 1];
+   double y = (sg.dir > 0) ? Lo[sg.bar] - GradeOffsetATR * atr : Hi[sg.bar] + GradeOffsetATR * atr;
+   ObjectCreate(0, n, OBJ_TEXT, 0, sg.time, y);
+   ObjectSetString(0, n, OBJPROP_TEXT, GradeLetter(sg.grade));
+   ObjectSetString(0, n, OBJPROP_FONT, "Arial");
+   ObjectSetInteger(0, n, OBJPROP_COLOR, GradeTextColor);
+   ObjectSetInteger(0, n, OBJPROP_FONTSIZE, GradeFontSize);
+   ObjectSetInteger(0, n, OBJPROP_ANCHOR, sg.dir > 0 ? ANCHOR_UPPER : ANCHOR_LOWER);
+   ObjectSetInteger(0, n, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, n, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, n, OBJPROP_BACK, true);
 }
 
 string SignalName(const Signal &sg)
 {
-   return (sg.reentry ? "RE-ENTRY " : "") + (sg.dir > 0 ? "BUY" : "SELL");
+   return (sg.reentry ? "RE-ENTRY " : "") + (sg.dir > 0 ? "BUY" : "SELL") + " [" + GradeLetter(sg.grade) + "]";
 }
 
 //============================ data loading ==========================
@@ -960,10 +1022,12 @@ int OnCalculate(const int rates_total,
    ArraySetAsSeries(BufReBuy, true); ArraySetAsSeries(BufReSell, true);
    ArraySetAsSeries(BufSL, true);    ArraySetAsSeries(BufTP1, true);
    ArraySetAsSeries(BufTP2, true);   ArraySetAsSeries(BufScore, true);
+   ArraySetAsSeries(BufGrade, true);
    ArrayInitialize(BufBuy, EMPTY_VALUE);   ArrayInitialize(BufSell, EMPTY_VALUE);
    ArrayInitialize(BufReBuy, EMPTY_VALUE); ArrayInitialize(BufReSell, EMPTY_VALUE);
    ArrayInitialize(BufSL, EMPTY_VALUE);    ArrayInitialize(BufTP1, EMPTY_VALUE);
    ArrayInitialize(BufTP2, EMPTY_VALUE);   ArrayInitialize(BufScore, EMPTY_VALUE);
+   ArrayInitialize(BufGrade, EMPTY_VALUE);
    ObjectsDeleteAll(0, OBJ_PREFIX);
 
    g_sigCount = 0;   ArrayResize(g_sig, 0, 512);
@@ -1025,6 +1089,10 @@ int OnCalculate(const int rates_total,
    double netR[2] = {0, 0};
    int sessN[4] = {0, 0, 0, 0};
    double sessR[4] = {0, 0, 0, 0};
+   int gN[4]      = {0, 0, 0, 0};   // index 1..3 = A..C
+   int gClosed[4] = {0, 0, 0, 0};
+   int gWins[4]   = {0, 0, 0, 0};
+   double gR[4]   = {0, 0, 0, 0};
    for(int s = 0; s < g_sigCount; s++)
    {
       bool t1 = false, done = false;
@@ -1038,7 +1106,11 @@ int OnCalculate(const int rates_total,
          if(r > 0) wins[t]++;
          if(t1) tp1Hits[t]++;
          sessN[g_sig[s].session]++; sessR[g_sig[s].session] += r;
+         gClosed[g_sig[s].grade]++; gR[g_sig[s].grade] += r;
+         if(r > 0) gWins[g_sig[s].grade]++;
       }
+      gN[g_sig[s].grade]++;
+      DrawGrade(g_sig[s], s);
       if(s >= g_sigCount - DrawLastN) DrawSignal(g_sig[s], s, done, exitBar);
    }
 
@@ -1081,6 +1153,15 @@ int OnCalculate(const int rates_total,
             txt += StringFormat("%s closed %d | TP1 hit %.0f%% | Win %.0f%% | Net %+.1fR | Avg %+.2fR\n",
                                 kind[t], closed[t], 100.0 * tp1Hits[t] / closed[t], 100.0 * wins[t] / closed[t],
                                 netR[t], netR[t] / closed[t]);
+      txt += "By grade (n / win% / avg R):";
+      for(int g = 1; g <= 3; g++)
+      {
+         if(!GradeEnabled(g)) { txt += StringFormat("  %s off", GradeLetter(g)); continue; }
+         txt += StringFormat("  %s %d / %.0f%% / %+.2f", GradeLetter(g), gN[g],
+                             gClosed[g] > 0 ? 100.0 * gWins[g] / gClosed[g] : 0.0,
+                             gClosed[g] > 0 ? gR[g] / gClosed[g] : 0.0);
+      }
+      txt += "\n";
       txt += "By session (n / R):";
       for(int s = 0; s < 4; s++) txt += StringFormat("  %s %d/%+.1f", SessionName(s), sessN[s], sessR[s]);
       txt += "\n";

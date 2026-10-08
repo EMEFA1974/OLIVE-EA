@@ -8,7 +8,7 @@ indicator turns that idea into rules and a score.
 ```
 Context gate  →  Location gate  →  Pattern trigger  →  Confluence score  →  Daily/session cap
 (should I       (is this a level   (did buyers/sellers  (how many things     (keep only the best
- trade now?)     that matters?)     visibly take over?)  agree? ≥ MinScore)   few per day)
+ trade now?)     that matters?)     visibly take over?)  graded A/B/C)       few per day)
 ```
 
 ## 1. Context gate (hard filters)
@@ -51,8 +51,21 @@ All sizes are measured against ATR, so they adapt to gold's volatility.
 | Momentum close beyond prior bar's high/low | +1 |
 | Major level less than 0.7R in front of entry ("tight") | −1 |
 
-- With the bias: you need **score ≥ MinScore (7)**.
-- Against the bias: only allowed when price **swept a major level** (PDH/PDL/Asia), and it needs MinScore + 1.
+- Against the bias: only allowed when price **swept a major level** (PDH/PDL/Asia). Its score is lowered by 1 before grading.
+
+### Signal grades (MT5)
+| Grade | Score | Default |
+|---|---|---|
+| **A** | 9 or more | On |
+| **B** | 7–8 | On |
+| **C** | 5–6 | **Off** |
+
+- Each grade has its own on/off switch, and you can change the score thresholds in the inputs.
+- A grade that is switched off is completely ignored: it doesn't use up the daily/session limit or trigger the cooldown.
+- With C switched on you get more signals. But C signals can use up the daily limit before a later A/B appears that day.
+- The grade letter is printed in faint grey **under each buy** signal and **above each sell** signal.
+- Re-entries inherit the grade of the original signal.
+- The panel shows count, win % and average R for each grade, so you can check whether C is worth turning on.
 - If a buy and a sell both qualify on the same bar, the higher score wins. A tie means no trade.
 
 ## 5. Selection: quality over quantity
@@ -99,8 +112,8 @@ The rules are conservative:
 The panel shows signals/day, TP1 hit rate, win rate, net R and a breakdown by session.
 Use it to tune the settings:
 
-- Too many signals, or weak results → raise `MinScore` to 8.
-- Too few signals → lower `MinScore` to 6 or `LevelTolATR` to 0.45.
+- Too many signals, or weak results → turn grade B off (A only), or raise `GradeB_MinScore` to 8.
+- Too few signals → turn grade C on, or lower `LevelTolATR` to 0.45.
 - A session that's consistently negative → note it and trade it with smaller size, or skip it.
 
 **This replay is a sanity check, not proof.** Before going live, validate in the MT4
@@ -119,5 +132,6 @@ Strategy Tester (or forward-test on demo for at least 4 weeks) on your broker's 
   - 5 = TP1
   - 6 = TP2
   - 7 = score (+ buy / − sell)
+  - 8 = grade (1 = A, 2 = B, 3 = C)
 
   The MT4 file still uses the older 6-buffer layout and has no re-entries.
