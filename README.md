@@ -122,7 +122,7 @@ dots keep their colour. They are removed only when you remove the EA from the ch
 - **Today:** closed P/L, trades/wins, balance/equity.
 - **Buttons:**
   - **BUY / SELL** open an EA-managed trade with the EA's SL/TP. They are blocked while an EA trade is running.
-  - **CLOSE EA TRADE** closes the EA's trade only.
+  - **CLOSE** closes the EA's trade only (your manual trades are not touched).
   - **AUTO** turns signal trading on/off. Management (breakeven, trailing) keeps running either way.
 
 ## Troubleshooting

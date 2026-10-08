@@ -1034,7 +1034,7 @@ void Button(const string name, int x, int y, int w, int h, const string text, co
    ObjectSetInteger(0, n, OBJPROP_BGCOLOR, bg);
    ObjectSetInteger(0, n, OBJPROP_BORDER_COLOR, bg);
    ObjectSetInteger(0, n, OBJPROP_COLOR, clrWhite);
-   ObjectSetInteger(0, n, OBJPROP_FONTSIZE, 9);
+   ObjectSetInteger(0, n, OBJPROP_FONTSIZE, 8);
    ObjectSetString(0, n, OBJPROP_FONT, "Arial Bold");
    ObjectSetString(0, n, OBJPROP_TEXT, text);
    ObjectSetInteger(0, n, OBJPROP_STATE, false);
@@ -1052,65 +1052,64 @@ void SetText(const string name, const string text, color clr)
 int Section(const string key, const string title, int y)
   {
    int x = InpPanelX;
-   Label("sec_" + key, x + 12, y, title, C_SECTION, 8, "Arial Bold");
-   Rect("ln_" + key, x + 90, y + 7, PANEL_W - 102, 1, C_LINE, C_LINE);
-   return y + 18;
+   Label("sec_" + key, x + 12, y, title, C_SECTION, 7, "Arial");
+   Rect("ln_" + key, x + 80, y + 6, PANEL_W - 92, 1, C_LINE, C_LINE);
+   return y + 14;
   }
 
 int Row(const string key, const string label, int y)
   {
    int x = InpPanelX;
-   Label("l_" + key, x + 14, y, label, C_LABEL, 9);
-   Label("v_" + key, x + PANEL_W - 12, y, "-", C_TEXT, 9, "Arial Bold", ANCHOR_RIGHT_UPPER);
-   return y + 18;
+   Label("l_" + key, x + 14, y, label, C_LABEL, 8);
+   Label("v_" + key, x + PANEL_W - 12, y, "-", C_TEXT, 8, "Arial Bold", ANCHOR_RIGHT_UPPER);
+   return y + 15;
   }
 
 void PanelCreate()
   {
    int x = InpPanelX, y = InpPanelY, w = PANEL_W;
-   int bw = (w - 30) / 2;
+   int bw = (w - 20 - 3 * 6) / 4;
 
    Rect("bg", x, y, w, 100, C_BG, C_BORDER);
-   Rect("hdr", x + 1, y + 1, w - 2, 46, C_HEADER, C_HEADER);
-   Rect("stripe", x + 1, y + 47, w - 2, 3, C_STRIPE, C_STRIPE);
-   Label("title", x + 12, y + 9, "OLIVE TRADE MANAGER", clrWhite, 8, "Arial Bold");
-   Label("sub", x + 12, y + 28, _Symbol + "  " + S_SEP + "  " + TfName(), C'215,205,255', 8);
-   Label("state", x + w - 12, y + 28, "", C_WARN, 8, "Arial Bold", ANCHOR_RIGHT_UPPER);
+   Rect("hdr", x + 1, y + 1, w - 2, 32, C_HEADER, C_HEADER);
+   Rect("stripe", x + 1, y + 33, w - 2, 2, C_STRIPE, C_STRIPE);
+   Label("title", x + 12, y + 4, "OLIVE TRADE MANAGER", clrWhite, 8, "Arial");
+   Label("sub", x + 12, y + 18, _Symbol + "  " + S_SEP + "  " + TfName(), C'215,205,255', 7, "Arial");
+   Label("state", x + w - 12, y + 11, "", C_WARN, 8, "Arial", ANCHOR_RIGHT_UPPER);
 
-   int cy = y + 60;
+   int cy = y + 42;
    cy = Section("sig", "SIGNAL", cy);
    cy = Row("src", "Source", cy);
    cy = Row("ind", "Indicator", cy);
    cy = Row("buf", "Buffers", cy);
    cy = Row("last", "Last signal", cy);
-   cy += 6;
+   cy += 3;
    cy = Section("pos", "POSITION", cy);
    cy = Row("pos", "EA trade", cy);
    cy = Row("entry", "Entry", cy);
    cy = Row("sltp", "SL / TP", cy);
    cy = Row("pl", "Floating P/L", cy);
    cy = Row("man", "Manual trades", cy);
-   cy += 6;
+   cy += 3;
    cy = Section("mkt", "MARKET", cy);
    cy = Row("spread", "Spread", cy);
    cy = Row("atr", "ATR", cy);
    cy = Row("lots", "Lot size", cy);
    cy = Row("stops", "SL / TP mode", cy);
-   cy += 6;
+   cy += 3;
    cy = Section("day", "TODAY", cy);
    cy = Row("dpl", "Closed P/L", cy);
    cy = Row("dtr", "Trades / Wins", cy);
    cy = Row("eq", "Balance / Equity", cy);
-   cy += 8;
+   cy += 5;
 
-   Button("btn_buy", x + 10, cy, bw, 30, S_UP + "  BUY", C_BTN_BUY);
-   Button("btn_sell", x + 20 + bw, cy, bw, 30, S_DN + "  SELL", C_BTN_SELL);
-   cy += 36;
-   Button("btn_close", x + 10, cy, bw, 26, "CLOSE EA TRADE", C_BTN_CLS);
-   Button("btn_auto", x + 20 + bw, cy, bw, 26, "AUTO: ON", C_BTN_ON);
-   cy += 32;
-   Label("msg", x + 12, cy, "", C_MUTED, 8);
-   cy += 18;
+   Button("btn_buy", x + 10, cy, bw, 22, S_UP + " BUY", C_BTN_BUY);
+   Button("btn_sell", x + 10 + (bw + 6), cy, bw, 22, S_DN + " SELL", C_BTN_SELL);
+   Button("btn_close", x + 10 + 2 * (bw + 6), cy, bw, 22, "CLOSE", C_BTN_CLS);
+   Button("btn_auto", x + 10 + 3 * (bw + 6), cy, bw, 22, "AUTO ON", C_BTN_ON);
+   cy += 27;
+   Label("msg", x + 12, cy, "", C_MUTED, 7);
+   cy += 15;
 
    ObjectSetInteger(0, PFX + "bg", OBJPROP_YSIZE, cy - y);
    g_panel = true;
@@ -1198,7 +1197,7 @@ void UpdatePanel()
            DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY), 2), C_TEXT);
 
    //--- buttons & message
-   ObjectSetString(0, PFX + "btn_auto", OBJPROP_TEXT, g_auto ? "AUTO: ON" : "AUTO: OFF");
+   ObjectSetString(0, PFX + "btn_auto", OBJPROP_TEXT, g_auto ? "AUTO ON" : "AUTO OFF");
    ObjectSetInteger(0, PFX + "btn_auto", OBJPROP_BGCOLOR, g_auto ? C_BTN_ON : C_BTN_OFF);
    ObjectSetInteger(0, PFX + "btn_auto", OBJPROP_BORDER_COLOR, g_auto ? C_BTN_ON : C_BTN_OFF);
    if(block != "" && g_source != 0)
