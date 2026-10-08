@@ -106,7 +106,7 @@ input bool             InpShowDots        = true;        // Mark signal candles 
 input color            InpBuyDotColor     = clrAqua;     // Buy dot colour (below the candle)
 input color            InpSellDotColor    = clrMagenta;  // Sell dot colour (above the candle)
 input color            InpSkipDotColor    = clrYellow;   // Skipped signal dot colour (no trade opened)
-input int              InpDotSize         = 2;           // Dot size (1-5)
+input int              InpDotSize         = 1;           // Dot size (1-5)
 input double           InpDotGapPips      = 3;           // Gap between candle and dot (pips)
 input int              InpDotHistoryBars  = 500;         // Past candles to mark at start
 
@@ -117,6 +117,7 @@ input int              InpPanelY          = 30;          // Panel Y position
 
 //--- constants ------------------------------------------------------
 #define PFX      "OTM_"
+#define DOT_PFX  "OTMD_"   // dots survive EA restarts; removed only when the EA is removed
 #define PANEL_W  300
 
 #define C_BG       C'16,20,38'
@@ -160,6 +161,8 @@ double   g_dayClosed    = 0;
 int      g_dayTrades    = 0;
 int      g_dayWins      = 0;
 datetime g_lossAlertDay = 0;
+datetime g_histBar      = 0;      // candle when past signals were last marked
+uint     g_histRetry    = 0;      // next retry while no past signals were found
 bool     g_panel        = false;
 string   S_UP, S_DN, S_DOT, S_SEP;
 
@@ -387,7 +390,7 @@ int ArrowObjectDir(const string name)
   {
    if(StringSubstr(name, 0, 1) == "#")          // MT5 trade-history arrows
       return 0;
-   if(StringFind(name, PFX) == 0)
+   if(StringFind(name, PFX) == 0 || StringFind(name, DOT_PFX) == 0)
       return 0;
    if(InpObjectPrefix != "" && StringFind(name, InpObjectPrefix) != 0)
       return 0;
@@ -484,21 +487,23 @@ int ReadSignal(int shift)
 
 // Dot under a buy candle's low or above a sell candle's high;
 // skipped signals (no trade opened) get the skipped colour.
-void DrawDot(int dir, int shift, bool skipped = false)
+void DrawDot(int dir, int shift, bool skipped = false, bool overwrite = true)
   {
    if(!InpShowDots || dir == 0)
       return;
    datetime t = iTime(_Symbol, _Period, shift);
    if(t == 0)
       return;
-   string n = PFX + "dot_" + IntegerToString((long)t);
+   string n = DOT_PFX + IntegerToString((long)t);
+   if(!overwrite && ObjectFind(0, n) >= 0)
+      return;                                  // keep the colour it got when it was traded/skipped
    double price = (dir > 0) ? iLow(_Symbol, _Period, shift) - InpDotGapPips * g_pip
                             : iHigh(_Symbol, _Period, shift) + InpDotGapPips * g_pip;
    if(ObjectFind(0, n) < 0)
       ObjectCreate(0, n, OBJ_ARROW, 0, t, price);
    ObjectSetInteger(0, n, OBJPROP_TIME, t);
    ObjectSetDouble(0, n, OBJPROP_PRICE, price);
-   ObjectSetInteger(0, n, OBJPROP_ARROWCODE, 159);
+   ObjectSetInteger(0, n, OBJPROP_ARROWCODE, 108);
    ObjectSetInteger(0, n, OBJPROP_ANCHOR, dir > 0 ? ANCHOR_TOP : ANCHOR_BOTTOM);
    ObjectSetInteger(0, n, OBJPROP_COLOR, skipped ? InpSkipDotColor : (dir > 0 ? InpBuyDotColor : InpSellDotColor));
    ObjectSetInteger(0, n, OBJPROP_WIDTH, MathMax(1, MathMin(5, InpDotSize)));
@@ -508,23 +513,30 @@ void DrawDot(int dir, int shift, bool skipped = false)
   }
 
 // Marks past signal candles with dots and remembers the most recent signal.
+// Re-run on every new candle, so dots appear even if the indicator
+// finished loading its history after the EA started.
 void ScanHistory()
   {
    int maxBars = MathMin(MathMax(InpDotHistoryBars, 1), Bars(_Symbol, _Period) - 1);
+   int found = 0;
    for(int s = MathMax(InpSignalBar, 1); s < maxBars; s++)
      {
       int d = ReadSignal(s);
       if(d == 0)
          continue;
-      if(g_lastSigDir == 0)
+      if(found++ == 0 && iTime(_Symbol, _Period, s) >= g_lastSigTime)
         {
          g_lastSigDir  = d;
          g_lastSigTime = iTime(_Symbol, _Period, s);
-         if(!InpShowDots)
-            return;
         }
-      DrawDot(d, s);
+      if(!InpShowDots)
+         break;
+      DrawDot(d, s, false, false);
      }
+   g_histBar   = iTime(_Symbol, _Period, 0);
+   g_histRetry = (found > 0) ? 0 : GetTickCount() + 10000;
+   if(found == 0)
+      Print("No past signals found yet in the last ", maxBars, " candles - retrying in 10 s");
    ChartRedraw();
   }
 
@@ -1244,6 +1256,8 @@ void OnDeinit(const int reason)
   {
    EventKillTimer();
    ObjectsDeleteAll(0, PFX);
+   if(reason == REASON_REMOVE || reason == REASON_CHARTCLOSE)
+      ObjectsDeleteAll(0, DOT_PFX);
    if(g_ind != INVALID_HANDLE)
       IndicatorRelease(g_ind);
    if(g_atr != INVALID_HANDLE)
@@ -1263,6 +1277,9 @@ void OnTimer()
   {
    if(g_source == 0)
       TryResolve();
+   else
+      if(g_histBar != iTime(_Symbol, _Period, 0) || (g_histRetry > 0 && GetTickCount() >= g_histRetry))
+         ScanHistory();
    UpdateDayStats();
    UpdatePanel();
   }

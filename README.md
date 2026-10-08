@@ -100,14 +100,18 @@ Your own indicator settings (Push Alert) are kept, and you don't get duplicate a
 | Buy dot colour | Aqua | Drawn under the low of each buy signal candle |
 | Sell dot colour | Magenta | Drawn above the high of each sell signal candle |
 | Skipped signal dot colour | Yellow | Signals where no trade was opened (trade still running, auto off, spread or daily limit, or the order failed) |
-| Dot size | 2 | 1-5 |
+| Dot size | 1 | 1-5 |
 | Gap between candle and dot | 3 pips ($0.30) | |
 | Past candles to mark at start | 500 | |
 
 Every confirmed signal gets a dot. While the EA is running, a signal that opened a trade is aqua or
 magenta, and a skipped one is **yellow** (still drawn under the candle for a buy, above it for a sell).
 Dots for past candles marked at start-up are aqua or magenta only, because the EA wasn't running
-then to know whether they would have been traded.
+then to know whether they would have been traded. Past signals are re-checked on every new candle,
+so their dots also appear if the indicator finishes loading after the EA starts.
+
+Dots stay on the chart when the EA restarts (timeframe change, new settings, recompile), so yellow
+dots keep their colour. They are removed only when you remove the EA from the chart.
 
 ## The panel
 
