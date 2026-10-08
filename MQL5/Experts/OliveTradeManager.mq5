@@ -104,6 +104,7 @@ input group "=== Signal dots ==="
 input bool             InpShowDots        = true;        // Mark signal candles with dots
 input color            InpBuyDotColor     = clrAqua;     // Buy dot colour (below the candle)
 input color            InpSellDotColor    = clrMagenta;  // Sell dot colour (above the candle)
+input color            InpSkipDotColor    = clrYellow;   // Skipped signal dot colour (no trade opened)
 input int              InpDotSize         = 2;           // Dot size (1-5)
 input int              InpDotGapPoints    = 300;         // Gap between candle and dot (points)
 input int              InpDotHistoryBars  = 500;         // Past candles to mark at start
@@ -467,8 +468,9 @@ int ReadSignal(int shift)
    return 0;
   }
 
-// Dot under a buy candle's low or above a sell candle's high.
-void DrawDot(int dir, int shift)
+// Dot under a buy candle's low or above a sell candle's high;
+// skipped signals (no trade opened) get the skipped colour.
+void DrawDot(int dir, int shift, bool skipped = false)
   {
    if(!InpShowDots || dir == 0)
       return;
@@ -484,7 +486,7 @@ void DrawDot(int dir, int shift)
    ObjectSetDouble(0, n, OBJPROP_PRICE, price);
    ObjectSetInteger(0, n, OBJPROP_ARROWCODE, 159);
    ObjectSetInteger(0, n, OBJPROP_ANCHOR, dir > 0 ? ANCHOR_TOP : ANCHOR_BOTTOM);
-   ObjectSetInteger(0, n, OBJPROP_COLOR, dir > 0 ? InpBuyDotColor : InpSellDotColor);
+   ObjectSetInteger(0, n, OBJPROP_COLOR, skipped ? InpSkipDotColor : (dir > 0 ? InpBuyDotColor : InpSellDotColor));
    ObjectSetInteger(0, n, OBJPROP_WIDTH, MathMax(1, MathMin(5, InpDotSize)));
    ObjectSetInteger(0, n, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, n, OBJPROP_HIDDEN, true);
@@ -823,37 +825,47 @@ bool OpenTrade(int dir, const string why)
    return true;
   }
 
-void OnSignal(int dir, datetime bar)
+// Acts on a signal; returns true only if a new trade was opened.
+bool TradeSignal(int dir, datetime bar)
   {
-   g_lastSigDir  = dir;
-   g_lastSigTime = bar;
-   DrawDot(dir, iBarShift(_Symbol, _Period, bar));
    string side = (dir > 0) ? "BUY" : "SELL";
    Msg(side + " signal on " + TimeToString(bar, TIME_DATE | TIME_MINUTES) + " candle");
    if(!g_auto)
-      return;
+     {
+      Msg(side + " skipped: auto-trading is off");
+      return false;
+     }
 
    ulong ticket;
    int cur = EAPosition(ticket);
    if(cur != 0 && (cur == dir || InpOpposite == OPPOSITE_IGNORE))
      {
       Msg(side + " signal ignored - trade still running");
-      return;
+      return false;
      }
    if(cur != 0)
      {
       if(!CloseEAPositions())
-         return;
+         return false;
       if(InpOpposite == OPPOSITE_CLOSE)
-         return;
+         return false;
      }
    string block = EntryBlockReason();
    if(block != "")
      {
       Msg(side + " skipped: " + block);
-      return;
+      return false;
      }
-   OpenTrade(dir, "signal");
+   return OpenTrade(dir, "signal");
+  }
+
+void OnSignal(int dir, datetime bar)
+  {
+   g_lastSigDir  = dir;
+   g_lastSigTime = bar;
+   bool traded = TradeSignal(dir, bar);
+   DrawDot(dir, iBarShift(_Symbol, _Period, bar), !traded);
+   ChartRedraw();
   }
 
 void CheckSignal()

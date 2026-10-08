@@ -6,7 +6,7 @@ indicators like **CharisGold FX**, so you don't need the indicator's source code
 
 The defaults are set for **XAUUSD on M5 with Exness (3-digit prices)**:
 - **All distances are in points.** On 3-digit XAUUSD, 1 point = 0.001, so 100 points = a $0.10 move and 1000 points = $1.00.
-- **Signal candles are marked with dots:** aqua under buy candles, magenta above sell candles.
+- **Signal candles are marked with dots:** aqua under buy candles, magenta above sell candles, and yellow for signals the EA skipped.
 - **One trade at a time.** All signals are ignored until the running trade closes (manually, by TP or by SL).
 - **Push notifications are on.**
 
@@ -98,11 +98,15 @@ Your own indicator settings (Push Alert) are kept, and you don't get duplicate a
 | Mark signal candles with dots | on | |
 | Buy dot colour | Aqua | Drawn under the low of each buy signal candle |
 | Sell dot colour | Magenta | Drawn above the high of each sell signal candle |
+| Skipped signal dot colour | Yellow | Signals where no trade was opened (trade still running, auto off, spread or daily limit, or the order failed) |
 | Dot size | 2 | 1-5 |
 | Gap between candle and dot | 300 points ($0.30) | |
 | Past candles to mark at start | 500 | |
 
-Every confirmed signal gets a dot, including signals ignored because a trade was running.
+Every confirmed signal gets a dot. While the EA is running, a signal that opened a trade is aqua or
+magenta, and a skipped one is **yellow** (still drawn under the candle for a buy, above it for a sell).
+Dots for past candles marked at start-up are aqua or magenta only, because the EA wasn't running
+then to know whether they would have been traded.
 
 ## The panel
 
