@@ -4,8 +4,8 @@
 //|  and manages the trade (ATR/fixed SL & TP, breakeven, trailing). |
 //+------------------------------------------------------------------+
 #property copyright   "Olive EA"
-#property version     "1.10"
-#define   EA_VERSION    "1.10"
+#property version     "1.20"
+#define   EA_VERSION    "1.20"
 #property description "Olive Trade Manager - enters on confirmed arrow signals from a custom indicator"
 #property description "and manages the trade. Works with compiled .ex5 indicators (no source needed)."
 #property description "Defaults set for XAUUSD M5 (Exness, 3-digit). All distances are in pips (gold: 1 pip = 0.1)."
@@ -888,8 +888,6 @@ bool OpenTrade(int dir, const string why)
       Msg(StringFormat("%s failed: %u %s", dir > 0 ? "BUY" : "SELL", rc, trade.ResultRetcodeDescription()));
       return false;
      }
-   if(grid)
-      GlobalVariableSet(GridKey(trade.ResultOrder()), gridDist);
    Notify(StringFormat("%s %.2f lots at %s (%s)  SL %s  TP %s%s", dir > 0 ? "BUY" : "SELL", lots,
                        Px(trade.ResultPrice() > 0 ? trade.ResultPrice() : price), why,
                        grid ? "none (grid)" : Px(sl), Px(tp), grid ? "  grid at " + Px(gridLevel) : ""));
@@ -897,61 +895,89 @@ bool OpenTrade(int dir, const string why)
   }
 
 //+------------------------------------------------------------------+
-//| Simple grid: one extra trade one grid distance against the first |
+//| Simple grid                                                      |
+//| Works only from the EA trades that are open, so nothing has to   |
+//| be remembered between ticks or restarts.                         |
 //+------------------------------------------------------------------+
-// A first trade opened with the grid on stores its grid distance under this key
-// until the 2nd trade is added (survives EA restarts).
-string GridKey(ulong ticket) { return "OliveTM_grid_" + IntegerToString((long)ticket); }
-
-// The single EA trade waiting for its grid trade; returns its ticket or 0.
-// State of a running grid: the first trade (holds the grid key), how many EA
-// trades are open and where the next grid trade opens. Returns 0 if no grid.
-ulong GridState(double &dist, int &count, double &nextLevel)
+// Open EA trades: count, direction (1/-1, 0 = none), TP of the first trade,
+// lot of the latest trade and the price where the next grid trade opens.
+int GridInfo(int &count, double &nextLevel, double &tp, double &lastLot)
   {
-   ulong first = 0;
-   int   dir   = 0;
-   double worst = 0;
-   dist = 0;
-   count = 0;
+   count     = 0;
    nextLevel = 0;
+   tp        = 0;
+   lastLot   = 0;
+   int      dir = 0;
+   double   worst = 0;
+   datetime firstTime = 0, lastTime = 0;
    for(int i = PositionsTotal() - 1; i >= 0; i--)
      {
       ulong t = PositionGetTicket(i);
       if(t == 0 || !IsEAPosition())
          continue;
       count++;
-      if(GlobalVariableCheck(GridKey(t)))
-         first = t;
-      bool   isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
-      double open  = PositionGetDouble(POSITION_PRICE_OPEN);
+      bool     isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+      double   open  = PositionGetDouble(POSITION_PRICE_OPEN);
+      datetime time  = (datetime)PositionGetInteger(POSITION_TIME);
       dir   = isBuy ? 1 : -1;
       worst = (worst == 0) ? open : (isBuy ? MathMin(worst, open) : MathMax(worst, open));
+      if(firstTime == 0 || time < firstTime)
+        {
+         firstTime = time;
+         tp = PositionGetDouble(POSITION_TP);
+        }
+      if(time >= lastTime)
+        {
+         lastTime = time;
+         lastLot  = PositionGetDouble(POSITION_VOLUME);
+        }
      }
-   if(first == 0)
-      return 0;
-   dist = GlobalVariableGet(GridKey(first));
-   if(dist <= 0)
-      return 0;
-   nextLevel = NormPrice(dir > 0 ? worst - dist : worst + dist);
-   return first;
+   if(count > 0)
+      nextLevel = NormPrice(dir > 0 ? worst - InpGridPips * g_pip : worst + InpGridPips * g_pip);
+   return dir;
+  }
+
+// Grid mode: EA trades carry no stop loss. Removes any SL that sits on the
+// losing side of the entry (a breakeven/trailing SL in profit is kept).
+void GridStripSL()
+  {
+   static uint nextTry = 0;
+   if(GetTickCount() < nextTry)
+      return;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong t = PositionGetTicket(i);
+      if(t == 0 || !IsEAPosition())
+         continue;
+      bool   isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+      double open  = PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl    = PositionGetDouble(POSITION_SL);
+      if(sl <= 0 || (isBuy ? sl >= open : sl <= open))
+         continue;
+      if(trade.PositionModify(t, 0, PositionGetDouble(POSITION_TP)))
+         Msg("Grid: SL removed from trade #" + IntegerToString((long)t));
+      else
+        {
+         Msg("Grid: could not remove SL - " + trade.ResultRetcodeDescription());
+         nextTry = GetTickCount() + 5000;
+        }
+     }
   }
 
 void ManageGrid()
   {
-   if(!g_grid)
+   if(!g_grid || InpGridPips <= 0)
       return;
-   double dist, level;
+   GridStripSL();
    int    count;
-   ulong  t1 = GridState(dist, count, level);
-   if(t1 == 0 || count >= InpMaxTrades || !PositionSelectByTicket(t1))
+   double level, tp, lastLot;
+   int    dir = GridInfo(count, level, tp, lastLot);
+   if(dir == 0 || count >= InpMaxTrades)
       return;
-   bool   isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
-   double tp    = PositionGetDouble(POSITION_TP);
-   double vol   = PositionGetDouble(POSITION_VOLUME);
    MqlTick tk;
    if(!SymbolInfoTick(_Symbol, tk))
       return;
-   if(isBuy ? tk.bid > level : tk.ask < level)
+   if(dir > 0 ? tk.bid > level : tk.ask < level)
       return;                                   // next grid level not reached yet
    if(GetTickCount() < g_gridRetry)
       return;
@@ -960,15 +986,14 @@ void ManageGrid()
    double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
    if(step <= 0)
       step = 0.01;
-   double lots = vol * MathPow(InpGridLotMult, count);
-   lots = MathMax(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN), MathFloor(lots / step + 1e-9) * step);
+   double lots = MathMax(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN),
+                         MathFloor(lastLot * InpGridLotMult / step + 1e-9) * step);
    if(InpMaxLot > 0)
       lots = MathMin(lots, InpMaxLot);
    lots = NormalizeDouble(lots, (int)MathMax(0, MathCeil(-MathLog10(step) - 1e-9)));
-   double price = isBuy ? tk.ask : tk.bid;
-   double sl    = 0;                            // grid trades have no SL - the equity protector limits the loss
-   bool ok = isBuy ? trade.Buy(lots, _Symbol, price, sl, tp, InpComment + " grid")
-                   : trade.Sell(lots, _Symbol, price, sl, tp, InpComment + " grid");
+   double price = (dir > 0) ? tk.ask : tk.bid;
+   bool ok = (dir > 0) ? trade.Buy(lots, _Symbol, price, 0, tp, InpComment + " grid")
+                       : trade.Sell(lots, _Symbol, price, 0, tp, InpComment + " grid");
    uint rc = trade.ResultRetcode();
    if(!ok || (rc != TRADE_RETCODE_DONE && rc != TRADE_RETCODE_DONE_PARTIAL && rc != TRADE_RETCODE_PLACED))
      {
@@ -976,43 +1001,25 @@ void ManageGrid()
       return;
      }
    Notify(StringFormat("Grid trade %d/%d: %s %.2f lots at %s  SL none  TP %s (shared)", count + 1, InpMaxTrades,
-                       isBuy ? "BUY" : "SELL", lots, Px(trade.ResultPrice() > 0 ? trade.ResultPrice() : price), Px(tp)));
+                       dir > 0 ? "BUY" : "SELL", lots, Px(trade.ResultPrice() > 0 ? trade.ResultPrice() : price), Px(tp)));
   }
 
-// Grid switched on while a single EA trade is open: bring it into the grid
-// (remove its SL, start watching the grid distance).
-void GridArm()
-  {
-   double dist, level;
-   int    count;
-   if(GridState(dist, count, level) != 0)
-      return;                                   // already part of a grid
-   ulong ticket;
-   if(EAPosition(ticket) == 0 || count != 1 || InpGridPips <= 0 || !PositionSelectByTicket(ticket))
-      return;
-   GlobalVariableSet(GridKey(ticket), InpGridPips * g_pip);
-   if(PositionGetDouble(POSITION_SL) > 0 && trade.PositionModify(ticket, 0, PositionGetDouble(POSITION_TP)))
-      Msg("Grid ON - open trade's SL removed, grid armed");
-   else
-      Msg("Grid ON - open trade armed for the grid");
-  }
-
-// Grid switched off while the first trade waits: give it a normal SL.
+// Grid switched off with a single EA trade open: give it a normal SL.
 void GridDisarm()
   {
-   double dist, level, slDist, tpDist;
+   ulong ticket;
    int    count;
-   ulong  t1 = GridState(dist, count, level);
-   if(t1 == 0 || count != 1 || !PositionSelectByTicket(t1))
-      return;                                   // grid trades already open: just stop adding more
-   GlobalVariableDel(GridKey(t1));
-   if(!StopDistances(slDist, tpDist) || slDist <= 0 || !PositionSelectByTicket(t1))
+   double level, tp, lastLot, slDist, tpDist;
+   if(GridInfo(count, level, tp, lastLot) == 0 || count != 1 || EAPosition(ticket) == 0)
+      return;                                   // several grid trades open: just stop adding more
+   if(!StopDistances(slDist, tpDist) || slDist <= 0 || !PositionSelectByTicket(ticket) ||
+      PositionGetDouble(POSITION_SL) > 0)
       return;
    bool   isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
    double open  = PositionGetDouble(POSITION_PRICE_OPEN);
    double sl    = NormPrice(isBuy ? open - slDist : open + slDist);
    double cur   = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   if((isBuy ? cur > sl : cur < sl) && trade.PositionModify(t1, sl, PositionGetDouble(POSITION_TP)))
+   if((isBuy ? cur > sl : cur < sl) && trade.PositionModify(ticket, sl, PositionGetDouble(POSITION_TP)))
       Msg("Grid off - SL set to " + Px(sl));
    else
       Msg("Grid off - price is past the normal SL, trade left without SL");
@@ -1042,20 +1049,6 @@ void CheckEquityProtector()
    Notify(StringFormat("Equity protector: EA loss %s = %.1f%% of equity - closing %d trade(s), waiting for next signal",
                        Money(pl), lossPct, cnt));
    CloseEAPositions();
-  }
-
-// Remove grid keys of trades that are already closed.
-void GridCleanup()
-  {
-   for(int i = GlobalVariablesTotal() - 1; i >= 0; i--)
-     {
-      string name = GlobalVariableName(i);
-      if(StringFind(name, "OliveTM_grid_") != 0)
-         continue;
-      ulong t = (ulong)StringToInteger(StringSubstr(name, StringLen("OliveTM_grid_")));
-      if(!PositionSelectByTicket(t))
-         GlobalVariableDel(name);
-     }
   }
 
 // Acts on a signal; returns true only if a new trade was opened.
@@ -1141,6 +1134,15 @@ void Diagnostics()
    string block = EntryBlockReason();
    line += " | auto " + (g_auto ? "on" : "OFF") + " | EA trade " + (pos > 0 ? "BUY" : pos < 0 ? "SELL" : "none") +
            (block != "" ? " | blocked: " + block : "");
+   int    gcount;
+   double glevel, gtp, glot;
+   if(!g_grid)
+      line += " | grid off";
+   else
+      if(GridInfo(gcount, glevel, gtp, glot) == 0)
+         line += " | grid on, no trade";
+      else
+         line += StringFormat(" | grid %d/%d, next at %s", gcount, InpMaxTrades, Px(glevel));
    Print(line);
   }
 
@@ -1169,6 +1171,8 @@ void ManagePositions()
   {
    if(!InpUseBreakEven && !InpUseTrailing)
       return;
+   if(g_grid)
+      return;                                   // grid mode: trades run without SL (equity protector instead)
    MqlTick tk;
    if(!SymbolInfoTick(_Symbol, tk))
       return;
@@ -1537,13 +1541,13 @@ void UpdatePanel()
    else
       SetText("v_man", "none", C_MUTED);
 
-   double gdist, glevel;
+   double glevel, gtp, glot;
    int    gcount;
-   ulong  gt = GridState(gdist, gcount, glevel);
+   int    gdir = GridInfo(gcount, glevel, gtp, glot);
    if(!g_grid)
       SetText("v_grid", "off" + (cnt > 1 ? StringFormat("  (%d trades open)", cnt) : ""), C_MUTED);
    else
-      if(gt == 0)
+      if(gdir == 0)
          SetText("v_grid", StringFormat("on  (max %d trades)", InpMaxTrades), C_TEXT);
       else
          if(gcount < InpMaxTrades)
@@ -1621,8 +1625,6 @@ int OnInit()
    g_pip = DetectPip();
    trade.SetDeviationInPoints((ulong)MathRound(InpSlippagePips * g_pip / _Point));
    trade.SetTypeFillingBySymbol(_Symbol);
-   if(g_grid)
-      GridArm();                                // an EA trade already open joins the grid
 
    g_atr = iATR(_Symbol, InpATRTimeframe, InpATRPeriod);
    if(g_atr == INVALID_HANDLE)
@@ -1682,7 +1684,6 @@ void OnTimer()
       if(g_histBar != iTime(_Symbol, _Period, 0) || (g_histRetry > 0 && GetTickCount() >= g_histRetry))
          ScanHistory();
    UpdateDayStats();
-   GridCleanup();
    Diagnostics();
    UpdatePanel();
   }
@@ -1752,10 +1753,8 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
                   g_grid = !g_grid;
                   SaveToggles();
                   Msg(g_grid ? "Grid ON" : "Grid OFF");
-                  if(g_grid)
-                     GridArm();
-                  else
-                     GridDisarm();
+                  if(!g_grid)
+                     GridDisarm();              // grid on: ManageGrid removes the SL on the next tick
                  }
    ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
    UpdatePanel();
