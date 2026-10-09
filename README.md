@@ -92,20 +92,19 @@ Turn it on with the **GRID** button on the panel, or *Grid* in the settings (off
 - If price moves **Grid distance** pips (default 30) against it, **trade 2** opens in the same
   direction with the same lot size (or × *Grid lot multiplier*).
 - **Both trades share the same TP:** trade 1's take profit.
-- **Trade 2 has its own SL**, from your SL inputs (ATR × multiplier or fixed pips), measured from its
-  own entry. Trade 1 keeps no SL, so if trade 2 is stopped out, trade 1 stays open until the TP
-  or the **equity protector** closes it.
+- **Neither trade has a stop loss.** They close together at the shared TP, or when the
+  **equity protector** cuts the loss.
 - Only one extra trade is ever added. Signals are still ignored until all EA trades have closed.
 
-Example: BUY at 2650.00, grid distance 30 pips, SL 30 pips, TP 60 pips:
+Example: BUY at 2650.00, grid distance 30 pips, TP 60 pips:
 
 | | Trade 1 | Trade 2 |
 |---|---|---|
 | Entry | 2650.00 | 2647.00 (grid level) |
-| SL | none | 2644.00 |
+| SL | none | none |
 | TP | 2656.00 | 2656.00 |
 
-- Trade 1 has no stop loss, so keep the **equity protector** on whenever the grid is on.
+- With no stop losses, the **equity protector** is the only loss limit. Keep it on whenever the grid is on.
 - **Turning the grid off** while trade 1 is waiting for its grid trade gives trade 1 a normal SL from
   your inputs, if price hasn't passed it yet. Turning it on affects the next trade only.
 

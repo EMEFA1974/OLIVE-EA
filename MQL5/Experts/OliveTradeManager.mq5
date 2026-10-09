@@ -89,7 +89,7 @@ input double           InpTrailAtrMult    = 2.0;         // Trailing: distance (
 input double           InpTrailStepPips   = 1;           // Trailing: minimum step (pips)
 
 input group "=== Simple grid ==="
-input bool             InpUseGrid         = false;       // Grid on (panel button): 1st trade has NO SL
+input bool             InpUseGrid         = false;       // Grid on (panel button): both trades have NO SL
 input double           InpGridPips        = 30;          // Grid distance: 2nd trade opens this far against the 1st (pips)
 input double           InpGridLotMult     = 1.0;         // Grid: 2nd trade lot = 1st trade lot x this
 
@@ -856,8 +856,8 @@ bool OpenTrade(int dir, const string why)
 
    double price = (dir > 0) ? tk.ask : tk.bid;
    double sl = 0, tp = 0;
-   // grid on: the 1st trade has no SL; a 2nd trade opens one grid distance
-   // against it (the equity protector limits the loss)
+   // grid on: no SL; a 2nd trade (also without SL) opens one grid distance
+   // against it, and the equity protector limits the loss
    double gridDist  = InpGridPips * g_pip;
    bool   grid      = (g_grid && gridDist > 0);
    double gridLevel = 0;
@@ -955,11 +955,8 @@ void ManageGrid()
    double lots = MathMax(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN),
                          MathFloor(vol * InpGridLotMult / step + 1e-9) * step);
    lots = NormalizeDouble(lots, (int)MathMax(0, MathCeil(-MathLog10(step) - 1e-9)));
-   double slDist, tpDist;
-   if(!StopDistances(slDist, tpDist))
-      return;
    double price = isBuy ? tk.ask : tk.bid;
-   double sl    = (slDist > 0) ? NormPrice(isBuy ? price - slDist : price + slDist) : 0;
+   double sl    = 0;                            // grid trades have no SL - the equity protector limits the loss
    bool ok = isBuy ? trade.Buy(lots, _Symbol, price, sl, tp, InpComment + " grid")
                    : trade.Sell(lots, _Symbol, price, sl, tp, InpComment + " grid");
    uint rc = trade.ResultRetcode();
@@ -969,8 +966,8 @@ void ManageGrid()
       return;
      }
    GlobalVariableDel(GridKey(t1));
-   Notify(StringFormat("Grid %s %.2f lots at %s  SL %s  TP %s (shared)", isBuy ? "BUY" : "SELL", lots,
-                       Px(trade.ResultPrice() > 0 ? trade.ResultPrice() : price), Px(sl), Px(tp)));
+   Notify(StringFormat("Grid %s %.2f lots at %s  SL none  TP %s (shared)", isBuy ? "BUY" : "SELL", lots,
+                       Px(trade.ResultPrice() > 0 ? trade.ResultPrice() : price), Px(tp)));
   }
 
 // Grid switched off while the first trade waits: give it a normal SL.
