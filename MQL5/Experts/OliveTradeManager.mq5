@@ -120,7 +120,7 @@ input string           InpPanelFont       = "Segoe UI";  // Panel font (e.g. Seg
 //--- constants ------------------------------------------------------
 #define PFX      "OTM_"
 #define DOT_PFX  "OTMD_"   // dots survive EA restarts; removed only when the EA is removed
-#define PANEL_W  350
+#define PANEL_W  320
 
 #define C_BG       C'16,20,38'
 #define C_BORDER   C'110,80,230'
@@ -1093,7 +1093,7 @@ void Button(const string name, int x, int y, int w, int h, const string text, co
    ObjectSetInteger(0, n, OBJPROP_BGCOLOR, bg);
    ObjectSetInteger(0, n, OBJPROP_BORDER_COLOR, bg);
    ObjectSetInteger(0, n, OBJPROP_COLOR, clrWhite);
-   ObjectSetInteger(0, n, OBJPROP_FONTSIZE, 10);
+   ObjectSetInteger(0, n, OBJPROP_FONTSIZE, 9);
    ObjectSetString(0, n, OBJPROP_FONT, InpPanelFont);
    ObjectSetString(0, n, OBJPROP_TEXT, text);
    ObjectSetInteger(0, n, OBJPROP_STATE, false);
@@ -1111,17 +1111,17 @@ void SetText(const string name, const string text, color clr)
 int Section(const string key, const string title, int y)
   {
    int x = g_px;
-   Label("sec_" + key, x + 12, y, title, C_SECTION, 9);
-   Rect("ln_" + key, x + 100, y + 8, PANEL_W - 112, 1, C_LINE, C_LINE);
-   return y + 18;
+   Label("sec_" + key, x + 12, y, title, C_SECTION, 8);
+   Rect("ln_" + key, x + 90, y + 7, PANEL_W - 102, 1, C_LINE, C_LINE);
+   return y + 16;
   }
 
 int Row(const string key, const string label, int y)
   {
    int x = g_px;
-   Label("l_" + key, x + 14, y, label, C_LABEL, 10);
-   Label("v_" + key, x + PANEL_W - 12, y, "-", C_TEXT, 10, ANCHOR_RIGHT_UPPER);
-   return y + 19;
+   Label("l_" + key, x + 14, y, label, C_LABEL, 9);
+   Label("v_" + key, x + PANEL_W - 12, y, "-", C_TEXT, 9, ANCHOR_RIGHT_UPPER);
+   return y + 17;
   }
 
 void PanelCreate()
@@ -1130,20 +1130,20 @@ void PanelCreate()
    int bw = (w - 20 - 3 * 6) / 4;
 
    Rect("bg", x, y, w, 100, C_BG, C_BORDER);
-   Rect("hdr", x + 1, y + 1, w - 2, 40, C_HEADER, C_HEADER);
-   Rect("stripe", x + 1, y + 41, w - 2, 2, C_STRIPE, C_STRIPE);
-   Label("title", x + 12, y + 4, "OLIVE TRADE MANAGER", clrWhite, 10);
-   Label("sub", x + 12, y + 22, _Symbol + "  " + S_SEP + "  " + TfName(), C'225,215,255', 9);
-   Label("state", x + w - 40, y + 13, "", C_WARN, 10, ANCHOR_RIGHT_UPPER);
-   Button("toggle", x + w - 32, y + 9, 24, 24, g_collapsed ? S_RT : S_DN, C_HEADER);
+   Rect("hdr", x + 1, y + 1, w - 2, 36, C_HEADER, C_HEADER);
+   Rect("stripe", x + 1, y + 37, w - 2, 2, C_STRIPE, C_STRIPE);
+   Label("title", x + 12, y + 4, "OLIVE TRADE MANAGER", clrWhite, 9);
+   Label("sub", x + 12, y + 20, _Symbol + "  " + S_SEP + "  " + TfName(), C'225,215,255', 8);
+   Label("state", x + w - 38, y + 12, "", C_WARN, 9, ANCHOR_RIGHT_UPPER);
+   Button("toggle", x + w - 30, y + 8, 22, 22, g_collapsed ? S_RT : S_DN, C_HEADER);
    if(g_collapsed)
      {
-      ObjectSetInteger(0, PFX + "bg", OBJPROP_YSIZE, 44);
+      ObjectSetInteger(0, PFX + "bg", OBJPROP_YSIZE, 40);
       g_panel = true;
       return;
      }
 
-   int cy = y + 52;
+   int cy = y + 47;
    cy = Section("sig", "SIGNAL", cy);
    cy = Row("src", "Source", cy);
    cy = Row("ind", "Indicator", cy);
@@ -1169,13 +1169,13 @@ void PanelCreate()
    cy = Row("eq", "Balance / Equity", cy);
    cy += 6;
 
-   Button("btn_buy", x + 10, cy, bw, 27, S_UP + " BUY", C_BTN_BUY);
-   Button("btn_sell", x + 10 + (bw + 6), cy, bw, 27, S_DN + " SELL", C_BTN_SELL);
-   Button("btn_close", x + 10 + 2 * (bw + 6), cy, bw, 27, "CLOSE", C_BTN_CLS);
-   Button("btn_auto", x + 10 + 3 * (bw + 6), cy, bw, 27, "AUTO ON", C_BTN_ON);
-   cy += 33;
-   Label("msg", x + 12, cy, "", C_MUTED, 9);
-   cy += 19;
+   Button("btn_buy", x + 10, cy, bw, 24, S_UP + " BUY", C_BTN_BUY);
+   Button("btn_sell", x + 10 + (bw + 6), cy, bw, 24, S_DN + " SELL", C_BTN_SELL);
+   Button("btn_close", x + 10 + 2 * (bw + 6), cy, bw, 24, "CLOSE", C_BTN_CLS);
+   Button("btn_auto", x + 10 + 3 * (bw + 6), cy, bw, 24, "AUTO ON", C_BTN_ON);
+   cy += 30;
+   Label("msg", x + 12, cy, "", C_MUTED, 8);
+   cy += 17;
 
    ObjectSetInteger(0, PFX + "bg", OBJPROP_YSIZE, cy - y);
    g_panel = true;
@@ -1229,7 +1229,7 @@ void PanelMouse(int mx, int my, bool down)
       if(g_mouseDown)
          return;              // press started elsewhere (e.g. scrolling the chart)
       g_mouseDown = true;
-      if(mx >= g_px && mx <= g_px + PANEL_W - 36 && my >= g_py && my <= g_py + 42)
+      if(mx >= g_px && mx <= g_px + PANEL_W - 34 && my >= g_py && my <= g_py + 38)
         {
          g_dragging = true;
          g_dragDX = mx - g_px;
