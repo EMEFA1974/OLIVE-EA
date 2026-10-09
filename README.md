@@ -89,20 +89,22 @@ Your own indicator settings (Push Alert) are kept, and you don't get duplicate a
 Turn it on with the **GRID** button on the panel, or *Grid* in the settings (off by default).
 
 - **Trade 1** opens on the signal with **no stop loss** and the normal TP.
-- If price moves **Grid distance** pips (default 30) against it, **trade 2** opens in the same
-  direction with the same lot size (or × *Grid lot multiplier*).
-- **Both trades share the same TP:** trade 1's take profit.
-- **Neither trade has a stop loss.** They close together at the shared TP, or when the
+- Each time price moves another **Grid distance** pips (default 30) against the last trade, a new
+  trade opens in the same direction, up to **Max running trades** (default 2, counting trade 1).
+  Each new trade uses the previous lot × *Grid lot multiplier* (1.0 = same lot).
+- **All grid trades share the same TP:** trade 1's take profit.
+- **No grid trade has a stop loss.** They close together at the shared TP, or when the
   **equity protector** cuts the loss.
-- Only one extra trade is ever added. Signals are still ignored until all EA trades have closed.
+- Signals are still ignored until all EA trades have closed. The panel's *Grid* row shows where the
+  next trade opens, for example `next at 2647.00 (1/3)`.
 
-Example: BUY at 2650.00, grid distance 30 pips, TP 60 pips:
+Example: BUY at 2650.00, grid distance 30 pips, TP 60 pips, max running trades 3:
 
-| | Trade 1 | Trade 2 |
-|---|---|---|
-| Entry | 2650.00 | 2647.00 (grid level) |
-| SL | none | none |
-| TP | 2656.00 | 2656.00 |
+| | Trade 1 | Trade 2 | Trade 3 |
+|---|---|---|---|
+| Entry | 2650.00 | 2647.00 | 2644.00 |
+| SL | none | none | none |
+| TP | 2656.00 | 2656.00 | 2656.00 |
 
 - With no stop losses, the **equity protector** is the only loss limit. Keep it on whenever the grid is on.
 - **Turning the grid off** while trade 1 is waiting for its grid trade gives trade 1 a normal SL from

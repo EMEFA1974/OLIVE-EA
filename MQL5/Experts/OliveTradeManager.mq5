@@ -90,8 +90,9 @@ input double           InpTrailStepPips   = 1;           // Trailing: minimum st
 
 input group "=== Simple grid ==="
 input bool             InpUseGrid         = false;       // Grid on (panel button): both trades have NO SL
-input double           InpGridPips        = 30;          // Grid distance: 2nd trade opens this far against the 1st (pips)
-input double           InpGridLotMult     = 1.0;         // Grid: 2nd trade lot = 1st trade lot x this
+input double           InpGridPips        = 30;          // Grid distance: each new trade opens this far beyond the last (pips)
+input int              InpMaxTrades       = 2;           // Max running EA trades incl. the 1st (grid)
+input double           InpGridLotMult     = 1.0;         // Grid: each new trade lot = previous lot x this
 
 input group "=== Equity protector ==="
 input double           InpEquityProtectPct = 5.0;        // Close all EA trades when their loss reaches % of equity (0 = off)
@@ -902,49 +903,55 @@ bool OpenTrade(int dir, const string why)
 string GridKey(ulong ticket) { return "OliveTM_grid_" + IntegerToString((long)ticket); }
 
 // The single EA trade waiting for its grid trade; returns its ticket or 0.
-ulong GridPending(double &dist)
+// State of a running grid: the first trade (holds the grid key), how many EA
+// trades are open and where the next grid trade opens. Returns 0 if no grid.
+ulong GridState(double &dist, int &count, double &nextLevel)
   {
    ulong first = 0;
-   int count = 0;
+   int   dir   = 0;
+   double worst = 0;
+   dist = 0;
+   count = 0;
+   nextLevel = 0;
    for(int i = PositionsTotal() - 1; i >= 0; i--)
      {
       ulong t = PositionGetTicket(i);
       if(t == 0 || !IsEAPosition())
          continue;
       count++;
-      first = t;
+      if(GlobalVariableCheck(GridKey(t)))
+         first = t;
+      bool   isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+      double open  = PositionGetDouble(POSITION_PRICE_OPEN);
+      dir   = isBuy ? 1 : -1;
+      worst = (worst == 0) ? open : (isBuy ? MathMin(worst, open) : MathMax(worst, open));
      }
-   if(count != 1 || !GlobalVariableCheck(GridKey(first)))
+   if(first == 0)
       return 0;
    dist = GlobalVariableGet(GridKey(first));
-   return (dist > 0) ? first : 0;
-  }
-
-double GridLevel(ulong ticket, double dist)
-  {
-   if(!PositionSelectByTicket(ticket))
+   if(dist <= 0)
       return 0;
-   double open = PositionGetDouble(POSITION_PRICE_OPEN);
-   return (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? open - dist : open + dist;
+   nextLevel = NormPrice(dir > 0 ? worst - dist : worst + dist);
+   return first;
   }
 
 void ManageGrid()
   {
    if(!g_grid)
       return;
-   double dist;
-   ulong t1 = GridPending(dist);
-   if(t1 == 0 || !PositionSelectByTicket(t1))
+   double dist, level;
+   int    count;
+   ulong  t1 = GridState(dist, count, level);
+   if(t1 == 0 || count >= InpMaxTrades || !PositionSelectByTicket(t1))
       return;
    bool   isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
    double tp    = PositionGetDouble(POSITION_TP);
    double vol   = PositionGetDouble(POSITION_VOLUME);
-   double level = GridLevel(t1, dist);
    MqlTick tk;
    if(!SymbolInfoTick(_Symbol, tk))
       return;
    if(isBuy ? tk.bid > level : tk.ask < level)
-      return;                                   // grid level not reached yet
+      return;                                   // next grid level not reached yet
    if(GetTickCount() < g_gridRetry)
       return;
    g_gridRetry = GetTickCount() + 5000;
@@ -952,8 +959,10 @@ void ManageGrid()
    double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
    if(step <= 0)
       step = 0.01;
-   double lots = MathMax(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN),
-                         MathFloor(vol * InpGridLotMult / step + 1e-9) * step);
+   double lots = vol * MathPow(InpGridLotMult, count);
+   lots = MathMax(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN), MathFloor(lots / step + 1e-9) * step);
+   if(InpMaxLot > 0)
+      lots = MathMin(lots, InpMaxLot);
    lots = NormalizeDouble(lots, (int)MathMax(0, MathCeil(-MathLog10(step) - 1e-9)));
    double price = isBuy ? tk.ask : tk.bid;
    double sl    = 0;                            // grid trades have no SL - the equity protector limits the loss
@@ -965,18 +974,18 @@ void ManageGrid()
       Msg(StringFormat("Grid trade failed: %u %s - retrying", rc, trade.ResultRetcodeDescription()));
       return;
      }
-   GlobalVariableDel(GridKey(t1));
-   Notify(StringFormat("Grid %s %.2f lots at %s  SL none  TP %s (shared)", isBuy ? "BUY" : "SELL", lots,
-                       Px(trade.ResultPrice() > 0 ? trade.ResultPrice() : price), Px(tp)));
+   Notify(StringFormat("Grid trade %d/%d: %s %.2f lots at %s  SL none  TP %s (shared)", count + 1, InpMaxTrades,
+                       isBuy ? "BUY" : "SELL", lots, Px(trade.ResultPrice() > 0 ? trade.ResultPrice() : price), Px(tp)));
   }
 
 // Grid switched off while the first trade waits: give it a normal SL.
 void GridDisarm()
   {
-   double dist, slDist, tpDist;
-   ulong t1 = GridPending(dist);
-   if(t1 == 0 || !PositionSelectByTicket(t1))
-      return;
+   double dist, level, slDist, tpDist;
+   int    count;
+   ulong  t1 = GridState(dist, count, level);
+   if(t1 == 0 || count != 1 || !PositionSelectByTicket(t1))
+      return;                                   // grid trades already open: just stop adding more
    GlobalVariableDel(GridKey(t1));
    if(!StopDistances(slDist, tpDist) || slDist <= 0 || !PositionSelectByTicket(t1))
       return;
@@ -1488,15 +1497,19 @@ void UpdatePanel()
    else
       SetText("v_man", "none", C_MUTED);
 
-   double gdist;
-   ulong gt = GridPending(gdist);
+   double gdist, glevel;
+   int    gcount;
+   ulong  gt = GridState(gdist, gcount, glevel);
    if(!g_grid)
-      SetText("v_grid", "off", C_MUTED);
+      SetText("v_grid", "off" + (cnt > 1 ? StringFormat("  (%d trades open)", cnt) : ""), C_MUTED);
    else
-      if(gt != 0)
-         SetText("v_grid", "2nd trade at " + Px(NormPrice(GridLevel(gt, gdist))), C_GOLD);
+      if(gt == 0)
+         SetText("v_grid", StringFormat("on  (max %d trades)", InpMaxTrades), C_TEXT);
       else
-         SetText("v_grid", cnt > 1 ? "2nd trade open" : "on", cnt > 1 ? C_GOLD : C_TEXT);
+         if(gcount < InpMaxTrades)
+            SetText("v_grid", StringFormat("next at %s  (%d/%d)", Px(glevel), gcount, InpMaxTrades), C_GOLD);
+         else
+            SetText("v_grid", StringFormat("max reached  (%d/%d)", gcount, InpMaxTrades), C_WARN);
 
    if(InpEquityProtectPct <= 0)
       SetText("v_guard", "off", C_MUTED);
@@ -1552,9 +1565,9 @@ int OnInit()
    S_DOT = ShortToString(0x25CF);
    S_SEP = ShortToString(0x2022);
 
-   if(InpSignalBar < 0 || InpFixedLot <= 0 || InpATRPeriod <= 0)
+   if(InpSignalBar < 0 || InpFixedLot <= 0 || InpATRPeriod <= 0 || InpMaxTrades < 1)
      {
-      Print("Invalid inputs: signal candle must be >= 0, fixed lot and ATR period > 0");
+      Print("Invalid inputs: signal candle must be >= 0, fixed lot, ATR period and max trades > 0");
       return INIT_PARAMETERS_INCORRECT;
      }
    if(InpSignalBar == 0)
