@@ -5,7 +5,7 @@ opens one trade at a time and manages it. It is built for compiled `.ex5`
 indicators like **CharisGold FX**, so you don't need the indicator's source code.
 
 The defaults are set for **XAUUSD on M5 with Exness (3-digit prices)**:
-- **All distances are in pips.** On XAUUSD, 1 pip = 0.1, so 10 pips = a $1.00 move. Symbol suffixes such as `XAUUSDm` are recognised.
+- **All distances are in points.** On 3-digit XAUUSD, 1 point = 0.001, so 1000 points = a $1.00 move.
 - **Signal candles are marked with dots:** aqua under buy candles, magenta above sell candles, and yellow for signals the EA skipped.
 - **One trade at a time.** All signals are ignored until the running trade closes (manually, by TP or by SL).
 - **Push notifications are on.**
@@ -65,32 +65,31 @@ Your own indicator settings (Push Alert) are kept, and you don't get duplicate a
 |---|---|---|
 | Lot mode | Fixed lot | *Fixed lot*, or *% of balance* risked at the stop loss |
 | Fixed lot / Risk % / Max lot | 0.01 / 1.0 / 5.0 | |
-| Stop loss mode | ATR | *ATR × multiplier*, *Fixed pips* or *None* |
-| SL ATR multiplier / SL pips | 1.5 / 30 ($3.00) | |
-| Take profit mode | ATR | *ATR × multiplier*, *Fixed pips* or *None*, set separately from the SL |
-| TP ATR multiplier / TP pips | 3.0 / 60 ($6.00) | |
-| TP reduction % | 15 | Shortens the TP distance by this %, in both modes. ATR × 3.0 then becomes ATR × 2.55, and 60 pips becomes 51. 0 = no reduction. |
+| Stop loss mode | ATR | *ATR × multiplier*, *Fixed points* or *None* |
+| SL ATR multiplier / SL points | 1.5 / 3000 ($3.00) | |
+| Take profit mode | ATR | *ATR × multiplier*, *Fixed points* or *None*, set separately from the SL |
+| TP ATR multiplier / TP points | 3.0 / 6000 ($6.00) | |
+| TP reduction % | 15 | Shortens the TP distance by this %, in both modes. ATR × 3.0 then becomes ATR × 2.55, and 6000 points becomes 5100. 0 = no reduction. |
 | ATR period / timeframe | 14 / current | |
 
 ### Trade management and filters
 | Input | Default | Meaning |
 |---|---|---|
 | Opposite signal | Ignore (wait until the trade closes) | Or *Close and reverse* / *Close only* |
-| Breakeven | off | Trigger at 20 pips ($2.00) of profit, lock in 2 pips ($0.20) |
-| Trailing stop | off | ATR × multiplier or fixed pips (20); starts at 30 pips of profit, moves in steps of 1 pip |
+| Breakeven | off | Trigger at 2000 points ($2.00) of profit, lock in 200 points ($0.20) |
+| Trailing stop | off | ATR × multiplier or fixed points (2000); starts at 3000 points of profit, moves in steps of 100 points |
 | Max spread | 0 (off) | Skips entries when the spread is wider |
 | Daily loss limit % | 0 (off) | Stops new entries for the day once EA losses reach this % |
 | Magic number | 20261008 | Identifies the EA's trades. Use a different one on each chart. |
 | Popup / Push alerts | on / on | Alerts when the EA opens or closes a trade. Push needs your MetaQuotes ID in MT5 (see below). |
-| Max slippage | 3 pips | $0.30 on XAUUSD. Exness gold uses market execution, so this is usually ignored. |
-| Pip size | 0 (auto) | Auto: gold (XAU/GOLD) = 0.1, 5/3-digit FX = 10 points. Set it to override. |
+| Max slippage | 300 points | $0.30 on XAUUSD. Exness gold uses market execution, so this is usually ignored. |
 
 ## Simple grid (optional)
 
 Turn it on with the **GRID** button on the panel, or *Grid* in the settings (off by default).
 
 - **Trade 1** opens on the signal with **no stop loss** and the normal TP.
-- **Grid distance is in points** (all other distances are in pips). On 3-digit XAUUSD, 1 point = 0.001,
+- **Grid distance is in points**, like every other distance. On 3-digit XAUUSD, 1 point = 0.001,
   so 500 points = $0.50, 1000 points = $1.00 and 5000 points = $5.00.
 - Each time price moves another **Grid distance** (default 500 points) against the last trade, a new
   trade opens in the same direction, up to **Max running trades** (default 2, counting trade 1).
@@ -101,7 +100,7 @@ Turn it on with the **GRID** button on the panel, or *Grid* in the settings (off
 - Signals are still ignored until all EA trades have closed. The panel's *Grid* row shows where the
   next trade opens, for example `next at 2647.00 (1/3)`.
 
-Example: BUY at 2650.000, grid distance 500 points, TP 60 pips, max running trades 3:
+Example: BUY at 2650.000, grid distance 500 points, TP 6000 points, max running trades 3:
 
 | | Trade 1 | Trade 2 | Trade 3 |
 |---|---|---|---|
@@ -133,9 +132,9 @@ Example: BUY at 2650.000, grid distance 500 points, TP 60 pips, max running trad
 
 ## XAUUSD M5 on Exness
 
-- Fixed SL 30 pips = $3.00 price move, TP 60 pips = $6.00. With 0.01 lot, a $1.00 price move is about $1.00 of P/L.
-- The ATR modes adapt to volatility automatically. On M5 gold, ATR(14) is often 15-40 pips ($1.50-$4.00), so SL = 1.5 x ATR and TP = 3 x ATR.
-- Gold spreads widen sharply around news and the daily rollover. Consider setting *Max spread* (e.g. 4-5 pips = $0.40-$0.50) to skip entries then.
+- Fixed SL 3000 points = $3.00 price move, TP 6000 points = $6.00. With 0.01 lot, a $1.00 price move is about $1.00 of P/L.
+- The ATR modes adapt to volatility automatically. On M5 gold, ATR(14) is often 1500-4000 points ($1.50-$4.00), so SL = 1.5 x ATR and TP = 3 x ATR.
+- Gold spreads widen sharply around news and the daily rollover. Consider setting *Max spread* (e.g. 400-500 points = $0.40-$0.50) to skip entries then.
 - **Push notifications:** in the MT5 mobile app, open *Settings → Messages* and copy your **MetaQuotes ID**.
   In desktop MT5, go to *Tools → Options → Notifications*, tick *Enable Push Notifications* and paste the ID.
 
@@ -148,7 +147,7 @@ Example: BUY at 2650.000, grid distance 500 points, TP 60 pips, max running trad
 | Sell dot colour | Magenta | Drawn above the high of each sell signal candle |
 | Skipped signal dot colour | Yellow | Signals where no trade was opened (trade still running, auto off, spread or daily limit, or the order failed) |
 | Dot size | 1 | 1-5 |
-| Gap between candle and dot | 3 pips ($0.30) | |
+| Gap between candle and dot | 300 points ($0.30) | |
 | Past candles to mark at start | 500 | |
 
 Every confirmed signal gets a dot. While the EA is running, a signal that opened a trade is aqua or
@@ -170,7 +169,7 @@ dots keep their colour. They are removed only when you remove the EA from the ch
 - **Header:** symbol, timeframe and state (ACTIVE / PAUSED / BLOCKED / SEARCHING).
 - **Signal:** source, indicator, buffers in use, last signal.
 - **Position:** the EA trade (side, lots, entry, SL/TP, floating P/L) and your manual trades.
-- **Market:** spread and ATR in pips, lot and SL/TP modes.
+- **Market:** spread and ATR in points, lot and SL/TP modes.
 - **Today:** closed P/L, trades/wins, balance/equity.
 - **Buttons:**
   - **BUY / SELL** open an EA-managed trade with the EA's SL/TP. They are blocked while an EA trade is running.
