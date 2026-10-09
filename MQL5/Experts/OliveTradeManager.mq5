@@ -89,8 +89,12 @@ input double           InpTrailAtrMult    = 2.0;         // Trailing: distance (
 input double           InpTrailStepPips   = 1;           // Trailing: minimum step (pips)
 
 input group "=== Simple grid ==="
-input bool             InpUseGrid         = false;       // Grid: add a 2nd trade where the SL would be (panel button)
+input bool             InpUseGrid         = false;       // Grid on (panel button): 1st trade has NO SL
+input double           InpGridPips        = 30;          // Grid distance: 2nd trade opens this far against the 1st (pips)
 input double           InpGridLotMult     = 1.0;         // Grid: 2nd trade lot = 1st trade lot x this
+
+input group "=== Equity protector ==="
+input double           InpEquityProtectPct = 5.0;        // Close all EA trades when their loss reaches % of equity (0 = off)
 
 input group "=== Filters ==="
 input double           InpMaxSpreadPips   = 0;           // Max spread in pips (0 = off)
@@ -809,19 +813,17 @@ double CalcLots(double slDist)
    return NormalizeDouble(lots, vd);
   }
 
-bool OpenTrade(int dir, const string why)
+// SL and TP distances (price units) from the inputs; false if ATR isn't ready.
+bool StopDistances(double &slDist, double &tpDist)
   {
+   slDist = 0;
+   tpDist = 0;
    MqlTick tk;
    if(!SymbolInfoTick(_Symbol, tk))
       return false;
    double atr = AtrValue();
    if((InpSLMode == STOP_ATR || InpTPMode == STOP_ATR) && atr <= 0)
-     {
-      Msg("ATR not ready - trade skipped");
       return false;
-     }
-
-   double slDist = 0, tpDist = 0;
    if(InpSLMode == STOP_ATR)
       slDist = atr * InpSLAtrMult;
    else
@@ -832,24 +834,35 @@ bool OpenTrade(int dir, const string why)
    else
       if(InpTPMode == STOP_FIXED)
          tpDist = InpTPPips * g_pip;
-
    double minDist = (SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) + 2) * _Point + (tk.ask - tk.bid);
    if(slDist > 0 && slDist < minDist)
       slDist = minDist;
    if(tpDist > 0 && tpDist < minDist)
       tpDist = minDist;
+   return true;
+  }
+
+bool OpenTrade(int dir, const string why)
+  {
+   MqlTick tk;
+   if(!SymbolInfoTick(_Symbol, tk))
+      return false;
+   double slDist, tpDist;
+   if(!StopDistances(slDist, tpDist))
+     {
+      Msg("ATR not ready - trade skipped");
+      return false;
+     }
 
    double price = (dir > 0) ? tk.ask : tk.bid;
    double sl = 0, tp = 0;
-   // with the grid on, the 2nd trade opens where the SL would be, and both
-   // trades then share one SL a further SL distance away
-   bool   grid = (g_grid && slDist > 0);
+   // grid on: the 1st trade has no SL; a 2nd trade opens one grid distance
+   // against it (the equity protector limits the loss)
+   double gridDist  = InpGridPips * g_pip;
+   bool   grid      = (g_grid && gridDist > 0);
    double gridLevel = 0;
    if(grid)
-     {
-      gridLevel = NormPrice(dir > 0 ? price - slDist : price + slDist);
-      sl = NormPrice(dir > 0 ? price - 2 * slDist : price + 2 * slDist);
-     }
+      gridLevel = NormPrice(dir > 0 ? price - gridDist : price + gridDist);
    else
       if(slDist > 0)
          sl = NormPrice(dir > 0 ? price - slDist : price + slDist);
@@ -874,17 +887,17 @@ bool OpenTrade(int dir, const string why)
       return false;
      }
    if(grid)
-      GlobalVariableSet(GridKey(trade.ResultOrder()), slDist);
+      GlobalVariableSet(GridKey(trade.ResultOrder()), gridDist);
    Notify(StringFormat("%s %.2f lots at %s (%s)  SL %s  TP %s%s", dir > 0 ? "BUY" : "SELL", lots,
-                       Px(trade.ResultPrice() > 0 ? trade.ResultPrice() : price), why, Px(sl), Px(tp),
-                       grid ? "  grid at " + Px(gridLevel) : ""));
+                       Px(trade.ResultPrice() > 0 ? trade.ResultPrice() : price), why,
+                       grid ? "none (grid)" : Px(sl), Px(tp), grid ? "  grid at " + Px(gridLevel) : ""));
    return true;
   }
 
 //+------------------------------------------------------------------+
-//| Simple grid: one extra trade where the first trade's SL would be |
+//| Simple grid: one extra trade one grid distance against the first |
 //+------------------------------------------------------------------+
-// A first trade opened with the grid on stores its SL distance under this key
+// A first trade opened with the grid on stores its grid distance under this key
 // until the 2nd trade is added (survives EA restarts).
 string GridKey(ulong ticket) { return "OliveTM_grid_" + IntegerToString((long)ticket); }
 
@@ -942,8 +955,11 @@ void ManageGrid()
    double lots = MathMax(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN),
                          MathFloor(vol * InpGridLotMult / step + 1e-9) * step);
    lots = NormalizeDouble(lots, (int)MathMax(0, MathCeil(-MathLog10(step) - 1e-9)));
+   double slDist, tpDist;
+   if(!StopDistances(slDist, tpDist))
+      return;
    double price = isBuy ? tk.ask : tk.bid;
-   double sl    = NormPrice(isBuy ? price - dist : price + dist);
+   double sl    = (slDist > 0) ? NormPrice(isBuy ? price - slDist : price + slDist) : 0;
    bool ok = isBuy ? trade.Buy(lots, _Symbol, price, sl, tp, InpComment + " grid")
                    : trade.Sell(lots, _Symbol, price, sl, tp, InpComment + " grid");
    uint rc = trade.ResultRetcode();
@@ -953,26 +969,54 @@ void ManageGrid()
       return;
      }
    GlobalVariableDel(GridKey(t1));
-   // both trades now share the grid trade's SL (and the first trade's TP)
-   if(PositionSelectByTicket(t1) && MathAbs(PositionGetDouble(POSITION_SL) - sl) > _Point / 2)
-      trade.PositionModify(t1, sl, tp);
    Notify(StringFormat("Grid %s %.2f lots at %s  SL %s  TP %s (shared)", isBuy ? "BUY" : "SELL", lots,
                        Px(trade.ResultPrice() > 0 ? trade.ResultPrice() : price), Px(sl), Px(tp)));
   }
 
-// Grid switched off while the first trade waits: give it back its normal SL.
+// Grid switched off while the first trade waits: give it a normal SL.
 void GridDisarm()
   {
-   double dist;
+   double dist, slDist, tpDist;
    ulong t1 = GridPending(dist);
    if(t1 == 0 || !PositionSelectByTicket(t1))
       return;
-   bool   isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
-   double sl    = NormPrice(GridLevel(t1, dist));
-   double cur   = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    GlobalVariableDel(GridKey(t1));
+   if(!StopDistances(slDist, tpDist) || slDist <= 0 || !PositionSelectByTicket(t1))
+      return;
+   bool   isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+   double open  = PositionGetDouble(POSITION_PRICE_OPEN);
+   double sl    = NormPrice(isBuy ? open - slDist : open + slDist);
+   double cur   = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    if((isBuy ? cur > sl : cur < sl) && trade.PositionModify(t1, sl, PositionGetDouble(POSITION_TP)))
-      Msg("Grid off - SL set back to " + Px(sl));
+      Msg("Grid off - SL set to " + Px(sl));
+   else
+      Msg("Grid off - price is past the normal SL, trade left without SL");
+  }
+
+//+------------------------------------------------------------------+
+//| Equity protector                                                 |
+//+------------------------------------------------------------------+
+// Closes all EA trades when their floating loss reaches the set % of the
+// current equity; the EA then simply waits for the next signal.
+void CheckEquityProtector()
+  {
+   if(InpEquityProtectPct <= 0)
+      return;
+   int cnt;
+   double pl = FloatingPL(true, cnt);
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   if(cnt == 0 || pl >= 0 || equity <= 0)
+      return;
+   double lossPct = -pl / equity * 100.0;
+   if(lossPct < InpEquityProtectPct)
+      return;
+   static uint nextTry = 0;
+   if(GetTickCount() < nextTry)
+      return;                                   // a close is already in progress / failed just now
+   nextTry = GetTickCount() + 3000;
+   Notify(StringFormat("Equity protector: EA loss %s = %.1f%% of equity - closing %d trade(s), waiting for next signal",
+                       Money(pl), lossPct, cnt));
+   CloseEAPositions();
   }
 
 // Remove grid keys of trades that are already closed.
@@ -1285,6 +1329,7 @@ void PanelCreate()
    cy = Row("pl", "Floating P/L", cy);
    cy = Row("man", "Manual trades", cy);
    cy = Row("grid", "Grid", cy);
+   cy = Row("guard", "Equity protector", cy);
    cy += 4;
    cy = Section("mkt", "MARKET", cy);
    cy = Row("spread", "Spread", cy);
@@ -1456,6 +1501,16 @@ void UpdatePanel()
       else
          SetText("v_grid", cnt > 1 ? "2nd trade open" : "on", cnt > 1 ? C_GOLD : C_TEXT);
 
+   if(InpEquityProtectPct <= 0)
+      SetText("v_guard", "off", C_MUTED);
+   else
+     {
+      double eq = AccountInfoDouble(ACCOUNT_EQUITY);
+      double lossPct = (eaPL < 0 && eq > 0) ? -eaPL / eq * 100.0 : 0;
+      SetText("v_guard", StringFormat("loss %.1f%%  /  max %.1f%%", lossPct, InpEquityProtectPct),
+              lossPct >= InpEquityProtectPct * 0.7 ? C_SELL : (lossPct > 0 ? C_WARN : C_TEXT));
+     }
+
    //--- market
    double sp = SpreadPips();
    SetText("v_spread", StringFormat("%.1f pips", sp), (InpMaxSpreadPips > 0 && sp > InpMaxSpreadPips) ? C_SELL : C_TEXT);
@@ -1559,6 +1614,7 @@ void OnTick()
   {
    if(g_source == 0)
       TryResolve();
+   CheckEquityProtector();
    CheckSignal();
    ManageGrid();
    ManagePositions();

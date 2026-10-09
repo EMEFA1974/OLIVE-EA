@@ -88,29 +88,38 @@ Your own indicator settings (Push Alert) are kept, and you don't get duplicate a
 
 Turn it on with the **GRID** button on the panel, or *Grid* in the settings (off by default).
 
-- **Trade 1** opens on the signal as usual. Instead of a stop loss at the SL distance, that level
-  becomes the **grid level**.
-- If price reaches the grid level, **trade 2** opens in the same direction, with the same lot size
-  (or × *Grid lot multiplier*).
+- **Trade 1** opens on the signal with **no stop loss** and the normal TP.
+- If price moves **Grid distance** pips (default 30) against it, **trade 2** opens in the same
+  direction with the same lot size (or × *Grid lot multiplier*).
 - **Both trades share the same TP:** trade 1's take profit.
-- **Trade 2 has its own SL**, set from your inputs (ATR × multiplier or fixed pips) measured from
-  its own entry. Trade 1's SL is moved to the same price, so both close together at the TP or at that SL.
+- **Trade 2 has its own SL**, from your SL inputs (ATR × multiplier or fixed pips), measured from its
+  own entry. Trade 1 keeps no SL, so if trade 2 is stopped out, trade 1 stays open until the TP
+  or the **equity protector** closes it.
 - Only one extra trade is ever added. Signals are still ignored until all EA trades have closed.
 
-Example: a BUY at 2650.00 with SL distance 30 pips ($3) and TP 60 pips ($6):
+Example: BUY at 2650.00, grid distance 30 pips, SL 30 pips, TP 60 pips:
 
 | | Trade 1 | Trade 2 |
 |---|---|---|
 | Entry | 2650.00 | 2647.00 (grid level) |
-| SL | 2644.00 | 2644.00 |
+| SL | none | 2644.00 |
 | TP | 2656.00 | 2656.00 |
 
-- Trade 1 is opened with its SL already at the final shared level (2 × SL distance) as a safety net,
-  so it stays protected even if MT5 or the EA is closed when price reaches the grid level.
-- **Risk is roughly three times one normal trade:** trade 1 loses 2 × SL and trade 2 loses 1 × SL
-  if the shared SL is hit. Keep that in mind, especially in *% of balance* lot mode.
-- **Turning the grid off** while trade 1 is waiting for its grid trade moves trade 1's SL back to the
-  normal SL distance, if price hasn't passed it yet. Turning it on affects the next trade only.
+- Trade 1 has no stop loss, so keep the **equity protector** on whenever the grid is on.
+- **Turning the grid off** while trade 1 is waiting for its grid trade gives trade 1 a normal SL from
+  your inputs, if price hasn't passed it yet. Turning it on affects the next trade only.
+
+## Equity protector
+
+| Input | Default | Meaning |
+|---|---|---|
+| Close all EA trades when their loss reaches % of equity | 5.0 | 0 = off |
+
+- When the combined floating loss of the EA's trades reaches this % of the **current (running)
+  equity**, the EA closes all of its trades, sends an alert/push, and **waits for the next signal**.
+- Your manual trades are not counted and are never closed.
+- The panel's *Equity protector* row shows the current loss against the limit (orange once
+  there is a loss, red from 70% of the limit).
 
 ## XAUUSD M5 on Exness
 
