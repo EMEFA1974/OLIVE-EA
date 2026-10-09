@@ -4,8 +4,8 @@
 //|  and manages the trade (ATR/fixed SL & TP, breakeven, trailing). |
 //+------------------------------------------------------------------+
 #property copyright   "Olive EA"
-#property version     "1.22"
-#define   EA_VERSION    "1.22"
+#property version     "1.23"
+#define   EA_VERSION    "1.23"
 #property description "Olive Trade Manager - enters on confirmed arrow signals from a custom indicator"
 #property description "and manages the trade. Works with compiled .ex5 indicators (no source needed)."
 #property description "Defaults set for XAUUSD M5 (Exness, 3-digit). All distances are in pips (gold: 1 pip = 0.1)."
@@ -92,7 +92,7 @@ input double           InpTrailStepPips   = 1;           // Trailing: minimum st
 
 input group "=== Simple grid ==="
 input bool             InpUseGrid         = false;       // Grid on (panel button): both trades have NO SL
-input double           InpGridPips        = 30;          // Grid distance in PIPS (gold: 10 pips = $1) beyond the last trade
+input double           InpGridPoints      = 500;         // Grid distance in POINTS beyond the last trade (3-digit gold: 1000 = $1)
 input int              InpMaxTrades       = 2;           // Max running EA trades incl. the 1st (grid)
 input double           InpGridLotMult     = 1.0;         // Grid: each new trade lot = previous lot x this
 
@@ -918,7 +918,7 @@ bool OpenTrade(int dir, const string why)
    double sl = 0, tp = 0;
    // grid on: no SL; a 2nd trade (also without SL) opens one grid distance
    // against it, and the equity protector limits the loss
-   double gridDist  = InpGridPips * g_pip;
+   double gridDist  = InpGridPoints * _Point;
    bool   grid      = (g_grid && gridDist > 0);
    double gridLevel = 0;
    if(grid)
@@ -991,7 +991,7 @@ int GridInfo(int &count, double &nextLevel, double &tp, double &lastLot)
         }
      }
    if(count > 0)
-      nextLevel = NormPrice(dir > 0 ? worst - InpGridPips * g_pip : worst + InpGridPips * g_pip);
+      nextLevel = NormPrice(dir > 0 ? worst - InpGridPoints * _Point : worst + InpGridPoints * _Point);
    return dir;
   }
 
@@ -1024,7 +1024,7 @@ void GridStripSL()
 
 void ManageGrid()
   {
-   if(!g_grid || InpGridPips <= 0)
+   if(!g_grid || InpGridPoints <= 0)
       return;
    GridStripSL();
    int    count;
@@ -1610,8 +1610,8 @@ void UpdatePanel()
       SetText("v_grid", "off" + (cnt > 1 ? StringFormat("  (%d trades open)", cnt) : ""), C_MUTED);
    else
       if(gdir == 0)
-         SetText("v_grid", StringFormat("on  %.0f pips = %s, max %d", InpGridPips,
-                                        DoubleToString(InpGridPips * g_pip, _Digits), InpMaxTrades), C_TEXT);
+         SetText("v_grid", StringFormat("on  %.0f points = %s, max %d", InpGridPoints,
+                                        DoubleToString(InpGridPoints * _Point, _Digits), InpMaxTrades), C_TEXT);
       else
          if(gcount < InpMaxTrades)
             SetText("v_grid", StringFormat("next at %s  (%d/%d)", Px(glevel), gcount, InpMaxTrades), C_GOLD);
@@ -1685,7 +1685,7 @@ int OnInit()
    g_auto = RestoreToggle("auto", InpAutoTrade);
    g_grid = RestoreToggle("grid", InpUseGrid);
    Print("Auto-trading ", g_auto ? "ON" : "OFF", ", grid ", g_grid ? "ON" : "OFF",
-         StringFormat(" (distance %.1f pips, max %d trades)", InpGridPips, InpMaxTrades));
+         StringFormat(" (distance %.0f points, max %d trades)", InpGridPoints, InpMaxTrades));
    trade.SetExpertMagicNumber(InpMagic);
    g_pip = DetectPip();
    trade.SetDeviationInPoints((ulong)MathRound(InpSlippagePips * g_pip / _Point));

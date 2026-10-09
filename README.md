@@ -90,8 +90,9 @@ Your own indicator settings (Push Alert) are kept, and you don't get duplicate a
 Turn it on with the **GRID** button on the panel, or *Grid* in the settings (off by default).
 
 - **Trade 1** opens on the signal with **no stop loss** and the normal TP.
-- **Grid distance is in pips:** on gold, 10 pips = $1.00, so 50 pips = $5.00 and 500 pips = $50.00.
-- Each time price moves another **Grid distance** pips (default 30) against the last trade, a new
+- **Grid distance is in points** (all other distances are in pips). On 3-digit XAUUSD, 1 point = 0.001,
+  so 500 points = $0.50, 1000 points = $1.00 and 5000 points = $5.00.
+- Each time price moves another **Grid distance** (default 500 points) against the last trade, a new
   trade opens in the same direction, up to **Max running trades** (default 2, counting trade 1).
   Each new trade uses the previous lot × *Grid lot multiplier* (1.0 = same lot).
 - **All grid trades share the same TP:** trade 1's take profit.
@@ -100,11 +101,11 @@ Turn it on with the **GRID** button on the panel, or *Grid* in the settings (off
 - Signals are still ignored until all EA trades have closed. The panel's *Grid* row shows where the
   next trade opens, for example `next at 2647.00 (1/3)`.
 
-Example: BUY at 2650.00, grid distance 30 pips, TP 60 pips, max running trades 3:
+Example: BUY at 2650.000, grid distance 500 points, TP 60 pips, max running trades 3:
 
 | | Trade 1 | Trade 2 | Trade 3 |
 |---|---|---|---|
-| Entry | 2650.00 | 2647.00 | 2644.00 |
+| Entry | 2650.000 | 2649.500 | 2649.000 |
 | SL | none | none | none |
 | TP | 2656.00 | 2656.00 | 2656.00 |
 
