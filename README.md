@@ -127,6 +127,12 @@ dots keep their colour. They are removed only when you remove the EA from the ch
 
 ## Troubleshooting
 
+- **No trades at all:** check the **Experts** tab. With *Log what the EA sees on every candle* on
+  (the default), the EA writes one `[diag]` line per candle showing what it read from the indicator
+  buffers, whether that was a signal, and whether something blocked the trade. Press the panel's
+  **BUY** once on a demo account to check that orders go through; if they don't, the panel's message
+  line shows the broker's error.
+
 - **Panel stays on SEARCHING / "No arrow buffers found":** run the scanner and look for the lines
   marked `<<< BUY ARROWS` and `<<< SELL ARROWS`, then put those numbers into
   *Buy arrow buffer* / *Sell arrow buffer*. If the scanner finds no arrow buffers but lists arrow

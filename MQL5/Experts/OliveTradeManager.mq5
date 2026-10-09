@@ -100,6 +100,7 @@ input double           InpSlippagePips    = 3;           // Max slippage (pips)
 input double           InpPipSize         = 0;           // Pip size in price (0 = auto: gold 0.1, FX 5/3-digit = 10 points)
 input bool             InpPopupAlerts     = true;        // Popup alerts on trades
 input bool             InpPushAlerts      = true;        // Push notifications on trades
+input bool             InpDiagnostics     = true;        // Log what the EA sees on every candle (Experts tab)
 
 input group "=== Signal dots ==="
 input bool             InpShowDots        = true;        // Mark signal candles with dots
@@ -163,6 +164,7 @@ int      g_dayWins      = 0;
 datetime g_lossAlertDay = 0;
 datetime g_histBar      = 0;      // candle when past signals were last marked
 uint     g_histRetry    = 0;      // next retry while no past signals were found
+datetime g_diagBar      = 0;      // candle last written to the diagnostics log
 bool     g_panel        = false;
 string   S_UP, S_DN, S_DOT, S_SEP;
 
@@ -894,6 +896,49 @@ void OnSignal(int dir, datetime bar)
    ChartRedraw();
   }
 
+string RawBuffer(int buf, int shift)
+  {
+   double a[1];
+   if(CopyBuffer(g_ind, buf, shift, 1, a) != 1)
+      return "read error " + IntegerToString(GetLastError());
+   if(!IsSignalValue(a[0]))
+      return "empty";
+   return DoubleToString(a[0], _Digits);
+  }
+
+// One line per candle: what the indicator showed and why the EA did or did not trade.
+void Diagnostics()
+  {
+   if(!InpDiagnostics)
+      return;
+   datetime bar0 = iTime(_Symbol, _Period, 0);
+   if(bar0 == g_diagBar || TimeCurrent() - bar0 < 5)
+      return;
+   g_diagBar = bar0;
+   datetime bar = iTime(_Symbol, _Period, InpSignalBar);
+   string line = "[diag] candle " + TimeToString(bar, TIME_DATE | TIME_MINUTES) + ": ";
+   if(g_source == 0)
+      line += "signals not found yet (" + g_status + ")";
+   else
+      if(g_source == 1)
+         line += (g_buyBuf == g_sellBuf)
+                 ? StringFormat("buffer #%d = %s", g_buyBuf, RawBuffer(g_buyBuf, InpSignalBar))
+                 : StringFormat("buy #%d = %s, sell #%d = %s", g_buyBuf, RawBuffer(g_buyBuf, InpSignalBar),
+                                g_sellBuf, RawBuffer(g_sellBuf, InpSignalBar));
+      else
+         line += StringFormat("%d arrow objects on chart", CountArrowObjects());
+   int sig = (g_source != 0) ? ReadSignal(InpSignalBar) : 0;
+   line += " -> " + (sig > 0 ? "BUY" : sig < 0 ? "SELL" : "no signal");
+   if(sig != 0)
+      line += (bar == g_lastSignalBar) ? " (handled)" : " (not handled yet)";
+   ulong t;
+   int pos = EAPosition(t);
+   string block = EntryBlockReason();
+   line += " | auto " + (g_auto ? "on" : "OFF") + " | EA trade " + (pos > 0 ? "BUY" : pos < 0 ? "SELL" : "none") +
+           (block != "" ? " | blocked: " + block : "");
+   Print(line);
+  }
+
 void CheckSignal()
   {
    if(g_source == 0)
@@ -1280,6 +1325,7 @@ void OnTimer()
       if(g_histBar != iTime(_Symbol, _Period, 0) || (g_histRetry > 0 && GetTickCount() >= g_histRetry))
          ScanHistory();
    UpdateDayStats();
+   Diagnostics();
    UpdatePanel();
   }
 
