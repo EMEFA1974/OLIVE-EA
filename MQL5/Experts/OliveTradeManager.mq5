@@ -115,12 +115,12 @@ input group "=== Panel ==="
 input bool             InpShowPanel       = true;        // Show panel
 input int              InpPanelX          = 12;          // Panel start X position (drag the header to move it)
 input int              InpPanelY          = 30;          // Panel start Y position
-input string           InpPanelFont       = "Segoe UI Light"; // Panel font (e.g. Segoe UI Light, Segoe UI, Arial)
+input string           InpPanelFont       = "Segoe UI";  // Panel font (e.g. Segoe UI, Segoe UI Light, Arial)
 
 //--- constants ------------------------------------------------------
 #define PFX      "OTM_"
 #define DOT_PFX  "OTMD_"   // dots survive EA restarts; removed only when the EA is removed
-#define PANEL_W  300
+#define PANEL_W  350
 
 #define C_BG       C'16,20,38'
 #define C_BORDER   C'110,80,230'
@@ -128,9 +128,9 @@ input string           InpPanelFont       = "Segoe UI Light"; // Panel font (e.g
 #define C_STRIPE   C'255,190,40'
 #define C_SECTION  C'0,200,255'
 #define C_LINE     C'45,52,90'
-#define C_LABEL    C'150,160,195'
-#define C_TEXT     C'235,238,250'
-#define C_MUTED    C'110,118,150'
+#define C_LABEL    C'205,212,235'
+#define C_TEXT     clrWhite
+#define C_MUTED    C'175,183,210'
 #define C_BUY      C'0,220,130'
 #define C_SELL     C'255,75,95'
 #define C_WARN     C'255,185,0'
@@ -1093,7 +1093,7 @@ void Button(const string name, int x, int y, int w, int h, const string text, co
    ObjectSetInteger(0, n, OBJPROP_BGCOLOR, bg);
    ObjectSetInteger(0, n, OBJPROP_BORDER_COLOR, bg);
    ObjectSetInteger(0, n, OBJPROP_COLOR, clrWhite);
-   ObjectSetInteger(0, n, OBJPROP_FONTSIZE, 8);
+   ObjectSetInteger(0, n, OBJPROP_FONTSIZE, 10);
    ObjectSetString(0, n, OBJPROP_FONT, InpPanelFont);
    ObjectSetString(0, n, OBJPROP_TEXT, text);
    ObjectSetInteger(0, n, OBJPROP_STATE, false);
@@ -1111,17 +1111,17 @@ void SetText(const string name, const string text, color clr)
 int Section(const string key, const string title, int y)
   {
    int x = g_px;
-   Label("sec_" + key, x + 12, y, title, C_SECTION, 7);
-   Rect("ln_" + key, x + 80, y + 6, PANEL_W - 92, 1, C_LINE, C_LINE);
-   return y + 14;
+   Label("sec_" + key, x + 12, y, title, C_SECTION, 9);
+   Rect("ln_" + key, x + 100, y + 8, PANEL_W - 112, 1, C_LINE, C_LINE);
+   return y + 18;
   }
 
 int Row(const string key, const string label, int y)
   {
    int x = g_px;
-   Label("l_" + key, x + 14, y, label, C_LABEL, 8);
-   Label("v_" + key, x + PANEL_W - 12, y, "-", C_TEXT, 8, ANCHOR_RIGHT_UPPER);
-   return y + 15;
+   Label("l_" + key, x + 14, y, label, C_LABEL, 10);
+   Label("v_" + key, x + PANEL_W - 12, y, "-", C_TEXT, 10, ANCHOR_RIGHT_UPPER);
+   return y + 19;
   }
 
 void PanelCreate()
@@ -1130,52 +1130,52 @@ void PanelCreate()
    int bw = (w - 20 - 3 * 6) / 4;
 
    Rect("bg", x, y, w, 100, C_BG, C_BORDER);
-   Rect("hdr", x + 1, y + 1, w - 2, 32, C_HEADER, C_HEADER);
-   Rect("stripe", x + 1, y + 33, w - 2, 2, C_STRIPE, C_STRIPE);
-   Label("title", x + 12, y + 4, "OLIVE TRADE MANAGER", clrWhite, 8);
-   Label("sub", x + 12, y + 18, _Symbol + "  " + S_SEP + "  " + TfName(), C'215,205,255', 7);
-   Label("state", x + w - 36, y + 11, "", C_WARN, 8, ANCHOR_RIGHT_UPPER);
-   Button("toggle", x + w - 28, y + 7, 20, 20, g_collapsed ? S_RT : S_DN, C_HEADER);
+   Rect("hdr", x + 1, y + 1, w - 2, 40, C_HEADER, C_HEADER);
+   Rect("stripe", x + 1, y + 41, w - 2, 2, C_STRIPE, C_STRIPE);
+   Label("title", x + 12, y + 4, "OLIVE TRADE MANAGER", clrWhite, 10);
+   Label("sub", x + 12, y + 22, _Symbol + "  " + S_SEP + "  " + TfName(), C'225,215,255', 9);
+   Label("state", x + w - 40, y + 13, "", C_WARN, 10, ANCHOR_RIGHT_UPPER);
+   Button("toggle", x + w - 32, y + 9, 24, 24, g_collapsed ? S_RT : S_DN, C_HEADER);
    if(g_collapsed)
      {
-      ObjectSetInteger(0, PFX + "bg", OBJPROP_YSIZE, 36);
+      ObjectSetInteger(0, PFX + "bg", OBJPROP_YSIZE, 44);
       g_panel = true;
       return;
      }
 
-   int cy = y + 42;
+   int cy = y + 52;
    cy = Section("sig", "SIGNAL", cy);
    cy = Row("src", "Source", cy);
    cy = Row("ind", "Indicator", cy);
    cy = Row("buf", "Buffers", cy);
    cy = Row("last", "Last signal", cy);
-   cy += 3;
+   cy += 4;
    cy = Section("pos", "POSITION", cy);
    cy = Row("pos", "EA trade", cy);
    cy = Row("entry", "Entry", cy);
    cy = Row("sltp", "SL / TP", cy);
    cy = Row("pl", "Floating P/L", cy);
    cy = Row("man", "Manual trades", cy);
-   cy += 3;
+   cy += 4;
    cy = Section("mkt", "MARKET", cy);
    cy = Row("spread", "Spread", cy);
    cy = Row("atr", "ATR", cy);
    cy = Row("lots", "Lot size", cy);
    cy = Row("stops", "SL / TP mode", cy);
-   cy += 3;
+   cy += 4;
    cy = Section("day", "TODAY", cy);
    cy = Row("dpl", "Closed P/L", cy);
    cy = Row("dtr", "Trades / Wins", cy);
    cy = Row("eq", "Balance / Equity", cy);
-   cy += 5;
+   cy += 6;
 
-   Button("btn_buy", x + 10, cy, bw, 22, S_UP + " BUY", C_BTN_BUY);
-   Button("btn_sell", x + 10 + (bw + 6), cy, bw, 22, S_DN + " SELL", C_BTN_SELL);
-   Button("btn_close", x + 10 + 2 * (bw + 6), cy, bw, 22, "CLOSE", C_BTN_CLS);
-   Button("btn_auto", x + 10 + 3 * (bw + 6), cy, bw, 22, "AUTO ON", C_BTN_ON);
-   cy += 27;
-   Label("msg", x + 12, cy, "", C_MUTED, 7);
-   cy += 15;
+   Button("btn_buy", x + 10, cy, bw, 27, S_UP + " BUY", C_BTN_BUY);
+   Button("btn_sell", x + 10 + (bw + 6), cy, bw, 27, S_DN + " SELL", C_BTN_SELL);
+   Button("btn_close", x + 10 + 2 * (bw + 6), cy, bw, 27, "CLOSE", C_BTN_CLS);
+   Button("btn_auto", x + 10 + 3 * (bw + 6), cy, bw, 27, "AUTO ON", C_BTN_ON);
+   cy += 33;
+   Label("msg", x + 12, cy, "", C_MUTED, 9);
+   cy += 19;
 
    ObjectSetInteger(0, PFX + "bg", OBJPROP_YSIZE, cy - y);
    g_panel = true;
@@ -1229,7 +1229,7 @@ void PanelMouse(int mx, int my, bool down)
       if(g_mouseDown)
          return;              // press started elsewhere (e.g. scrolling the chart)
       g_mouseDown = true;
-      if(mx >= g_px && mx <= g_px + PANEL_W - 32 && my >= g_py && my <= g_py + 34)
+      if(mx >= g_px && mx <= g_px + PANEL_W - 36 && my >= g_py && my <= g_py + 42)
         {
          g_dragging = true;
          g_dragDX = mx - g_px;
