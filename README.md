@@ -107,6 +107,10 @@ Example: BUY at 2650.00, grid distance 30 pips, TP 60 pips, max running trades 3
 | TP | 2656.00 | 2656.00 | 2656.00 |
 
 - With no stop losses, the **equity protector** is the only loss limit. Keep it on whenever the grid is on.
+- **Turning the grid on** while one EA trade is already open brings that trade into the grid: its
+  SL is removed and the grid levels are measured from it.
+- The **GRID** and **AUTO** buttons are remembered when the EA restarts (new settings, timeframe
+  change, MT5 restart). Changing *Grid on* or *Auto-trade* in the settings overrides the saved state.
 - **Turning the grid off** while trade 1 is waiting for its grid trade gives trade 1 a normal SL from
   your inputs, if price hasn't passed it yet. Turning it on affects the next trade only.
 

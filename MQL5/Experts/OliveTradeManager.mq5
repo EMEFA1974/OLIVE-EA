@@ -4,7 +4,8 @@
 //|  and manages the trade (ATR/fixed SL & TP, breakeven, trailing). |
 //+------------------------------------------------------------------+
 #property copyright   "Olive EA"
-#property version     "1.00"
+#property version     "1.10"
+#define   EA_VERSION    "1.10"
 #property description "Olive Trade Manager - enters on confirmed arrow signals from a custom indicator"
 #property description "and manages the trade. Works with compiled .ex5 indicators (no source needed)."
 #property description "Defaults set for XAUUSD M5 (Exness, 3-digit). All distances are in pips (gold: 1 pip = 0.1)."
@@ -978,6 +979,24 @@ void ManageGrid()
                        isBuy ? "BUY" : "SELL", lots, Px(trade.ResultPrice() > 0 ? trade.ResultPrice() : price), Px(tp)));
   }
 
+// Grid switched on while a single EA trade is open: bring it into the grid
+// (remove its SL, start watching the grid distance).
+void GridArm()
+  {
+   double dist, level;
+   int    count;
+   if(GridState(dist, count, level) != 0)
+      return;                                   // already part of a grid
+   ulong ticket;
+   if(EAPosition(ticket) == 0 || count != 1 || InpGridPips <= 0 || !PositionSelectByTicket(ticket))
+      return;
+   GlobalVariableSet(GridKey(ticket), InpGridPips * g_pip);
+   if(PositionGetDouble(POSITION_SL) > 0 && trade.PositionModify(ticket, 0, PositionGetDouble(POSITION_TP)))
+      Msg("Grid ON - open trade's SL removed, grid armed");
+   else
+      Msg("Grid ON - open trade armed for the grid");
+  }
+
 // Grid switched off while the first trade waits: give it a normal SL.
 void GridDisarm()
   {
@@ -1311,7 +1330,7 @@ void PanelCreate()
    Rect("hdr", x + 1, y + 1, w - 2, 36, C_HEADER, C_HEADER);
    Rect("stripe", x + 1, y + 37, w - 2, 2, C_STRIPE, C_STRIPE);
    Label("title", x + 12, y + 5, "OLIVE TRADE MANAGER", clrWhite, 8);
-   Label("sub", x + 12, y + 20, _Symbol + "  " + S_SEP + "  " + TfName(), C'225,215,255', 8);
+   Label("sub", x + 12, y + 20, _Symbol + "  " + S_SEP + "  " + TfName() + "  " + S_SEP + "  v" + EA_VERSION, C'225,215,255', 8);
    Label("state", x + w - 38, y + 12, "", C_WARN, 8, ANCHOR_RIGHT_UPPER);
    Button("toggle", x + w - 30, y + 8, 22, 22, g_collapsed ? S_RT : S_DN, C_HEADER);
    if(g_collapsed)
@@ -1382,6 +1401,27 @@ void PanelLoadState()
       g_py = (int)GlobalVariableGet(PanelKey("y"));
       g_collapsed = GlobalVariableGet(PanelKey("c")) > 0;
      }
+  }
+
+// Button states survive restarts (new settings, timeframe change, MT5 restart).
+// Changing the matching input in the settings overrides the saved state.
+bool RestoreToggle(const string what, bool inputValue)
+  {
+   string inp = PanelKey(what + "_input"), cur = PanelKey(what);
+   bool inputChanged = !GlobalVariableCheck(inp) || ((GlobalVariableGet(inp) > 0) != inputValue);
+   GlobalVariableSet(inp, inputValue ? 1 : 0);
+   if(inputChanged || !GlobalVariableCheck(cur))
+     {
+      GlobalVariableSet(cur, inputValue ? 1 : 0);
+      return inputValue;
+     }
+   return GlobalVariableGet(cur) > 0;
+  }
+
+void SaveToggles()
+  {
+   GlobalVariableSet(PanelKey("auto"), g_auto ? 1 : 0);
+   GlobalVariableSet(PanelKey("grid"), g_grid ? 1 : 0);
   }
 
 void PanelRebuild()
@@ -1573,12 +1613,16 @@ int OnInit()
    if(InpSignalBar == 0)
       Print("Warning: signal candle 0 reads the live candle - arrows there can still disappear");
 
-   g_auto = InpAutoTrade;
-   g_grid = InpUseGrid;
+   g_auto = RestoreToggle("auto", InpAutoTrade);
+   g_grid = RestoreToggle("grid", InpUseGrid);
+   Print("Auto-trading ", g_auto ? "ON" : "OFF", ", grid ", g_grid ? "ON" : "OFF",
+         StringFormat(" (distance %.1f pips, max %d trades)", InpGridPips, InpMaxTrades));
    trade.SetExpertMagicNumber(InpMagic);
    g_pip = DetectPip();
    trade.SetDeviationInPoints((ulong)MathRound(InpSlippagePips * g_pip / _Point));
    trade.SetTypeFillingBySymbol(_Symbol);
+   if(g_grid)
+      GridArm();                                // an EA trade already open joins the grid
 
    g_atr = iATR(_Symbol, InpATRTimeframe, InpATRPeriod);
    if(g_atr == INVALID_HANDLE)
@@ -1601,7 +1645,7 @@ int OnInit()
    TryResolve();
    EventSetTimer(1);
    UpdatePanel();
-   Print("Olive Trade Manager started on ", _Symbol, " ", TfName(), ", pip size ", DoubleToString(g_pip, _Digits));
+   Print("Olive Trade Manager v", EA_VERSION, " started on ", _Symbol, " ", TfName(), ", pip size ", DoubleToString(g_pip, _Digits));
    return INIT_SUCCEEDED;
   }
 
@@ -1699,15 +1743,19 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
             if(b == "btn_auto")
               {
                g_auto = !g_auto;
+               SaveToggles();
                Msg(g_auto ? "Auto-trading ON" : "Auto-trading OFF");
               }
             else
                if(b == "btn_grid")
                  {
                   g_grid = !g_grid;
-                  if(!g_grid)
+                  SaveToggles();
+                  Msg(g_grid ? "Grid ON" : "Grid OFF");
+                  if(g_grid)
+                     GridArm();
+                  else
                      GridDisarm();
-                  Msg(g_grid ? "Grid ON - applies to the next trade" : "Grid OFF");
                  }
    ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
    UpdatePanel();
