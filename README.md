@@ -69,6 +69,7 @@ Your own indicator settings (Push Alert) are kept, and you don't get duplicate a
 | SL ATR multiplier / SL pips | 1.5 / 30 ($3.00) | |
 | Take profit mode | ATR | *ATR × multiplier*, *Fixed pips* or *None*, set separately from the SL |
 | TP ATR multiplier / TP pips | 3.0 / 60 ($6.00) | |
+| TP reduction % | 15 | Shortens the TP distance by this %, in both modes. ATR × 3.0 then becomes ATR × 2.55, and 60 pips becomes 51. 0 = no reduction. |
 | ATR period / timeframe | 14 / current | |
 
 ### Trade management and filters

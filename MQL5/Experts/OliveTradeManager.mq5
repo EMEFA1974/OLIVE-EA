@@ -4,8 +4,8 @@
 //|  and manages the trade (ATR/fixed SL & TP, breakeven, trailing). |
 //+------------------------------------------------------------------+
 #property copyright   "Olive EA"
-#property version     "1.20"
-#define   EA_VERSION    "1.20"
+#property version     "1.21"
+#define   EA_VERSION    "1.21"
 #property description "Olive Trade Manager - enters on confirmed arrow signals from a custom indicator"
 #property description "and manages the trade. Works with compiled .ex5 indicators (no source needed)."
 #property description "Defaults set for XAUUSD M5 (Exness, 3-digit). All distances are in pips (gold: 1 pip = 0.1)."
@@ -72,6 +72,7 @@ input group "=== Take profit ==="
 input ENUM_TM_STOP     InpTPMode          = STOP_ATR;    // Take profit mode
 input double           InpTPAtrMult       = 3.0;         // TP: ATR multiplier
 input double           InpTPPips          = 60;          // TP: fixed pips
+input double           InpTPReducePct     = 15;          // TP: reduce the distance by this % (0 = none)
 
 input group "=== ATR ==="
 input int              InpATRPeriod       = 14;             // ATR period
@@ -836,6 +837,8 @@ bool StopDistances(double &slDist, double &tpDist)
    else
       if(InpTPMode == STOP_FIXED)
          tpDist = InpTPPips * g_pip;
+   if(InpTPReducePct > 0 && InpTPReducePct < 100)
+      tpDist *= 1.0 - InpTPReducePct / 100.0;
    double minDist = (SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) + 2) * _Point + (tk.ask - tk.bid);
    if(slDist > 0 && slDist < minDist)
       slDist = minDist;
@@ -1576,6 +1579,8 @@ void UpdatePanel()
                : InpSLMode == STOP_FIXED ? StringFormat("%.0f pips", InpSLPips) : "none";
    string tp = InpTPMode == STOP_ATR ? StringFormat("ATR x%.1f", InpTPAtrMult)
                : InpTPMode == STOP_FIXED ? StringFormat("%.0f pips", InpTPPips) : "none";
+   if(InpTPMode != STOP_NONE && InpTPReducePct > 0 && InpTPReducePct < 100)
+      tp += StringFormat(" -%.0f%%", InpTPReducePct);
    SetText("v_stops", sl + "  /  " + tp, C_TEXT);
 
    //--- today
