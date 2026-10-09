@@ -84,6 +84,34 @@ Your own indicator settings (Push Alert) are kept, and you don't get duplicate a
 | Max slippage | 3 pips | $0.30 on XAUUSD. Exness gold uses market execution, so this is usually ignored. |
 | Pip size | 0 (auto) | Auto: gold (XAU/GOLD) = 0.1, 5/3-digit FX = 10 points. Set it to override. |
 
+## Simple grid (optional)
+
+Turn it on with the **GRID** button on the panel, or *Grid* in the settings (off by default).
+
+- **Trade 1** opens on the signal as usual. Instead of a stop loss at the SL distance, that level
+  becomes the **grid level**.
+- If price reaches the grid level, **trade 2** opens in the same direction, with the same lot size
+  (or × *Grid lot multiplier*).
+- **Both trades share the same TP:** trade 1's take profit.
+- **Trade 2 has its own SL**, set from your inputs (ATR × multiplier or fixed pips) measured from
+  its own entry. Trade 1's SL is moved to the same price, so both close together at the TP or at that SL.
+- Only one extra trade is ever added. Signals are still ignored until all EA trades have closed.
+
+Example: a BUY at 2650.00 with SL distance 30 pips ($3) and TP 60 pips ($6):
+
+| | Trade 1 | Trade 2 |
+|---|---|---|
+| Entry | 2650.00 | 2647.00 (grid level) |
+| SL | 2644.00 | 2644.00 |
+| TP | 2656.00 | 2656.00 |
+
+- Trade 1 is opened with its SL already at the final shared level (2 × SL distance) as a safety net,
+  so it stays protected even if MT5 or the EA is closed when price reaches the grid level.
+- **Risk is roughly three times one normal trade:** trade 1 loses 2 × SL and trade 2 loses 1 × SL
+  if the shared SL is hit. Keep that in mind, especially in *% of balance* lot mode.
+- **Turning the grid off** while trade 1 is waiting for its grid trade moves trade 1's SL back to the
+  normal SL distance, if price hasn't passed it yet. Turning it on affects the next trade only.
+
 ## XAUUSD M5 on Exness
 
 - Fixed SL 30 pips = $3.00 price move, TP 60 pips = $6.00. With 0.01 lot, a $1.00 price move is about $1.00 of P/L.
@@ -129,6 +157,7 @@ dots keep their colour. They are removed only when you remove the EA from the ch
   - **BUY / SELL** open an EA-managed trade with the EA's SL/TP. They are blocked while an EA trade is running.
   - **CLOSE** closes the EA's trade only (your manual trades are not touched).
   - **AUTO** turns signal trading on/off. Management (breakeven, trailing) keeps running either way.
+  - **GRID** turns the simple grid on/off. The *Grid* row shows the level where the 2nd trade will open.
 
 ## Troubleshooting
 

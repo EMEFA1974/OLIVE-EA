@@ -88,6 +88,10 @@ input double           InpTrailPips       = 20;          // Trailing: distance (
 input double           InpTrailAtrMult    = 2.0;         // Trailing: distance (ATR multiplier)
 input double           InpTrailStepPips   = 1;           // Trailing: minimum step (pips)
 
+input group "=== Simple grid ==="
+input bool             InpUseGrid         = false;       // Grid: add a 2nd trade where the SL would be (panel button)
+input double           InpGridLotMult     = 1.0;         // Grid: 2nd trade lot = 1st trade lot x this
+
 input group "=== Filters ==="
 input double           InpMaxSpreadPips   = 0;           // Max spread in pips (0 = off)
 input double           InpDailyLossPct    = 0;           // Daily loss limit % of balance (0 = off)
@@ -140,6 +144,7 @@ input string           InpPanelFont       = "Segoe UI";  // Panel font (e.g. Seg
 #define C_BTN_CLS  C'240,130,0'
 #define C_BTN_ON   C'40,115,255'
 #define C_BTN_OFF  C'85,88,110'
+#define C_BTN_GRID C'150,60,220'
 
 //--- state ----------------------------------------------------------
 CTrade   trade;
@@ -157,6 +162,8 @@ datetime g_lastSignalBar = 0;     // candle of the last signal acted on
 int      g_lastSigDir   = 0;
 datetime g_lastSigTime  = 0;
 bool     g_auto         = true;
+bool     g_grid         = false;
+uint     g_gridRetry    = 0;
 string   g_message      = "";
 double   g_pip          = 0;
 double   g_dayClosed    = 0;
@@ -834,8 +841,18 @@ bool OpenTrade(int dir, const string why)
 
    double price = (dir > 0) ? tk.ask : tk.bid;
    double sl = 0, tp = 0;
-   if(slDist > 0)
-      sl = NormPrice(dir > 0 ? price - slDist : price + slDist);
+   // with the grid on, the 2nd trade opens where the SL would be, and both
+   // trades then share one SL a further SL distance away
+   bool   grid = (g_grid && slDist > 0);
+   double gridLevel = 0;
+   if(grid)
+     {
+      gridLevel = NormPrice(dir > 0 ? price - slDist : price + slDist);
+      sl = NormPrice(dir > 0 ? price - 2 * slDist : price + 2 * slDist);
+     }
+   else
+      if(slDist > 0)
+         sl = NormPrice(dir > 0 ? price - slDist : price + slDist);
    if(tpDist > 0)
       tp = NormPrice(dir > 0 ? price + tpDist : price - tpDist);
 
@@ -856,9 +873,120 @@ bool OpenTrade(int dir, const string why)
       Msg(StringFormat("%s failed: %u %s", dir > 0 ? "BUY" : "SELL", rc, trade.ResultRetcodeDescription()));
       return false;
      }
-   Notify(StringFormat("%s %.2f lots at %s (%s)  SL %s  TP %s", dir > 0 ? "BUY" : "SELL", lots,
-                       Px(trade.ResultPrice() > 0 ? trade.ResultPrice() : price), why, Px(sl), Px(tp)));
+   if(grid)
+      GlobalVariableSet(GridKey(trade.ResultOrder()), slDist);
+   Notify(StringFormat("%s %.2f lots at %s (%s)  SL %s  TP %s%s", dir > 0 ? "BUY" : "SELL", lots,
+                       Px(trade.ResultPrice() > 0 ? trade.ResultPrice() : price), why, Px(sl), Px(tp),
+                       grid ? "  grid at " + Px(gridLevel) : ""));
    return true;
+  }
+
+//+------------------------------------------------------------------+
+//| Simple grid: one extra trade where the first trade's SL would be |
+//+------------------------------------------------------------------+
+// A first trade opened with the grid on stores its SL distance under this key
+// until the 2nd trade is added (survives EA restarts).
+string GridKey(ulong ticket) { return "OliveTM_grid_" + IntegerToString((long)ticket); }
+
+// The single EA trade waiting for its grid trade; returns its ticket or 0.
+ulong GridPending(double &dist)
+  {
+   ulong first = 0;
+   int count = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong t = PositionGetTicket(i);
+      if(t == 0 || !IsEAPosition())
+         continue;
+      count++;
+      first = t;
+     }
+   if(count != 1 || !GlobalVariableCheck(GridKey(first)))
+      return 0;
+   dist = GlobalVariableGet(GridKey(first));
+   return (dist > 0) ? first : 0;
+  }
+
+double GridLevel(ulong ticket, double dist)
+  {
+   if(!PositionSelectByTicket(ticket))
+      return 0;
+   double open = PositionGetDouble(POSITION_PRICE_OPEN);
+   return (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? open - dist : open + dist;
+  }
+
+void ManageGrid()
+  {
+   if(!g_grid)
+      return;
+   double dist;
+   ulong t1 = GridPending(dist);
+   if(t1 == 0 || !PositionSelectByTicket(t1))
+      return;
+   bool   isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+   double tp    = PositionGetDouble(POSITION_TP);
+   double vol   = PositionGetDouble(POSITION_VOLUME);
+   double level = GridLevel(t1, dist);
+   MqlTick tk;
+   if(!SymbolInfoTick(_Symbol, tk))
+      return;
+   if(isBuy ? tk.bid > level : tk.ask < level)
+      return;                                   // grid level not reached yet
+   if(GetTickCount() < g_gridRetry)
+      return;
+   g_gridRetry = GetTickCount() + 5000;
+
+   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(step <= 0)
+      step = 0.01;
+   double lots = MathMax(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN),
+                         MathFloor(vol * InpGridLotMult / step + 1e-9) * step);
+   lots = NormalizeDouble(lots, (int)MathMax(0, MathCeil(-MathLog10(step) - 1e-9)));
+   double price = isBuy ? tk.ask : tk.bid;
+   double sl    = NormPrice(isBuy ? price - dist : price + dist);
+   bool ok = isBuy ? trade.Buy(lots, _Symbol, price, sl, tp, InpComment + " grid")
+                   : trade.Sell(lots, _Symbol, price, sl, tp, InpComment + " grid");
+   uint rc = trade.ResultRetcode();
+   if(!ok || (rc != TRADE_RETCODE_DONE && rc != TRADE_RETCODE_DONE_PARTIAL && rc != TRADE_RETCODE_PLACED))
+     {
+      Msg(StringFormat("Grid trade failed: %u %s - retrying", rc, trade.ResultRetcodeDescription()));
+      return;
+     }
+   GlobalVariableDel(GridKey(t1));
+   // both trades now share the grid trade's SL (and the first trade's TP)
+   if(PositionSelectByTicket(t1) && MathAbs(PositionGetDouble(POSITION_SL) - sl) > _Point / 2)
+      trade.PositionModify(t1, sl, tp);
+   Notify(StringFormat("Grid %s %.2f lots at %s  SL %s  TP %s (shared)", isBuy ? "BUY" : "SELL", lots,
+                       Px(trade.ResultPrice() > 0 ? trade.ResultPrice() : price), Px(sl), Px(tp)));
+  }
+
+// Grid switched off while the first trade waits: give it back its normal SL.
+void GridDisarm()
+  {
+   double dist;
+   ulong t1 = GridPending(dist);
+   if(t1 == 0 || !PositionSelectByTicket(t1))
+      return;
+   bool   isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+   double sl    = NormPrice(GridLevel(t1, dist));
+   double cur   = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   GlobalVariableDel(GridKey(t1));
+   if((isBuy ? cur > sl : cur < sl) && trade.PositionModify(t1, sl, PositionGetDouble(POSITION_TP)))
+      Msg("Grid off - SL set back to " + Px(sl));
+  }
+
+// Remove grid keys of trades that are already closed.
+void GridCleanup()
+  {
+   for(int i = GlobalVariablesTotal() - 1; i >= 0; i--)
+     {
+      string name = GlobalVariableName(i);
+      if(StringFind(name, "OliveTM_grid_") != 0)
+         continue;
+      ulong t = (ulong)StringToInteger(StringSubstr(name, StringLen("OliveTM_grid_")));
+      if(!PositionSelectByTicket(t))
+         GlobalVariableDel(name);
+     }
   }
 
 // Acts on a signal; returns true only if a new trade was opened.
@@ -1093,7 +1221,7 @@ void Button(const string name, int x, int y, int w, int h, const string text, co
    ObjectSetInteger(0, n, OBJPROP_BGCOLOR, bg);
    ObjectSetInteger(0, n, OBJPROP_BORDER_COLOR, bg);
    ObjectSetInteger(0, n, OBJPROP_COLOR, clrWhite);
-   ObjectSetInteger(0, n, OBJPROP_FONTSIZE, 9);
+   ObjectSetInteger(0, n, OBJPROP_FONTSIZE, 8);
    ObjectSetString(0, n, OBJPROP_FONT, InpPanelFont);
    ObjectSetString(0, n, OBJPROP_TEXT, text);
    ObjectSetInteger(0, n, OBJPROP_STATE, false);
@@ -1119,22 +1247,22 @@ int Section(const string key, const string title, int y)
 int Row(const string key, const string label, int y)
   {
    int x = g_px;
-   Label("l_" + key, x + 14, y, label, C_LABEL, 9);
-   Label("v_" + key, x + PANEL_W - 12, y, "-", C_TEXT, 9, ANCHOR_RIGHT_UPPER);
-   return y + 17;
+   Label("l_" + key, x + 14, y, label, C_LABEL, 8);
+   Label("v_" + key, x + PANEL_W - 12, y, "-", C_TEXT, 8, ANCHOR_RIGHT_UPPER);
+   return y + 16;
   }
 
 void PanelCreate()
   {
    int x = g_px, y = g_py, w = PANEL_W;
-   int bw = (w - 20 - 3 * 6) / 4;
+   int bw = (w - 20 - 4 * 5) / 5;
 
    Rect("bg", x, y, w, 100, C_BG, C_BORDER);
    Rect("hdr", x + 1, y + 1, w - 2, 36, C_HEADER, C_HEADER);
    Rect("stripe", x + 1, y + 37, w - 2, 2, C_STRIPE, C_STRIPE);
-   Label("title", x + 12, y + 4, "OLIVE TRADE MANAGER", clrWhite, 9);
+   Label("title", x + 12, y + 5, "OLIVE TRADE MANAGER", clrWhite, 8);
    Label("sub", x + 12, y + 20, _Symbol + "  " + S_SEP + "  " + TfName(), C'225,215,255', 8);
-   Label("state", x + w - 38, y + 12, "", C_WARN, 9, ANCHOR_RIGHT_UPPER);
+   Label("state", x + w - 38, y + 12, "", C_WARN, 8, ANCHOR_RIGHT_UPPER);
    Button("toggle", x + w - 30, y + 8, 22, 22, g_collapsed ? S_RT : S_DN, C_HEADER);
    if(g_collapsed)
      {
@@ -1156,6 +1284,7 @@ void PanelCreate()
    cy = Row("sltp", "SL / TP", cy);
    cy = Row("pl", "Floating P/L", cy);
    cy = Row("man", "Manual trades", cy);
+   cy = Row("grid", "Grid", cy);
    cy += 4;
    cy = Section("mkt", "MARKET", cy);
    cy = Row("spread", "Spread", cy);
@@ -1170,9 +1299,10 @@ void PanelCreate()
    cy += 6;
 
    Button("btn_buy", x + 10, cy, bw, 24, S_UP + " BUY", C_BTN_BUY);
-   Button("btn_sell", x + 10 + (bw + 6), cy, bw, 24, S_DN + " SELL", C_BTN_SELL);
-   Button("btn_close", x + 10 + 2 * (bw + 6), cy, bw, 24, "CLOSE", C_BTN_CLS);
-   Button("btn_auto", x + 10 + 3 * (bw + 6), cy, bw, 24, "AUTO ON", C_BTN_ON);
+   Button("btn_sell", x + 10 + (bw + 5), cy, bw, 24, S_DN + " SELL", C_BTN_SELL);
+   Button("btn_close", x + 10 + 2 * (bw + 5), cy, bw, 24, "CLOSE", C_BTN_CLS);
+   Button("btn_auto", x + 10 + 3 * (bw + 5), cy, bw, 24, "AUTO ON", C_BTN_ON);
+   Button("btn_grid", x + 10 + 4 * (bw + 5), cy, bw, 24, "GRID OFF", C_BTN_OFF);
    cy += 30;
    Label("msg", x + 12, cy, "", C_MUTED, 8);
    cy += 17;
@@ -1295,8 +1425,9 @@ void UpdatePanel()
    double eaPL = FloatingPL(true, cnt);
    if(dir != 0 && PositionSelectByTicket(ticket))
      {
-      SetText("v_pos", StringFormat("%s %s %.2f", dir > 0 ? S_UP : S_DN, dir > 0 ? "BUY" : "SELL",
-                                    PositionGetDouble(POSITION_VOLUME)), dir > 0 ? C_BUY : C_SELL);
+      SetText("v_pos", StringFormat("%s %s %.2f%s", dir > 0 ? S_UP : S_DN, dir > 0 ? "BUY" : "SELL",
+                                    PositionGetDouble(POSITION_VOLUME), cnt > 1 ? StringFormat("  (%d trades)", cnt) : ""),
+              dir > 0 ? C_BUY : C_SELL);
       SetText("v_entry", Px(PositionGetDouble(POSITION_PRICE_OPEN)), C_TEXT);
       SetText("v_sltp", Px(PositionGetDouble(POSITION_SL)) + "  /  " + Px(PositionGetDouble(POSITION_TP)), C_TEXT);
       SetText("v_pl", Money(eaPL), PLColor(eaPL));
@@ -1314,6 +1445,16 @@ void UpdatePanel()
       SetText("v_man", StringFormat("%d open  ", manCnt) + Money(manPL), PLColor(manPL));
    else
       SetText("v_man", "none", C_MUTED);
+
+   double gdist;
+   ulong gt = GridPending(gdist);
+   if(!g_grid)
+      SetText("v_grid", "off", C_MUTED);
+   else
+      if(gt != 0)
+         SetText("v_grid", "2nd trade at " + Px(NormPrice(GridLevel(gt, gdist))), C_GOLD);
+      else
+         SetText("v_grid", cnt > 1 ? "2nd trade open" : "on", cnt > 1 ? C_GOLD : C_TEXT);
 
    //--- market
    double sp = SpreadPips();
@@ -1335,6 +1476,9 @@ void UpdatePanel()
            DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY), 2), C_TEXT);
 
    //--- buttons & message
+   ObjectSetString(0, PFX + "btn_grid", OBJPROP_TEXT, g_grid ? "GRID ON" : "GRID OFF");
+   ObjectSetInteger(0, PFX + "btn_grid", OBJPROP_BGCOLOR, g_grid ? C_BTN_GRID : C_BTN_OFF);
+   ObjectSetInteger(0, PFX + "btn_grid", OBJPROP_BORDER_COLOR, g_grid ? C_BTN_GRID : C_BTN_OFF);
    ObjectSetString(0, PFX + "btn_auto", OBJPROP_TEXT, g_auto ? "AUTO ON" : "AUTO OFF");
    ObjectSetInteger(0, PFX + "btn_auto", OBJPROP_BGCOLOR, g_auto ? C_BTN_ON : C_BTN_OFF);
    ObjectSetInteger(0, PFX + "btn_auto", OBJPROP_BORDER_COLOR, g_auto ? C_BTN_ON : C_BTN_OFF);
@@ -1365,6 +1509,7 @@ int OnInit()
       Print("Warning: signal candle 0 reads the live candle - arrows there can still disappear");
 
    g_auto = InpAutoTrade;
+   g_grid = InpUseGrid;
    trade.SetExpertMagicNumber(InpMagic);
    g_pip = DetectPip();
    trade.SetDeviationInPoints((ulong)MathRound(InpSlippagePips * g_pip / _Point));
@@ -1415,6 +1560,7 @@ void OnTick()
    if(g_source == 0)
       TryResolve();
    CheckSignal();
+   ManageGrid();
    ManagePositions();
   }
 
@@ -1426,6 +1572,7 @@ void OnTimer()
       if(g_histBar != iTime(_Symbol, _Period, 0) || (g_histRetry > 0 && GetTickCount() >= g_histRetry))
          ScanHistory();
    UpdateDayStats();
+   GridCleanup();
    Diagnostics();
    UpdatePanel();
   }
@@ -1488,6 +1635,14 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
                g_auto = !g_auto;
                Msg(g_auto ? "Auto-trading ON" : "Auto-trading OFF");
               }
+            else
+               if(b == "btn_grid")
+                 {
+                  g_grid = !g_grid;
+                  if(!g_grid)
+                     GridDisarm();
+                  Msg(g_grid ? "Grid ON - applies to the next trade" : "Grid OFF");
+                 }
    ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
    UpdatePanel();
   }
