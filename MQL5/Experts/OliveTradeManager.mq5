@@ -115,6 +115,7 @@ input group "=== Panel ==="
 input bool             InpShowPanel       = true;        // Show panel
 input int              InpPanelX          = 12;          // Panel start X position (drag the header to move it)
 input int              InpPanelY          = 30;          // Panel start Y position
+input string           InpPanelFont       = "Segoe UI Light"; // Panel font (e.g. Segoe UI Light, Segoe UI, Arial)
 
 //--- constants ------------------------------------------------------
 #define PFX      "OTM_"
@@ -1056,7 +1057,7 @@ void Rect(const string name, int x, int y, int w, int h, color bg, color border)
   }
 
 void Label(const string name, int x, int y, const string text, color clr, int size = 9,
-           const string font = "Arial", ENUM_ANCHOR_POINT anchor = ANCHOR_LEFT_UPPER)
+           ENUM_ANCHOR_POINT anchor = ANCHOR_LEFT_UPPER)
   {
    string n = PFX + name;
    bool exists = (ObjectFind(0, n) >= 0);
@@ -1070,7 +1071,7 @@ void Label(const string name, int x, int y, const string text, color clr, int si
    ObjectSetInteger(0, n, OBJPROP_ANCHOR, anchor);
    ObjectSetInteger(0, n, OBJPROP_COLOR, clr);
    ObjectSetInteger(0, n, OBJPROP_FONTSIZE, size);
-   ObjectSetString(0, n, OBJPROP_FONT, font);
+   ObjectSetString(0, n, OBJPROP_FONT, InpPanelFont);
    ObjectSetString(0, n, OBJPROP_TEXT, text);
    ObjectSetInteger(0, n, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, n, OBJPROP_HIDDEN, true);
@@ -1093,7 +1094,7 @@ void Button(const string name, int x, int y, int w, int h, const string text, co
    ObjectSetInteger(0, n, OBJPROP_BORDER_COLOR, bg);
    ObjectSetInteger(0, n, OBJPROP_COLOR, clrWhite);
    ObjectSetInteger(0, n, OBJPROP_FONTSIZE, 8);
-   ObjectSetString(0, n, OBJPROP_FONT, "Arial Bold");
+   ObjectSetString(0, n, OBJPROP_FONT, InpPanelFont);
    ObjectSetString(0, n, OBJPROP_TEXT, text);
    ObjectSetInteger(0, n, OBJPROP_STATE, false);
    ObjectSetInteger(0, n, OBJPROP_SELECTABLE, false);
@@ -1110,7 +1111,7 @@ void SetText(const string name, const string text, color clr)
 int Section(const string key, const string title, int y)
   {
    int x = g_px;
-   Label("sec_" + key, x + 12, y, title, C_SECTION, 7, "Arial");
+   Label("sec_" + key, x + 12, y, title, C_SECTION, 7);
    Rect("ln_" + key, x + 80, y + 6, PANEL_W - 92, 1, C_LINE, C_LINE);
    return y + 14;
   }
@@ -1119,7 +1120,7 @@ int Row(const string key, const string label, int y)
   {
    int x = g_px;
    Label("l_" + key, x + 14, y, label, C_LABEL, 8);
-   Label("v_" + key, x + PANEL_W - 12, y, "-", C_TEXT, 8, "Arial Bold", ANCHOR_RIGHT_UPPER);
+   Label("v_" + key, x + PANEL_W - 12, y, "-", C_TEXT, 8, ANCHOR_RIGHT_UPPER);
    return y + 15;
   }
 
@@ -1131,9 +1132,9 @@ void PanelCreate()
    Rect("bg", x, y, w, 100, C_BG, C_BORDER);
    Rect("hdr", x + 1, y + 1, w - 2, 32, C_HEADER, C_HEADER);
    Rect("stripe", x + 1, y + 33, w - 2, 2, C_STRIPE, C_STRIPE);
-   Label("title", x + 12, y + 4, "OLIVE TRADE MANAGER", clrWhite, 8, "Arial");
-   Label("sub", x + 12, y + 18, _Symbol + "  " + S_SEP + "  " + TfName(), C'215,205,255', 7, "Arial");
-   Label("state", x + w - 36, y + 11, "", C_WARN, 8, "Arial", ANCHOR_RIGHT_UPPER);
+   Label("title", x + 12, y + 4, "OLIVE TRADE MANAGER", clrWhite, 8);
+   Label("sub", x + 12, y + 18, _Symbol + "  " + S_SEP + "  " + TfName(), C'215,205,255', 7);
+   Label("state", x + w - 36, y + 11, "", C_WARN, 8, ANCHOR_RIGHT_UPPER);
    Button("toggle", x + w - 28, y + 7, 20, 20, g_collapsed ? S_RT : S_DN, C_HEADER);
    if(g_collapsed)
      {

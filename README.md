@@ -118,6 +118,7 @@ dots keep their colour. They are removed only when you remove the EA from the ch
 - **Move it:** press and hold on the purple header, then drag. The chart doesn't scroll while you drag.
 - **Collapse / expand:** click the small triangle at the right of the header. **▼** = expanded; **▶** = collapsed (only the header shows).
 - The panel remembers its position and collapsed state on that chart, even after a restart.
+- All panel text uses a thin font (*Panel font* = `Segoe UI Light`). Set it to `Segoe UI` or `Arial` for slightly heavier text.
 
 - **Header:** symbol, timeframe and state (ACTIVE / PAUSED / BLOCKED / SEARCHING).
 - **Signal:** source, indicator, buffers in use, last signal.
