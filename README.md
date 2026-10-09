@@ -90,6 +90,7 @@ Your own indicator settings (Push Alert) are kept, and you don't get duplicate a
 Turn it on with the **GRID** button on the panel, or *Grid* in the settings (off by default).
 
 - **Trade 1** opens on the signal with **no stop loss** and the normal TP.
+- **Grid distance is in pips:** on gold, 10 pips = $1.00, so 50 pips = $5.00 and 500 pips = $50.00.
 - Each time price moves another **Grid distance** pips (default 30) against the last trade, a new
   trade opens in the same direction, up to **Max running trades** (default 2, counting trade 1).
   Each new trade uses the previous lot × *Grid lot multiplier* (1.0 = same lot).
@@ -177,6 +178,11 @@ dots keep their colour. They are removed only when you remove the EA from the ch
   - **GRID** turns the simple grid on/off. The *Grid* row shows the level where the 2nd trade will open.
 
 ## Troubleshooting
+
+- **Run only one trade EA per symbol.** Another EA on the same symbol (for example the indicator
+  vendor's own EA) opens its own trades. The Olive Trade Manager ignores those, so it adds no grid
+  trades to them. Don't attach the Olive Trade Manager to two charts of the same symbol with the
+  same magic number either; the log then shows `OliveTradeManager(2)`.
 
 - **No trades at all:** check the **Experts** tab. With *Log what the EA sees on every candle* on
   (the default), the EA writes one `[diag]` line per candle showing what it read from the indicator

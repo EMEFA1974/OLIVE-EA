@@ -4,8 +4,8 @@
 //|  and manages the trade (ATR/fixed SL & TP, breakeven, trailing). |
 //+------------------------------------------------------------------+
 #property copyright   "Olive EA"
-#property version     "1.21"
-#define   EA_VERSION    "1.21"
+#property version     "1.22"
+#define   EA_VERSION    "1.22"
 #property description "Olive Trade Manager - enters on confirmed arrow signals from a custom indicator"
 #property description "and manages the trade. Works with compiled .ex5 indicators (no source needed)."
 #property description "Defaults set for XAUUSD M5 (Exness, 3-digit). All distances are in pips (gold: 1 pip = 0.1)."
@@ -92,7 +92,7 @@ input double           InpTrailStepPips   = 1;           // Trailing: minimum st
 
 input group "=== Simple grid ==="
 input bool             InpUseGrid         = false;       // Grid on (panel button): both trades have NO SL
-input double           InpGridPips        = 30;          // Grid distance: each new trade opens this far beyond the last (pips)
+input double           InpGridPips        = 30;          // Grid distance in PIPS (gold: 10 pips = $1) beyond the last trade
 input int              InpMaxTrades       = 2;           // Max running EA trades incl. the 1st (grid)
 input double           InpGridLotMult     = 1.0;         // Grid: each new trade lot = previous lot x this
 
@@ -165,6 +165,9 @@ string   g_status       = "Starting...";
 string   g_reported     = "|";    // indicators whose scan report has been printed
 uint     g_nextResolve  = 0;
 uint     g_nextObjScan  = 0;
+bool     g_objDirty     = true;   // a chart object was created since the last arrow scan
+datetime g_objScanBar   = 0;      // signal candle of the last arrow scan
+int      g_arrowCount   = 0;      // arrow objects found when the signal source was set
 datetime g_lastSignalBar = 0;     // candle of the last signal acted on
 int      g_lastSigDir   = 0;
 datetime g_lastSigTime  = 0;
@@ -538,24 +541,75 @@ void DrawDot(int dir, int shift, bool skipped = false, bool overwrite = true)
 
 // Marks past signal candles with dots and remembers the most recent signal.
 // Re-run on every new candle, so dots appear even if the indicator
-// finished loading its history after the EA started.
+// finished loading its history after the EA started. Reads every chart
+// object (or each buffer) only once, so it stays fast with thousands of arrows.
 void ScanHistory()
   {
    int maxBars = MathMin(MathMax(InpDotHistoryBars, 1), Bars(_Symbol, _Period) - 1);
-   int found = 0;
-   for(int s = MathMax(InpSignalBar, 1); s < maxBars; s++)
+   int first   = MathMax(InpSignalBar, 1);
+   int found = 0, newestShift = -1, newestDir = 0;
+
+   if(g_source == 2)
      {
-      int d = ReadSignal(s);
-      if(d == 0)
-         continue;
-      if(found++ == 0 && iTime(_Symbol, _Period, s) >= g_lastSigTime)
+      datetime oldest = iTime(_Symbol, _Period, maxBars - 1);
+      datetime limit  = iTime(_Symbol, _Period, first - 1);   // only candles at or before the signal candle
+      int total = ObjectsTotal(0, -1, -1);
+      for(int i = 0; i < total; i++)
         {
-         g_lastSigDir  = d;
-         g_lastSigTime = iTime(_Symbol, _Period, s);
+         string   name = ObjectName(0, i, -1, -1);
+         datetime t    = (datetime)ObjectGetInteger(0, name, OBJPROP_TIME);
+         if(t < oldest || t >= limit)
+            continue;
+         int d = ArrowObjectDir(name);
+         if(d == 0)
+            continue;
+         int sh = iBarShift(_Symbol, _Period, t);
+         if(sh < first)
+            continue;
+         found++;
+         if(newestShift < 0 || sh < newestShift)
+           {
+            newestShift = sh;
+            newestDir   = d;
+           }
+         DrawDot(d, sh, false, false);
         }
-      if(!InpShowDots)
-         break;
-      DrawDot(d, s, false, false);
+     }
+   else
+      if(g_source == 1 && maxBars > first)
+        {
+         int n = maxBars - first;
+         double bv[], sv[];
+         ArraySetAsSeries(bv, true);
+         ArraySetAsSeries(sv, true);
+         int nb = CopyBuffer(g_ind, g_buyBuf, first, n, bv);
+         int ns = (g_sellBuf == g_buyBuf) ? nb : CopyBuffer(g_ind, g_sellBuf, first, n, sv);
+         for(int k = 0; k < nb && k < ns; k++)
+           {
+            int sh = first + k, d = 0;
+            if(g_buyBuf == g_sellBuf)
+               d = IsSignalValue(bv[k]) ? DirFromValue(bv[k], sh) : 0;
+            else
+              {
+               bool b = IsSignalValue(bv[k]), sl = IsSignalValue(sv[k]);
+               d = (b && !sl) ? 1 : (sl && !b) ? -1 : 0;
+              }
+            if(d == 0)
+               continue;
+            found++;
+            if(newestShift < 0)
+              {
+               newestShift = sh;
+               newestDir   = d;
+              }
+            DrawDot(d, sh, false, false);
+           }
+        }
+
+   if(newestShift >= 0 && iTime(_Symbol, _Period, newestShift) >= g_lastSigTime)
+     {
+      g_lastSigDir  = newestDir;
+      g_lastSigTime = iTime(_Symbol, _Period, newestShift);
      }
    g_histBar   = iTime(_Symbol, _Period, 0);
    g_histRetry = (found > 0) ? 0 : GetTickCount() + 10000;
@@ -576,7 +630,8 @@ void SetResolved(int source)
    else
      {
       g_status = "Chart arrows";
-      Print("Signals: reading arrow objects drawn on the chart (", CountArrowObjects(), " found)");
+      g_arrowCount = CountArrowObjects();
+      Print("Signals: reading arrow objects drawn on the chart (", g_arrowCount, " found)");
      }
    ScanHistory();
   }
@@ -1127,7 +1182,7 @@ void Diagnostics()
                  : StringFormat("buy #%d = %s, sell #%d = %s", g_buyBuf, RawBuffer(g_buyBuf, InpSignalBar),
                                 g_sellBuf, RawBuffer(g_sellBuf, InpSignalBar));
       else
-         line += StringFormat("%d arrow objects on chart", CountArrowObjects());
+         line += StringFormat("chart arrows (%d objects on chart)", ObjectsTotal(0, -1, -1));
    int sig = (g_source != 0) ? ReadSignal(InpSignalBar) : 0;
    line += " -> " + (sig > 0 ? "BUY" : sig < 0 ? "SELL" : "no signal");
    if(sig != 0)
@@ -1158,10 +1213,14 @@ void CheckSignal()
       return;
    if(g_source == 2 && !MQLInfoInteger(MQL_TESTER))
      {
+      // scanning thousands of objects is slow: only look again when an object
+      // was created, a new candle started, or every 5 s as a safety net
       uint now = GetTickCount();
-      if(now < g_nextObjScan)
+      if(!g_objDirty && bar == g_objScanBar && now < g_nextObjScan)
          return;
-      g_nextObjScan = now + 1000;
+      g_objDirty    = false;
+      g_objScanBar  = bar;
+      g_nextObjScan = now + 5000;
      }
    int dir = ReadSignal(InpSignalBar);
    if(dir == 0)
@@ -1551,7 +1610,8 @@ void UpdatePanel()
       SetText("v_grid", "off" + (cnt > 1 ? StringFormat("  (%d trades open)", cnt) : ""), C_MUTED);
    else
       if(gdir == 0)
-         SetText("v_grid", StringFormat("on  (max %d trades)", InpMaxTrades), C_TEXT);
+         SetText("v_grid", StringFormat("on  %.0f pips = %s, max %d", InpGridPips,
+                                        DoubleToString(InpGridPips * g_pip, _Digits), InpMaxTrades), C_TEXT);
       else
          if(gcount < InpMaxTrades)
             SetText("v_grid", StringFormat("next at %s  (%d/%d)", Px(glevel), gcount, InpMaxTrades), C_GOLD);
@@ -1648,6 +1708,8 @@ int OnInit()
       if(!MQLInfoInteger(MQL_TESTER))
          ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, true);
      }
+   if(!MQLInfoInteger(MQL_TESTER))
+      ChartSetInteger(0, CHART_EVENT_OBJECT_CREATE, true);
    UpdateDayStats();
    TryResolve();
    EventSetTimer(1);
@@ -1712,6 +1774,12 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
 
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
   {
+   if(id == CHARTEVENT_OBJECT_CREATE)
+     {
+      if(StringFind(sparam, PFX) != 0 && StringFind(sparam, DOT_PFX) != 0)
+         g_objDirty = true;                     // maybe a new signal arrow
+      return;
+     }
    if(!g_panel)
       return;
    if(id == CHARTEVENT_MOUSE_MOVE)
