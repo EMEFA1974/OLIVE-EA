@@ -113,8 +113,8 @@ input int              InpDotHistoryBars  = 500;         // Past candles to mark
 
 input group "=== Panel ==="
 input bool             InpShowPanel       = true;        // Show panel
-input int              InpPanelX          = 12;          // Panel X position
-input int              InpPanelY          = 30;          // Panel Y position
+input int              InpPanelX          = 12;          // Panel start X position (drag the header to move it)
+input int              InpPanelY          = 30;          // Panel start Y position
 
 //--- constants ------------------------------------------------------
 #define PFX      "OTM_"
@@ -166,7 +166,14 @@ datetime g_histBar      = 0;      // candle when past signals were last marked
 uint     g_histRetry    = 0;      // next retry while no past signals were found
 datetime g_diagBar      = 0;      // candle last written to the diagnostics log
 bool     g_panel        = false;
-string   S_UP, S_DN, S_DOT, S_SEP;
+int      g_px           = 0;      // panel position (pixels from the chart's top-left)
+int      g_py           = 0;
+bool     g_collapsed    = false;
+bool     g_dragging     = false;
+bool     g_mouseDown    = false;
+int      g_dragDX       = 0;
+int      g_dragDY       = 0;
+string   S_UP, S_DN, S_RT, S_DOT, S_SEP;
 
 //+------------------------------------------------------------------+
 //| Helpers                                                          |
@@ -1052,11 +1059,14 @@ void Label(const string name, int x, int y, const string text, color clr, int si
            const string font = "Arial", ENUM_ANCHOR_POINT anchor = ANCHOR_LEFT_UPPER)
   {
    string n = PFX + name;
-   if(ObjectFind(0, n) < 0)
+   bool exists = (ObjectFind(0, n) >= 0);
+   if(!exists)
       ObjectCreate(0, n, OBJ_LABEL, 0, 0, 0);
-   ObjectSetInteger(0, n, OBJPROP_CORNER, CORNER_LEFT_UPPER);
    ObjectSetInteger(0, n, OBJPROP_XDISTANCE, x);
    ObjectSetInteger(0, n, OBJPROP_YDISTANCE, y);
+   if(exists)
+      return;                 // only moved: keep the live text and colour
+   ObjectSetInteger(0, n, OBJPROP_CORNER, CORNER_LEFT_UPPER);
    ObjectSetInteger(0, n, OBJPROP_ANCHOR, anchor);
    ObjectSetInteger(0, n, OBJPROP_COLOR, clr);
    ObjectSetInteger(0, n, OBJPROP_FONTSIZE, size);
@@ -1069,11 +1079,14 @@ void Label(const string name, int x, int y, const string text, color clr, int si
 void Button(const string name, int x, int y, int w, int h, const string text, color bg)
   {
    string n = PFX + name;
-   if(ObjectFind(0, n) < 0)
+   bool exists = (ObjectFind(0, n) >= 0);
+   if(!exists)
       ObjectCreate(0, n, OBJ_BUTTON, 0, 0, 0);
-   ObjectSetInteger(0, n, OBJPROP_CORNER, CORNER_LEFT_UPPER);
    ObjectSetInteger(0, n, OBJPROP_XDISTANCE, x);
    ObjectSetInteger(0, n, OBJPROP_YDISTANCE, y);
+   if(exists)
+      return;
+   ObjectSetInteger(0, n, OBJPROP_CORNER, CORNER_LEFT_UPPER);
    ObjectSetInteger(0, n, OBJPROP_XSIZE, w);
    ObjectSetInteger(0, n, OBJPROP_YSIZE, h);
    ObjectSetInteger(0, n, OBJPROP_BGCOLOR, bg);
@@ -1096,7 +1109,7 @@ void SetText(const string name, const string text, color clr)
 
 int Section(const string key, const string title, int y)
   {
-   int x = InpPanelX;
+   int x = g_px;
    Label("sec_" + key, x + 12, y, title, C_SECTION, 7, "Arial");
    Rect("ln_" + key, x + 80, y + 6, PANEL_W - 92, 1, C_LINE, C_LINE);
    return y + 14;
@@ -1104,7 +1117,7 @@ int Section(const string key, const string title, int y)
 
 int Row(const string key, const string label, int y)
   {
-   int x = InpPanelX;
+   int x = g_px;
    Label("l_" + key, x + 14, y, label, C_LABEL, 8);
    Label("v_" + key, x + PANEL_W - 12, y, "-", C_TEXT, 8, "Arial Bold", ANCHOR_RIGHT_UPPER);
    return y + 15;
@@ -1112,7 +1125,7 @@ int Row(const string key, const string label, int y)
 
 void PanelCreate()
   {
-   int x = InpPanelX, y = InpPanelY, w = PANEL_W;
+   int x = g_px, y = g_py, w = PANEL_W;
    int bw = (w - 20 - 3 * 6) / 4;
 
    Rect("bg", x, y, w, 100, C_BG, C_BORDER);
@@ -1120,7 +1133,14 @@ void PanelCreate()
    Rect("stripe", x + 1, y + 33, w - 2, 2, C_STRIPE, C_STRIPE);
    Label("title", x + 12, y + 4, "OLIVE TRADE MANAGER", clrWhite, 8, "Arial");
    Label("sub", x + 12, y + 18, _Symbol + "  " + S_SEP + "  " + TfName(), C'215,205,255', 7, "Arial");
-   Label("state", x + w - 12, y + 11, "", C_WARN, 8, "Arial", ANCHOR_RIGHT_UPPER);
+   Label("state", x + w - 36, y + 11, "", C_WARN, 8, "Arial", ANCHOR_RIGHT_UPPER);
+   Button("toggle", x + w - 28, y + 7, 20, 20, g_collapsed ? S_RT : S_DN, C_HEADER);
+   if(g_collapsed)
+     {
+      ObjectSetInteger(0, PFX + "bg", OBJPROP_YSIZE, 36);
+      g_panel = true;
+      return;
+     }
 
    int cy = y + 42;
    cy = Section("sig", "SIGNAL", cy);
@@ -1160,6 +1180,73 @@ void PanelCreate()
    g_panel = true;
   }
 
+string PanelKey(const string what) { return "OliveTM_" + IntegerToString(ChartID()) + "_" + what; }
+
+void PanelSaveState()
+  {
+   GlobalVariableSet(PanelKey("x"), g_px);
+   GlobalVariableSet(PanelKey("y"), g_py);
+   GlobalVariableSet(PanelKey("c"), g_collapsed ? 1 : 0);
+  }
+
+void PanelLoadState()
+  {
+   g_px = InpPanelX;
+   g_py = InpPanelY;
+   g_collapsed = false;
+   if(GlobalVariableCheck(PanelKey("x")))
+     {
+      g_px = (int)GlobalVariableGet(PanelKey("x"));
+      g_py = (int)GlobalVariableGet(PanelKey("y"));
+      g_collapsed = GlobalVariableGet(PanelKey("c")) > 0;
+     }
+  }
+
+void PanelRebuild()
+  {
+   ObjectsDeleteAll(0, PFX);
+   PanelCreate();
+   UpdatePanel();
+  }
+
+// Drag the panel by its header: press on the header and move the mouse.
+void PanelMouse(int mx, int my, bool down)
+  {
+   if(!down)
+     {
+      if(g_dragging)
+        {
+         g_dragging = false;
+         ChartSetInteger(0, CHART_MOUSE_SCROLL, true);
+         PanelSaveState();
+        }
+      g_mouseDown = false;
+      return;
+     }
+   if(!g_dragging)
+     {
+      if(g_mouseDown)
+         return;              // press started elsewhere (e.g. scrolling the chart)
+      g_mouseDown = true;
+      if(mx >= g_px && mx <= g_px + PANEL_W - 32 && my >= g_py && my <= g_py + 34)
+        {
+         g_dragging = true;
+         g_dragDX = mx - g_px;
+         g_dragDY = my - g_py;
+         ChartSetInteger(0, CHART_MOUSE_SCROLL, false);
+        }
+      return;
+     }
+   int nx = MathMax(0, mx - g_dragDX);
+   int ny = MathMax(0, my - g_dragDY);
+   if(nx == g_px && ny == g_py)
+      return;
+   g_px = nx;
+   g_py = ny;
+   PanelCreate();
+   ChartRedraw();
+  }
+
 void UpdatePanel()
   {
    if(!g_panel)
@@ -1177,6 +1264,11 @@ void UpdatePanel()
             SetText("state", S_DOT + " BLOCKED", C_SELL);
          else
             SetText("state", S_DOT + " ACTIVE", C_BUY);
+   if(g_collapsed)
+     {
+      ChartRedraw();
+      return;
+     }
 
    //--- signal
    SetText("v_src", g_status, g_source == 0 ? C_WARN : C_TEXT);
@@ -1259,6 +1351,7 @@ int OnInit()
   {
    S_UP  = ShortToString(0x25B2);
    S_DN  = ShortToString(0x25BC);
+   S_RT  = ShortToString(0x25B6);
    S_DOT = ShortToString(0x25CF);
    S_SEP = ShortToString(0x2022);
 
@@ -1287,7 +1380,12 @@ int OnInit()
    g_lastSignalBar = iTime(_Symbol, _Period, InpSignalBar);
 
    if(InpShowPanel && (!MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_VISUAL_MODE)))
+     {
+      PanelLoadState();
       PanelCreate();
+      if(!MQLInfoInteger(MQL_TESTER))
+         ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, true);
+     }
    UpdateDayStats();
    TryResolve();
    EventSetTimer(1);
@@ -1299,6 +1397,8 @@ int OnInit()
 void OnDeinit(const int reason)
   {
    EventKillTimer();
+   if(g_dragging)
+      ChartSetInteger(0, CHART_MOUSE_SCROLL, true);
    ObjectsDeleteAll(0, PFX);
    if(reason == REASON_REMOVE || reason == REASON_CHARTCLOSE)
       ObjectsDeleteAll(0, DOT_PFX);
@@ -1348,7 +1448,23 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
 
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
   {
-   if(id != CHARTEVENT_OBJECT_CLICK || StringFind(sparam, PFX + "btn_") != 0)
+   if(!g_panel)
+      return;
+   if(id == CHARTEVENT_MOUSE_MOVE)
+     {
+      PanelMouse((int)lparam, (int)dparam, ((int)StringToInteger(sparam) & 1) == 1);
+      return;
+     }
+   if(id != CHARTEVENT_OBJECT_CLICK)
+      return;
+   if(sparam == PFX + "toggle")
+     {
+      g_collapsed = !g_collapsed;
+      PanelSaveState();
+      PanelRebuild();
+      return;
+     }
+   if(StringFind(sparam, PFX + "btn_") != 0)
       return;
    string b = StringSubstr(sparam, StringLen(PFX));
    if(b == "btn_buy")
