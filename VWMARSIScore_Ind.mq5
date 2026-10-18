@@ -17,7 +17,7 @@
 //| direction re-arms only after its score fell to ReArmScore.       |
 //| The panel scores every past signal (TP/SL in ATR multiples).     |
 //+------------------------------------------------------------------+
-#property version     "1.36"
+#property version     "1.37"
 #property description "Four VWMAs on High + three RSIs -> 5-point bull/bear score."
 #property description "Arrow on the bar where the score first reaches MinScore."
 #property indicator_chart_window
@@ -109,6 +109,10 @@ input bool              ShowLevels        = true;  // Draw PDH/PDL and PWH/PWL l
 input int               PanelX            = 10;    // Panel start X offset (px), until it is dragged
 input int               PanelY            = 25;    // Panel start Y offset (px), until it is dragged
 input int               PanelFontSize     = 9;     // Panel font size
+input bool              ShowLinePrices    = true;  // Price of each VWMA line at its right end
+input int               LinePriceFontSize = 8;     // Font size of the line prices
+input color             LinePriceColor    = clrLightGray; // Colour of the line prices
+input int               LinePriceBarsRight = 1;    // Bars right of the last candle for the line prices
 
 double V1[], V2[], V3[], V4[];
 double BuyArr[], SellArr[];
@@ -127,6 +131,7 @@ bool     gPanelOn = true;
 string   gPanelGv = "";
 int      gPX = 10, gPY = 25;          // panel position (px), moved by dragging
 int      gPanelW = 0, gHdrH = 0;      // title bar size, for mouse hit tests
+int      gRowH = 18, gTxtH = 14, gToggleW = 14, gTitleW = 120;   // measured text metrics (px)
 bool     gMouseDown = false, gDragging = false, gMoved = false;
 int      gDragX = 0, gDragY = 0, gDragPX = 0, gDragPY = 0;
 bool     gChartScroll = true;
@@ -213,8 +218,13 @@ int OnInit()
    gPanelOn = !GlobalVariableCheck(gPanelGv) || GlobalVariableGet(gPanelGv) > 0.5;
    gPX = GlobalVariableCheck(gPanelGv + "_X") ? (int)GlobalVariableGet(gPanelGv + "_X") : PanelX;
    gPY = GlobalVariableCheck(gPanelGv + "_Y") ? (int)GlobalVariableGet(gPanelGv + "_Y") : PanelY;
-   gPanelW = PanelFontSize * 31;
-   gHdrH   = PanelFontSize * 2 + PanelFontSize / 2;
+   //--- measure the real font size (it grows with Windows display scaling)
+   gTxtH    = TextH(PanelFontSize);
+   gRowH    = gTxtH + MathMax(4, gTxtH / 3);
+   gToggleW = TextW(ShortToString((ushort)0x25BC), PanelFontSize + 2);
+   gTitleW  = TextW("VWMARSIScore_Ind", PanelFontSize);
+   gHdrH    = MathMax(gTxtH, TextH(PanelFontSize + 2)) + 8;
+   gPanelW  = 8 + gToggleW + 8 + gTitleW + 12;
    if(ShowPanel)
       ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, true);
    return INIT_SUCCEEDED;
@@ -428,6 +438,8 @@ int OnCalculate(const int rates_total,
 
    if(ShowLevels)
       DrawLevels();
+   if(ShowVwmaLines && ShowLinePrices)
+      DrawLinePrices(rates_total, time);
    if(ShowPanel)
       DrawPanel();
    return rates_total;
@@ -561,6 +573,61 @@ void Lbl(const string name, const int x, const int y, const string text, const c
   }
 
 //+------------------------------------------------------------------+
+//| Text size in pixels as the chart draws it (negative size = tenths |
+//| of a point, so Windows display scaling is included)              |
+//+------------------------------------------------------------------+
+int TextW(const string text, const int size)
+  {
+   uint w = 0, h = 0;
+   TextSetFont("Arial", -size * 10);
+   TextGetSize(text, w, h);
+   return (int)w;
+  }
+
+int TextH(const int size)
+  {
+   uint w = 0, h = 0;
+   TextSetFont("Arial", -size * 10);
+   TextGetSize("Ag", w, h);
+   return (int)h;
+  }
+
+//+------------------------------------------------------------------+
+//| Light grey price at the right end of each VWMA line              |
+//+------------------------------------------------------------------+
+void LinePrice(const string name, const datetime t, const double price)
+  {
+   string n = PFX + name;
+   if(price == EMPTY_VALUE || price <= 0.0)
+     {
+      ObjectDelete(0, n);
+      return;
+     }
+   if(ObjectFind(0, n) < 0)
+     {
+      ObjectCreate(0, n, OBJ_TEXT, 0, t, price);
+      ObjectSetInteger(0, n, OBJPROP_ANCHOR, ANCHOR_LEFT);
+      ObjectSetInteger(0, n, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, n, OBJPROP_HIDDEN, true);
+      ObjectSetString(0, n, OBJPROP_FONT, "Arial");
+      ObjectSetInteger(0, n, OBJPROP_FONTSIZE, LinePriceFontSize);
+      ObjectSetInteger(0, n, OBJPROP_COLOR, LinePriceColor);
+     }
+   ObjectMove(0, n, 0, t, price);
+   ObjectSetString(0, n, OBJPROP_TEXT, DoubleToString(price, _Digits));
+  }
+
+void DrawLinePrices(const int total, const datetime &time[])
+  {
+   int last = total - 1;
+   datetime t = time[last] + (datetime)(MathMax(0, LinePriceBarsRight) * PeriodSeconds());
+   LinePrice("LP1", t, V1[last]);
+   LinePrice("LP2", t, V2[last]);
+   LinePrice("LP3", t, V3[last]);
+   LinePrice("LP4", t, V4[last]);
+  }
+
+//+------------------------------------------------------------------+
 string HL(const double hi, const double lo)
   {
    return DoubleToString(hi, _Digits) + " / " + DoubleToString(lo, _Digits);
@@ -602,10 +669,10 @@ void DrawHeader()
       ObjectSetInteger(0, n, OBJPROP_FONTSIZE, PanelFontSize + 2);
       ObjectSetInteger(0, n, OBJPROP_COLOR, clrGold);
      }
-   ObjectSetInteger(0, n, OBJPROP_XDISTANCE, gPX + 4);
-   ObjectSetInteger(0, n, OBJPROP_YDISTANCE, gPY + 1);
+   ObjectSetInteger(0, n, OBJPROP_XDISTANCE, gPX + 6);
+   ObjectSetInteger(0, n, OBJPROP_YDISTANCE, gPY + (gHdrH - TextH(PanelFontSize + 2)) / 2);
    ObjectSetString(0, n, OBJPROP_TEXT, ShortToString((ushort)(gPanelOn ? 0x25BC : 0x25BA)));
-   Lbl("TITLE", gPX + 8 + PanelFontSize * 2, gPY + PanelFontSize / 2, "VWMARSIScore_Ind", clrGold);
+   Lbl("TITLE", gPX + 8 + gToggleW + 8, gPY + (gHdrH - gTxtH) / 2, "VWMARSIScore_Ind", clrGold);
   }
 
 //+------------------------------------------------------------------+
@@ -708,8 +775,6 @@ void DrawPanel()
       CopyLow(_Symbol, _Period, 0, total, low) < total)
       return;
 
-   int rowH = PanelFontSize * 2;
-   int colW = PanelFontSize * 11;
    string bg = PFX + "P_BG";
    if(ObjectFind(0, bg) < 0)
      {
@@ -723,7 +788,6 @@ void DrawPanel()
      }
    ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, gPX);
    ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, gPY + gHdrH - 1);
-   ObjectSetInteger(0, bg, OBJPROP_XSIZE, gPanelW);
 
    string names[32];
    string vals[32];
@@ -869,11 +933,27 @@ void DrawPanel()
       vals[r]  = (done > 0) ? StringFormat("%+.2f R", avgR) : "-";
       cols[r++] = (avgR > 0) ? clrLime : (avgR < 0 ? clrRed : clrGray);
      }
-   ObjectSetInteger(0, bg, OBJPROP_YSIZE, r * rowH + PanelFontSize);
+   //--- size the columns from the measured text so nothing overlaps
+   int nameW = 0, valW = 0, headW = 0;
+   for(int k = 0; k < r; k++)
+     {
+      if(ncols[k] == HEAD_CLR)
+         headW = MathMax(headW, TextW(names[k], PanelFontSize));
+      else
+         nameW = MathMax(nameW, TextW(names[k], PanelFontSize));
+      valW = MathMax(valW, TextW(vals[k], PanelFontSize));
+     }
+   int gap  = MathMax(10, gTxtH);
+   int colW = nameW + gap;
+   gPanelW  = MathMax(8 + colW + valW + 12, 8 + headW + 12);
+   gPanelW  = MathMax(gPanelW, 8 + gToggleW + 8 + gTitleW + 12);
+   DrawHeader();
+   ObjectSetInteger(0, bg, OBJPROP_XSIZE, gPanelW);
+   ObjectSetInteger(0, bg, OBJPROP_YSIZE, r * gRowH + gRowH / 2);
 
    for(int k = 0; k < r; k++)
      {
-      int y = gPY + gHdrH + PanelFontSize / 2 + k * rowH;
+      int y = gPY + gHdrH + gRowH / 4 + k * gRowH;
       Lbl("P_N" + IntegerToString(k), gPX + 8, y, names[k], ncols[k]);
       Lbl("P_V" + IntegerToString(k), gPX + 8 + colW, y, vals[k], cols[k]);
      }
