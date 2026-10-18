@@ -17,7 +17,7 @@
 //| direction re-arms only after its score fell to ReArmScore.       |
 //| The panel scores every past signal (TP/SL in ATR multiples).     |
 //+------------------------------------------------------------------+
-#property version     "1.37"
+#property version     "1.38"
 #property description "Four VWMAs on High + three RSIs -> 5-point bull/bear score."
 #property description "Arrow on the bar where the score first reaches MinScore."
 #property indicator_chart_window
@@ -110,9 +110,9 @@ input int               PanelX            = 10;    // Panel start X offset (px),
 input int               PanelY            = 25;    // Panel start Y offset (px), until it is dragged
 input int               PanelFontSize     = 9;     // Panel font size
 input bool              ShowLinePrices    = true;  // Price of each VWMA line at its right end
-input int               LinePriceFontSize = 8;     // Font size of the line prices
+input int               LinePriceFontSize = 7;     // Font size of the line prices
 input color             LinePriceColor    = clrLightGray; // Colour of the line prices
-input int               LinePriceBarsRight = 1;    // Bars right of the last candle for the line prices
+input int               LinePriceBarsRight = 4;    // Bars right of the last candle for the line prices
 
 double V1[], V2[], V3[], V4[];
 double BuyArr[], SellArr[];
