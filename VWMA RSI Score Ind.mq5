@@ -17,7 +17,7 @@
 //| direction re-arms only after its score fell to ReArmScore.       |
 //| The panel scores every past signal (TP/SL in ATR multiples).     |
 //+------------------------------------------------------------------+
-#property version     "1.32"
+#property version     "1.33"
 #property description "Four VWMAs on High + three RSIs -> 5-point bull/bear score."
 #property description "Arrow on the bar where the score first reaches MinScore."
 #property indicator_chart_window
@@ -27,12 +27,12 @@
 #property indicator_label1  "VWMA High 1"
 #property indicator_type1   DRAW_LINE
 #property indicator_color1  clrRed
-#property indicator_width1  3
+#property indicator_width1  1
 
 #property indicator_label2  "VWMA High 2"
 #property indicator_type2   DRAW_LINE
 #property indicator_color2  clrOrange
-#property indicator_width2  3
+#property indicator_width2  1
 
 #property indicator_label3  "VWMA High 3"
 #property indicator_type3   DRAW_LINE
