@@ -12,19 +12,24 @@
 //|   5.   Yellow VWMA3 (18) vs orange VWMA2 (37)                    |
 //| Signals (arrows) follow four rules:                              |
 //|   1. Trend: close beyond red VWMA1, red sloping by at least      |
-//|      MinRedSlopeAtr x ATR over RedSlopeBars, yellow beyond orange.|
-//|   2. Pullback entry: price touches yellow (or orange), green     |
-//|      dips across yellow, then turns back across it on a bar with |
-//|      score >= MinScore, not over-extended from yellow.           |
-//|   3. Exits at levels: stop beyond the pullback swing (or the     |
-//|      broken level), target at the next session / day / week     |
-//|      level. No arrow if that level is closer than the stop.      |
+//|      MinRedSlopeAtr x ATR, yellow beyond orange, and price no    |
+//|      more than MaxDistRedAtr x ATR from red (no late entries).   |
+//|   2. Pullback entry: price dips to orange (or yellow) at least   |
+//|      PullbackDepthAtr x ATR off the recent swing, green dips     |
+//|      across yellow, then turns back across it with score >=      |
+//|      MinScore, not over-extended from yellow.                    |
+//|   3. Exits: stop beyond the pullback low/high or orange (or the  |
+//|      broken level), at least MinStopAtr x ATR; target at the     |
+//|      next session / day / week level, capped at MaxRewardRisk.   |
+//|      No arrow if that level is closer than the stop. Stop moves  |
+//|      to entry once the trade is BreakEvenAtR x risk in profit.   |
 //|   4. Breakout entry: close through a completed session high/low, |
-//|      PDH/PDL or PWH/PWL with the trend, score >= BreakoutMinScore.|
+//|      PDH/PDL or PWH/PWL with the trend, score >= BreakoutMinScore,|
+//|      not more than BreakoutMaxExtAtr x ATR from yellow.          |
 //|      Wick-only spikes (fakeouts) don't count.                    |
 //| The panel scores every past signal with those stops and targets. |
 //+------------------------------------------------------------------+
-#property version     "2.02"
+#property version     "2.10"
 #property description "Four VWMAs on High + three RSIs -> 5-point bull/bear score."
 #property description "Arrows: trend pullbacks and level breakouts, with level-based stop and target."
 #property indicator_chart_window
@@ -110,16 +115,23 @@ input ENUM_CHECK4_PRICE Check4Price       = CHECK4_CLOSE; // Check 4 price when 
 input bool              UseRedSlope       = true;  // Point 1: buy only while red VWMA1 rises, sell only while it falls
 input int               RedSlopeBars      = 5;     // Bars back for the red slope comparison
 input double            MinRedSlopeAtr    = 0.1;   // Point 1: red must move at least this x ATR over RedSlopeBars (flat = range)
+input double            MaxDistRedAtr     = 3.0;   // Point 1: no arrow when price is further than this x ATR from red (0 = off)
 input bool              UsePullbackSignals = true; // Point 2: touch of yellow/orange, then green turns back across yellow
+input bool              PullbackToOrange  = true;  // Point 2: pullback must reach orange (false = yellow is enough)
+input double            PullbackDepthAtr  = 1.0;   // Point 2: pullback must fall at least this x ATR from the recent high (rise from the low)
+input int               PullbackLookback  = 20;    // Point 2: bars back for that recent high / low
 input int               PullbackMaxBars   = 12;    // Point 2: setup expires this many bars after the last touch
 input double            MaxExtensionAtr   = 1.0;   // Point 2: skip a pullback entry further than this x ATR from yellow (0 = off)
 input bool              UseBreakoutSignals = true; // Point 4: close through a session / day / week level with the trend
 input int               BreakoutMinScore  = 4;     // Point 4: score needed for a breakout signal (1-5)
+input double            BreakoutMaxExtAtr = 1.5;   // Point 4: no breakout arrow further than this x ATR from yellow (0 = off)
 input double            StopBufferAtr     = 0.2;   // Point 3: stop this x ATR beyond the pullback swing / broken level
-input double            MinStopAtr        = 0.5;   // Point 3: smallest stop (x ATR)
+input double            MinStopAtr        = 1.0;   // Point 3: smallest stop (x ATR)
 input double            MaxStopAtr        = 3.0;   // Point 3: no arrow if the stop is wider than this (x ATR)
 input double            MinRewardRisk     = 1.0;   // Point 3: no arrow if the next level is closer than this x stop
 input double            OpenSpaceRR       = 2.0;   // Point 3: target (x stop) when no level is in the way
+input double            MaxRewardRisk     = 2.5;   // Point 3: target never further than this x stop (0 = no cap)
+input double            BreakEvenAtR      = 1.0;   // Point 3: move the stop to entry at this x risk in profit (0 = off)
 input int               MinBarsBetween    = 5;     // No new same-direction arrow within this many bars
 input bool              UseObOsFilter     = true;  // Block buys if RSI14 > RsiOB, sells if RSI14 < RsiOS
 input bool              UseCandleConfirm  = false; // Buy bar must close up, sell bar must close down
@@ -166,7 +178,7 @@ int      gRowH = 18, gTxtH = 14, gToggleW = 14, gTitleW = 120;   // measured tex
 bool     gMouseDown = false, gDragging = false, gMoved = false;
 int      gDragX = 0, gDragY = 0, gDragPX = 0, gDragPY = 0;
 bool     gChartScroll = true;
-int      gStatWins = 0, gStatLosses = 0, gStatExpired = 0, gStatPb = 0, gStatBo = 0;
+int      gStatWins = 0, gStatLosses = 0, gStatBE = 0, gStatExpired = 0, gStatPb = 0, gStatBo = 0;
 double   gStatR = 0.0;
 
 const string PFX = "VRS_";
@@ -180,7 +192,7 @@ int OnInit()
       Print("All periods must be >= 1");
       return INIT_PARAMETERS_INCORRECT;
      }
-   if(AtrPeriod < 1 || RedSlopeBars < 1 || StatsMaxBars < 1 || PullbackMaxBars < 1 ||
+   if(AtrPeriod < 1 || RedSlopeBars < 1 || StatsMaxBars < 1 || PullbackMaxBars < 1 || PullbackLookback < 1 ||
       MinStopAtr <= 0 || MaxStopAtr < MinStopAtr || MinRewardRisk < 0 || OpenSpaceRR <= 0)
      {
       Print("Stop / filter settings must be positive and MaxStopAtr >= MinStopAtr");
@@ -383,6 +395,9 @@ bool EntryOk(const int i, const int dir, const int minScore, const double &open[
    //--- green back on the trend side of yellow
    if(dir > 0 ? V4[i] <= V3[i] : V4[i] >= V3[i])
       return false;
+   //--- no late entries far from the red line
+   if(MaxDistRedAtr > 0.0 && dir * (close[i] - V1[i]) > MaxDistRedAtr * Atr[i])
+      return false;
    if(UseObOsFilter && (dir > 0 ? R1[i] > RsiOB : R1[i] < RsiOS))
       return false;
    if(UseCandleConfirm && (dir > 0 ? close[i] <= open[i] : close[i] >= open[i]))
@@ -396,7 +411,7 @@ bool EntryOk(const int i, const int dir, const int minScore, const double &open[
 
 //+------------------------------------------------------------------+
 //| Point 2: track a pullback setup. It arms when price touches      |
-//| yellow (orange lies beyond it) while the trend holds, records    |
+//| orange (or yellow) while the trend holds, records                |
 //| the swing extreme and whether green dipped across yellow, and is |
 //| cancelled by a close beyond red or after PullbackMaxBars.        |
 //+------------------------------------------------------------------+
@@ -407,7 +422,8 @@ void TrackPullback(const int i, const int dir, const double &high[], const doubl
    double dip = (dir > 0) ? PbBuyDip[i - 1] : PbSellDip[i - 1];
    double ext = (dir > 0) ? low[i] : high[i];
    bool aboveRed = (dir > 0) ? close[i] > V1[i] : close[i] < V1[i];
-   bool touch    = (dir > 0) ? low[i] <= V3[i] : high[i] >= V3[i];
+   double line   = PullbackToOrange ? V2[i] : V3[i];
+   bool touch    = (dir > 0) ? low[i] <= line : high[i] >= line;
    bool trend    = aboveRed && (dir > 0 ? V3[i] > V2[i] : V3[i] < V2[i]);
 
    if(pb > 0.0)
@@ -552,8 +568,13 @@ bool PlanExits(const int i, const int dir, const double swing, const double &clo
          if(dir * (lv[m] - entry) > 0.0 && (next == 0.0 || dir * (lv[m] - next) < 0.0))
             next = lv[m];
      }
-   tp = (next > 0.0) ? next : entry + dir * OpenSpaceRR * risk;
-   return dir * (tp - entry) >= MinRewardRisk * risk;
+   double dist = (next > 0.0) ? dir * (next - entry) : OpenSpaceRR * risk;
+   if(dist < MinRewardRisk * risk)
+      return false;
+   if(MaxRewardRisk > 0.0)
+      dist = MathMin(dist, MaxRewardRisk * risk);
+   tp = entry + dir * dist;
+   return true;
   }
 
 //+------------------------------------------------------------------+
@@ -584,6 +605,15 @@ void TrySignal(const int i, const int dir, const datetime &time[], const double 
    double dip = (dir > 0) ? PbBuyDip[i] : PbSellDip[i];
    bool pullback = UsePullbackSignals && pb > 0.0 && dip > 0.0 &&
                    (MaxExtensionAtr <= 0.0 || dir * (close[i] - V3[i]) <= MaxExtensionAtr * Atr[i]);
+   //--- a real pullback: far enough off the recent high (low for sells)
+   if(pullback && PullbackDepthAtr > 0.0)
+     {
+      int from = MathMax(0, i - PullbackLookback);
+      double ext = (dir > 0) ? high[ArrayMaximum(high, from, i - from + 1)]
+                             : low[ArrayMinimum(low, from, i - from + 1)];
+      if(dir * (ext - pb) < PullbackDepthAtr * Atr[i])
+         pullback = false;
+     }
    if(!pullback && !UseBreakoutSignals)
       return;
    int need = pullback ? (UseBreakoutSignals ? (int)MathMin(MinScore, BreakoutMinScore) : MinScore) : BreakoutMinScore;
@@ -594,7 +624,8 @@ void TrySignal(const int i, const int dir, const datetime &time[], const double 
    double sl = 0.0, tp = 0.0;
    int n = KeyLevels(i, time, high, low, his, los);
    //--- point 2: pullback entry, green has turned back across yellow
-   if(pullback && DirScore(i, dir) >= MinScore && PlanExits(i, dir, pb, close, his, los, n, sl, tp))
+   double swing = (dir > 0) ? MathMin(pb, V2[i]) : MathMax(pb, V2[i]);   // beyond the swing and orange
+   if(pullback && DirScore(i, dir) >= MinScore && PlanExits(i, dir, swing, close, his, los, n, sl, tp))
      {
       Sig[i]   = dir;
       SigSL[i] = sl;
@@ -606,7 +637,8 @@ void TrySignal(const int i, const int dir, const datetime &time[], const double 
       return;
      }
    //--- point 4: breakout entry, stop back beyond the broken level
-   if(UseBreakoutSignals && DirScore(i, dir) >= BreakoutMinScore)
+   if(UseBreakoutSignals && DirScore(i, dir) >= BreakoutMinScore &&
+      (BreakoutMaxExtAtr <= 0.0 || dir * (close[i] - V3[i]) <= BreakoutMaxExtAtr * Atr[i]))
      {
       double lvl = 0.0;
       if(dir > 0)
@@ -749,14 +781,44 @@ void SendAlerts(const int sig, const double entry, const double sl, const double
   }
 
 //+------------------------------------------------------------------+
+//| Follow the signal on bar i up to lastBar. Returns 1 = target,    |
+//| -1 = stop, 2 = out at break-even, 0 = still open. If stop and    |
+//| target fall in one bar it counts as the stop. endBar is the exit |
+//| bar (lastBar while open); beOn says the stop was moved to entry. |
+//+------------------------------------------------------------------+
+int SimTrade(const int i, const int lastBar, const double &high[], const double &low[],
+             const double &close[], int &endBar, bool &beOn)
+  {
+   int    dir   = (Sig[i] > 0) ? 1 : -1;
+   double entry = close[i], sl = SigSL[i], tp = SigTP[i];
+   double risk  = dir * (entry - sl);
+   beOn   = false;
+   endBar = lastBar;
+   if(risk <= 0.0)
+      return 0;
+   for(int j = i + 1; j <= lastBar; j++)
+     {
+      if(dir > 0 ? low[j] <= sl : high[j] >= sl)
+        { endBar = j; return beOn ? 2 : -1; }
+      if(dir > 0 ? high[j] >= tp : low[j] <= tp)
+        { endBar = j; return 1; }
+      double best = (dir > 0) ? high[j] : low[j];
+      if(!beOn && BreakEvenAtR > 0.0 && dir * (best - entry) >= BreakEvenAtR * risk)
+        { beOn = true; sl = entry; }
+     }
+   return 0;
+  }
+
+//+------------------------------------------------------------------+
 //| Replay every closed-bar signal: entry at the signal bar's close, |
-//| with its level-based stop and target. If both are hit in one bar |
-//| it counts as a loss. Spread and commission are ignored.          |
+//| level-based stop and target, break-even move. Spread and         |
+//| commission are ignored.                                          |
 //+------------------------------------------------------------------+
 void ComputeStats(const int total, const double &high[], const double &low[], const double &close[])
   {
    gStatWins = 0;
    gStatLosses = 0;
+   gStatBE = 0;
    gStatExpired = 0;
    gStatPb = 0;
    gStatBo = 0;
@@ -766,36 +828,25 @@ void ComputeStats(const int total, const double &high[], const double &low[], co
       int s = (int)Sig[i];
       if(s == 0)
          continue;
-      int dir = (s > 0) ? 1 : -1;
       if(s == 2 || s == -2)
          gStatBo++;
       else
          gStatPb++;
-      double entry = close[i], sl = SigSL[i], tp = SigTP[i];
-      double risk = dir * (entry - sl);
-      if(risk <= 0.0)
-         continue;
-      int outcome = 0;
-      int last = MathMin(total - 1, i + StatsMaxBars);
-      for(int j = i + 1; j <= last && outcome == 0; j++)
-        {
-         bool hitSl = (dir > 0) ? low[j] <= sl : high[j] >= sl;
-         bool hitTp = (dir > 0) ? high[j] >= tp : low[j] <= tp;
-         if(hitSl)
-            outcome = -1;
-         else if(hitTp)
-            outcome = 1;
-        }
-      if(outcome > 0)
+      int  exitBar;
+      bool beOn;
+      int  res = SimTrade(i, MathMin(total - 1, i + StatsMaxBars), high, low, close, exitBar, beOn);
+      if(res == 1)
         {
          gStatWins++;
-         gStatR += dir * (tp - entry) / risk;
+         gStatR += (SigTP[i] - close[i]) / (close[i] - SigSL[i]);
         }
-      else if(outcome < 0)
+      else if(res == -1)
         {
          gStatLosses++;
          gStatR -= 1.0;
         }
+      else if(res == 2)
+         gStatBE++;
       else if(i + StatsMaxBars <= total - 1)
          gStatExpired++;
      }
@@ -953,22 +1004,17 @@ void DrawTradeLevels(const int total, const datetime &time[], const double &high
       ObjectsDeleteAll(0, PFX + "T_");
       return;
      }
-   int    dir = (Sig[ls] > 0) ? 1 : -1;
    double sl = SigSL[ls], tp = SigTP[ls];
-   int  end = last;
-   bool hit = false, slHit = false;
-   for(int j = ls + 1; j <= last && !hit; j++)
-     {
-      slHit = (dir > 0) ? low[j] <= sl : high[j] >= sl;
-      hit   = slHit || ((dir > 0) ? high[j] >= tp : low[j] <= tp);
-      if(hit)
-         end = j;
-     }
+   int  exitBar;
+   bool beOn;
+   int  res = SimTrade(ls, last, high, low, close, exitBar, beOn);
    datetime t1 = time[ls];
-   datetime t2 = time[end] + (datetime)((hit ? 1 : MathMax(1, LinePriceBarsRight)) * PeriodSeconds());
-   TradeLine("T_EN", "Entry", t1, t2, close[ls], EntryColor, STYLE_DOT);
-   TradeLine("T_SL", slHit ? "SL hit" : "SL", t1, t2, sl, StopColor, STYLE_DASH);
-   TradeLine("T_TP", (hit && !slHit) ? "TP hit" : "TP", t1, t2, tp, TargetColor, STYLE_DASH);
+   datetime t2 = time[exitBar] + (datetime)((res != 0 ? 1 : MathMax(1, LinePriceBarsRight)) * PeriodSeconds());
+   //--- once the stop has moved to break-even the entry line is the stop
+   string enTag = (res == 2) ? "BE hit" : (beOn ? "Entry (stop at BE)" : "Entry");
+   TradeLine("T_EN", enTag, t1, t2, close[ls], EntryColor, STYLE_DOT);
+   TradeLine("T_SL", (res == -1) ? "SL hit" : "SL", t1, t2, sl, StopColor, STYLE_DASH);
+   TradeLine("T_TP", (res == 1) ? "TP hit" : "TP", t1, t2, tp, TargetColor, STYLE_DASH);
   }
 
 //+------------------------------------------------------------------+
@@ -1318,7 +1364,7 @@ void DrawPanel()
 
    if(ShowStats)
      {
-      int done = gStatWins + gStatLosses;
+      int done = gStatWins + gStatLosses + gStatBE;
       names[r] = "SIGNAL STATS";
       vals[r]  = " ";
       cols[r]  = clrSilver;
@@ -1326,8 +1372,8 @@ void DrawPanel()
       names[r] = "Pullback / Breakout";
       vals[r]  = StringFormat("%d / %d", gStatPb, gStatBo);
       cols[r++] = clrWhite;
-      names[r] = "Signals W/L/exp";
-      vals[r]  = StringFormat("%d / %d / %d", gStatWins, gStatLosses, gStatExpired);
+      names[r] = "W / L / BE / exp";
+      vals[r]  = StringFormat("%d / %d / %d / %d", gStatWins, gStatLosses, gStatBE, gStatExpired);
       cols[r++] = clrWhite;
       names[r] = "Win rate";
       vals[r]  = (done > 0) ? DoubleToString(100.0 * gStatWins / done, 1) + "%" : "-";
