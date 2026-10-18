@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|                                           VWMA RSI Score Ind.mq5 |
+//|                                             VWMARSIScore_Ind.mq5 |
 //|                                                                  |
 //| 5-point bull/bear score built from four VWMAs (on High, tick     |
 //| volume) and three RSIs, plus session / day / week levels.        |
@@ -17,7 +17,7 @@
 //| direction re-arms only after its score fell to ReArmScore.       |
 //| The panel scores every past signal (TP/SL in ATR multiples).     |
 //+------------------------------------------------------------------+
-#property version     "1.33"
+#property version     "1.34"
 #property description "Four VWMAs on High + three RSIs -> 5-point bull/bear score."
 #property description "Arrow on the bar where the score first reaches MinScore."
 #property indicator_chart_window
@@ -185,7 +185,7 @@ int OnInit()
    PlotIndexSetInteger(4, PLOT_ARROW_SHIFT, 8 + 4 * aw);
    PlotIndexSetInteger(5, PLOT_ARROW_SHIFT, -(8 + 4 * aw));
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "VWMA RSI Score Ind");
+   IndicatorSetString(INDICATOR_SHORTNAME, "VWMARSIScore_Ind");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
    hR1 = iRSI(_Symbol, _Period, RSI1, PRICE_CLOSE);
@@ -423,7 +423,7 @@ void SendAlerts(const int sig, const int score)
                              (sig > 0) ? "BUY" : "SELL", score);
    if(AlertPopup) Alert(msg);
    if(AlertPush)  SendNotification(msg);
-   if(AlertEmail) SendMail("VWMA RSI Score Ind", msg);
+   if(AlertEmail) SendMail("VWMARSIScore_Ind", msg);
   }
 
 //+------------------------------------------------------------------+
@@ -621,7 +621,7 @@ void DrawPanel()
    ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, PanelY);
    ObjectSetInteger(0, bg, OBJPROP_XSIZE, colW + PanelFontSize * 24);
    DrawToggle();
-   Lbl("P_TITLE", PanelX + 8 + PanelFontSize * 2, PanelY + PanelFontSize / 2, "VWMA RSI Score Ind", clrGold);
+   Lbl("P_TITLE", PanelX + 8 + PanelFontSize * 2, PanelY + PanelFontSize / 2, "VWMARSIScore_Ind", clrGold);
 
    string names[20];
    string vals[20];
