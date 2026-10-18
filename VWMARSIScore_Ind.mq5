@@ -17,7 +17,7 @@
 //| direction re-arms only after its score fell to ReArmScore.       |
 //| The panel scores every past signal (TP/SL in ATR multiples).     |
 //+------------------------------------------------------------------+
-#property version     "1.35"
+#property version     "1.36"
 #property description "Four VWMAs on High + three RSIs -> 5-point bull/bear score."
 #property description "Arrow on the bar where the score first reaches MinScore."
 #property indicator_chart_window
@@ -103,11 +103,11 @@ input double            StatsTpAtr        = 2.0;   // Stats take profit (x ATR)
 input double            StatsSlAtr        = 1.0;   // Stats stop loss (x ATR)
 input int               StatsMaxBars      = 48;    // Bars to wait for TP/SL before a signal counts as expired
 input bool              SignalOnClosedBar = true;  // Arrows/alerts on closed bars only (no repaint)
-input bool              ShowPanel         = true;  // Show info panel (click the triangle to hide/show)
+input bool              ShowPanel         = true;  // Show info panel (drag the title bar to move, click it to hide/show)
 input bool              ShowVwmaLines     = true;  // Draw the four VWMA lines on the chart (red, orange, yellow, green)
 input bool              ShowLevels        = true;  // Draw PDH/PDL and PWH/PWL lines
-input int               PanelX            = 10;    // Panel X offset (px)
-input int               PanelY            = 25;    // Panel Y offset (px)
+input int               PanelX            = 10;    // Panel start X offset (px), until it is dragged
+input int               PanelY            = 25;    // Panel start Y offset (px), until it is dragged
 input int               PanelFontSize     = 9;     // Panel font size
 
 double V1[], V2[], V3[], V4[];
@@ -125,6 +125,11 @@ datetime gLastAlertBar = 0;
 datetime gLastStatsBar = 0;
 bool     gPanelOn = true;
 string   gPanelGv = "";
+int      gPX = 10, gPY = 25;          // panel position (px), moved by dragging
+int      gPanelW = 0, gHdrH = 0;      // title bar size, for mouse hit tests
+bool     gMouseDown = false, gDragging = false, gMoved = false;
+int      gDragX = 0, gDragY = 0, gDragPX = 0, gDragPY = 0;
+bool     gChartScroll = true;
 int      gStatWins = 0, gStatLosses = 0, gStatExpired = 0;
 
 const string PFX = "VRS_";
@@ -206,6 +211,12 @@ int OnInit()
    //--- panel open/closed state survives timeframe changes and restarts
    gPanelGv = "VRS_Panel_" + IntegerToString(ChartID());
    gPanelOn = !GlobalVariableCheck(gPanelGv) || GlobalVariableGet(gPanelGv) > 0.5;
+   gPX = GlobalVariableCheck(gPanelGv + "_X") ? (int)GlobalVariableGet(gPanelGv + "_X") : PanelX;
+   gPY = GlobalVariableCheck(gPanelGv + "_Y") ? (int)GlobalVariableGet(gPanelGv + "_Y") : PanelY;
+   gPanelW = PanelFontSize * 31;
+   gHdrH   = PanelFontSize * 2 + PanelFontSize / 2;
+   if(ShowPanel)
+      ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, true);
    return INIT_SUCCEEDED;
   }
 
@@ -214,7 +225,13 @@ void OnDeinit(const int reason)
   {
    ObjectsDeleteAll(0, PFX);
    if(reason == REASON_REMOVE)
+     {
       GlobalVariableDel(gPanelGv);
+      GlobalVariableDel(gPanelGv + "_X");
+      GlobalVariableDel(gPanelGv + "_Y");
+     }
+   if(gDragging)
+      ChartSetInteger(0, CHART_MOUSE_SCROLL, gChartScroll);
    if(hR1 != INVALID_HANDLE) IndicatorRelease(hR1);
    if(hR2 != INVALID_HANDLE) IndicatorRelease(hR2);
    if(hR3 != INVALID_HANDLE) IndicatorRelease(hR3);
@@ -550,45 +567,133 @@ string HL(const double hi, const double lo)
   }
 
 //+------------------------------------------------------------------+
-//| Triangle that collapses / expands the panel                      |
+//| Title bar: drag it to move the panel, click it to collapse/expand|
 //+------------------------------------------------------------------+
-void DrawToggle()
+void DrawHeader()
   {
+   string h = PFX + "HDR";
+   if(ObjectFind(0, h) < 0)
+     {
+      //--- objects draw in creation order: recreate the labels above the bar
+      ObjectDelete(0, PFX + "TOGGLE");
+      ObjectDelete(0, PFX + "TITLE");
+      ObjectCreate(0, h, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, h, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, h, OBJPROP_BGCOLOR, C'20,35,75');
+      ObjectSetInteger(0, h, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+      ObjectSetInteger(0, h, OBJPROP_COLOR, clrDimGray);
+      ObjectSetInteger(0, h, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, h, OBJPROP_HIDDEN, true);
+      ObjectSetString(0, h, OBJPROP_TOOLTIP, "Drag to move, click to show / hide");
+     }
+   ObjectSetInteger(0, h, OBJPROP_XDISTANCE, gPX);
+   ObjectSetInteger(0, h, OBJPROP_YDISTANCE, gPY);
+   ObjectSetInteger(0, h, OBJPROP_XSIZE, gPanelW);
+   ObjectSetInteger(0, h, OBJPROP_YSIZE, gHdrH);
+
    string n = PFX + "TOGGLE";
    if(ObjectFind(0, n) < 0)
      {
       ObjectCreate(0, n, OBJ_LABEL, 0, 0, 0);
       ObjectSetInteger(0, n, OBJPROP_CORNER, CORNER_LEFT_UPPER);
       ObjectSetInteger(0, n, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, n, OBJPROP_HIDDEN, true);
       ObjectSetString(0, n, OBJPROP_FONT, "Arial");
       ObjectSetInteger(0, n, OBJPROP_FONTSIZE, PanelFontSize + 2);
       ObjectSetInteger(0, n, OBJPROP_COLOR, clrGold);
-      ObjectSetInteger(0, n, OBJPROP_ZORDER, 10);
-      ObjectSetString(0, n, OBJPROP_TOOLTIP, "Show / hide panel");
      }
-   ObjectSetInteger(0, n, OBJPROP_XDISTANCE, PanelX + 4);
-   ObjectSetInteger(0, n, OBJPROP_YDISTANCE, PanelY + 1);
+   ObjectSetInteger(0, n, OBJPROP_XDISTANCE, gPX + 4);
+   ObjectSetInteger(0, n, OBJPROP_YDISTANCE, gPY + 1);
    ObjectSetString(0, n, OBJPROP_TEXT, ShortToString((ushort)(gPanelOn ? 0x25BC : 0x25BA)));
+   Lbl("TITLE", gPX + 8 + PanelFontSize * 2, gPY + PanelFontSize / 2, "VWMARSIScore_Ind", clrGold);
+  }
+
+//+------------------------------------------------------------------+
+//| Shift every panel object by dx/dy (cheap, used while dragging)   |
+//+------------------------------------------------------------------+
+void MovePanel(const int dx, const int dy)
+  {
+   for(int k = ObjectsTotal(0, 0) - 1; k >= 0; k--)
+     {
+      string n = ObjectName(0, k, 0);
+      if(StringFind(n, PFX) != 0)
+         continue;
+      ENUM_OBJECT t = (ENUM_OBJECT)ObjectGetInteger(0, n, OBJPROP_TYPE);
+      if(t != OBJ_LABEL && t != OBJ_RECTANGLE_LABEL)
+         continue;
+      ObjectSetInteger(0, n, OBJPROP_XDISTANCE, ObjectGetInteger(0, n, OBJPROP_XDISTANCE) + dx);
+      ObjectSetInteger(0, n, OBJPROP_YDISTANCE, ObjectGetInteger(0, n, OBJPROP_YDISTANCE) + dy);
+     }
   }
 
 //+------------------------------------------------------------------+
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
   {
-   if(id != CHARTEVENT_OBJECT_CLICK || sparam != PFX + "TOGGLE" || !ShowPanel)
+   if(id != CHARTEVENT_MOUSE_MOVE || !ShowPanel)
       return;
-   gPanelOn = !gPanelOn;
-   GlobalVariableSet(gPanelGv, gPanelOn ? 1.0 : 0.0);
-   DrawPanel();
-   ChartRedraw();
+   int  x    = (int)lparam;
+   int  y    = (int)dparam;
+   bool down = ((int)StringToInteger(sparam) & 1) != 0;
+
+   if(down && !gMouseDown)
+     {
+      //--- button pressed: start a drag if it is on the title bar
+      gMouseDown = true;
+      if(x >= gPX && x <= gPX + gPanelW && y >= gPY && y <= gPY + gHdrH)
+        {
+         gDragging = true;
+         gMoved    = false;
+         gDragX = x;   gDragY = y;
+         gDragPX = gPX; gDragPY = gPY;
+         gChartScroll = (bool)ChartGetInteger(0, CHART_MOUSE_SCROLL);
+         ChartSetInteger(0, CHART_MOUSE_SCROLL, false);
+        }
+     }
+   else if(down && gDragging)
+     {
+      int dx = x - gDragX, dy = y - gDragY;
+      if(MathAbs(dx) + MathAbs(dy) > 3)
+         gMoved = true;
+      if(gMoved)
+        {
+         int nx = MathMax(0, gDragPX + dx);
+         int ny = MathMax(0, gDragPY + dy);
+         MovePanel(nx - gPX, ny - gPY);
+         gPX = nx;
+         gPY = ny;
+         ChartRedraw();
+        }
+     }
+   else if(!down && gMouseDown)
+     {
+      //--- button released: a click without movement toggles the panel
+      gMouseDown = false;
+      if(!gDragging)
+         return;
+      gDragging = false;
+      ChartSetInteger(0, CHART_MOUSE_SCROLL, gChartScroll);
+      if(gMoved)
+        {
+         GlobalVariableSet(gPanelGv + "_X", gPX);
+         GlobalVariableSet(gPanelGv + "_Y", gPY);
+        }
+      else
+        {
+         gPanelOn = !gPanelOn;
+         GlobalVariableSet(gPanelGv, gPanelOn ? 1.0 : 0.0);
+         DrawPanel();
+        }
+      ChartRedraw();
+     }
   }
 
 //+------------------------------------------------------------------+
 void DrawPanel()
   {
+   DrawHeader();
    if(!gPanelOn)
      {
       ObjectsDeleteAll(0, PFX + "P_");
-      DrawToggle();
       return;
      }
 
@@ -608,8 +713,6 @@ void DrawPanel()
    string bg = PFX + "P_BG";
    if(ObjectFind(0, bg) < 0)
      {
-      //--- objects draw in creation order: recreate the triangle above the background
-      ObjectDelete(0, PFX + "TOGGLE");
       ObjectCreate(0, bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
       ObjectSetInteger(0, bg, OBJPROP_CORNER, CORNER_LEFT_UPPER);
       ObjectSetInteger(0, bg, OBJPROP_BGCOLOR, clrBlack);
@@ -618,11 +721,9 @@ void DrawPanel()
       ObjectSetInteger(0, bg, OBJPROP_SELECTABLE, false);
       ObjectSetInteger(0, bg, OBJPROP_HIDDEN, true);
      }
-   ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, PanelX);
-   ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, PanelY);
-   ObjectSetInteger(0, bg, OBJPROP_XSIZE, colW + PanelFontSize * 20);
-   DrawToggle();
-   Lbl("P_TITLE", PanelX + 8 + PanelFontSize * 2, PanelY + PanelFontSize / 2, "VWMARSIScore_Ind", clrGold);
+   ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, gPX);
+   ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, gPY + gHdrH - 1);
+   ObjectSetInteger(0, bg, OBJPROP_XSIZE, gPanelW);
 
    string names[32];
    string vals[32];
@@ -768,13 +869,13 @@ void DrawPanel()
       vals[r]  = (done > 0) ? StringFormat("%+.2f R", avgR) : "-";
       cols[r++] = (avgR > 0) ? clrLime : (avgR < 0 ? clrRed : clrGray);
      }
-   ObjectSetInteger(0, bg, OBJPROP_YSIZE, (r + 1) * rowH + PanelFontSize);
+   ObjectSetInteger(0, bg, OBJPROP_YSIZE, r * rowH + PanelFontSize);
 
    for(int k = 0; k < r; k++)
      {
-      int y = PanelY + PanelFontSize / 2 + (k + 1) * rowH;
-      Lbl("P_N" + IntegerToString(k), PanelX + 8, y, names[k], ncols[k]);
-      Lbl("P_V" + IntegerToString(k), PanelX + 8 + colW, y, vals[k], cols[k]);
+      int y = gPY + gHdrH + PanelFontSize / 2 + k * rowH;
+      Lbl("P_N" + IntegerToString(k), gPX + 8, y, names[k], ncols[k]);
+      Lbl("P_V" + IntegerToString(k), gPX + 8 + colW, y, vals[k], cols[k]);
      }
   }
 //+------------------------------------------------------------------+
