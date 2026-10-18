@@ -17,7 +17,7 @@
 //| direction re-arms only after its score fell to ReArmScore.       |
 //| The panel scores every past signal (TP/SL in ATR multiples).     |
 //+------------------------------------------------------------------+
-#property version     "1.38"
+#property version     "1.39"
 #property description "Four VWMAs on High + three RSIs -> 5-point bull/bear score."
 #property description "Arrow on the bar where the score first reaches MinScore."
 #property indicator_chart_window
@@ -108,7 +108,7 @@ input bool              ShowVwmaLines     = true;  // Draw the four VWMA lines o
 input bool              ShowLevels        = true;  // Draw PDH/PDL and PWH/PWL lines
 input int               PanelX            = 10;    // Panel start X offset (px), until it is dragged
 input int               PanelY            = 25;    // Panel start Y offset (px), until it is dragged
-input int               PanelFontSize     = 9;     // Panel font size
+input int               PanelFontSize     = 8;     // Panel font size
 input bool              ShowLinePrices    = true;  // Price of each VWMA line at its right end
 input int               LinePriceFontSize = 7;     // Font size of the line prices
 input color             LinePriceColor    = clrLightGray; // Colour of the line prices
@@ -220,10 +220,10 @@ int OnInit()
    gPY = GlobalVariableCheck(gPanelGv + "_Y") ? (int)GlobalVariableGet(gPanelGv + "_Y") : PanelY;
    //--- measure the real font size (it grows with Windows display scaling)
    gTxtH    = TextH(PanelFontSize);
-   gRowH    = gTxtH + MathMax(4, gTxtH / 3);
+   gRowH    = gTxtH + MathMax(1, gTxtH / 8);
    gToggleW = TextW(ShortToString((ushort)0x25BC), PanelFontSize + 2);
    gTitleW  = TextW("VWMARSIScore_Ind", PanelFontSize);
-   gHdrH    = MathMax(gTxtH, TextH(PanelFontSize + 2)) + 8;
+   gHdrH    = MathMax(gTxtH, TextH(PanelFontSize + 2)) + 4;
    gPanelW  = 8 + gToggleW + 8 + gTitleW + 12;
    if(ShowPanel)
       ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, true);
@@ -949,11 +949,11 @@ void DrawPanel()
    gPanelW  = MathMax(gPanelW, 8 + gToggleW + 8 + gTitleW + 12);
    DrawHeader();
    ObjectSetInteger(0, bg, OBJPROP_XSIZE, gPanelW);
-   ObjectSetInteger(0, bg, OBJPROP_YSIZE, r * gRowH + gRowH / 2);
+   ObjectSetInteger(0, bg, OBJPROP_YSIZE, r * gRowH + 6);
 
    for(int k = 0; k < r; k++)
      {
-      int y = gPY + gHdrH + gRowH / 4 + k * gRowH;
+      int y = gPY + gHdrH + 3 + k * gRowH;
       Lbl("P_N" + IntegerToString(k), gPX + 8, y, names[k], ncols[k]);
       Lbl("P_V" + IntegerToString(k), gPX + 8 + colW, y, vals[k], cols[k]);
      }
