@@ -17,7 +17,7 @@
 //| direction re-arms only after its score fell to ReArmScore.       |
 //| The panel scores every past signal (TP/SL in ATR multiples).     |
 //+------------------------------------------------------------------+
-#property version     "1.34"
+#property version     "1.35"
 #property description "Four VWMAs on High + three RSIs -> 5-point bull/bear score."
 #property description "Arrow on the bar where the score first reaches MinScore."
 #property indicator_chart_window
@@ -27,12 +27,12 @@
 #property indicator_label1  "VWMA High 1"
 #property indicator_type1   DRAW_LINE
 #property indicator_color1  clrRed
-#property indicator_width1  1
+#property indicator_width1  3
 
 #property indicator_label2  "VWMA High 2"
 #property indicator_type2   DRAW_LINE
 #property indicator_color2  clrOrange
-#property indicator_width2  1
+#property indicator_width2  3
 
 #property indicator_label3  "VWMA High 3"
 #property indicator_type3   DRAW_LINE
@@ -128,6 +128,7 @@ string   gPanelGv = "";
 int      gStatWins = 0, gStatLosses = 0, gStatExpired = 0;
 
 const string PFX = "VRS_";
+const color  HEAD_CLR = clrDodgerBlue;   // panel section headings
 
 //+------------------------------------------------------------------+
 int OnInit()
@@ -603,7 +604,7 @@ void DrawPanel()
       return;
 
    int rowH = PanelFontSize * 2;
-   int colW = PanelFontSize * 14;
+   int colW = PanelFontSize * 11;
    string bg = PFX + "P_BG";
    if(ObjectFind(0, bg) < 0)
      {
@@ -619,16 +620,22 @@ void DrawPanel()
      }
    ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, PanelX);
    ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, PanelY);
-   ObjectSetInteger(0, bg, OBJPROP_XSIZE, colW + PanelFontSize * 24);
+   ObjectSetInteger(0, bg, OBJPROP_XSIZE, colW + PanelFontSize * 20);
    DrawToggle();
    Lbl("P_TITLE", PanelX + 8 + PanelFontSize * 2, PanelY + PanelFontSize / 2, "VWMARSIScore_Ind", clrGold);
 
-   string names[20];
-   string vals[20];
-   color  cols[20];
+   string names[32];
+   string vals[32];
+   color  cols[32];
+   color  ncols[32];   // name colour: silver, or blue for a heading
+   ArrayFill(ncols, 0, 32, clrSilver);
    int r = 0;
    double hi, lo;
 
+   names[r] = "SESSIONS";
+   vals[r]  = " ";
+   cols[r]  = clrSilver;
+   ncols[r++] = HEAD_CLR;
    names[r] = "Sydney H/L";
    vals[r]  = SessionHL(total, time, high, low, SydS, SydE, hi, lo) ? HL(hi, lo) : "-";
    cols[r++] = clrWhite;
@@ -642,6 +649,10 @@ void DrawPanel()
    vals[r]  = SessionHL(total, time, high, low, NyS, NyE, hi, lo) ? HL(hi, lo) : "-";
    cols[r++] = clrWhite;
 
+   names[r] = "LEVELS";
+   vals[r]  = " ";
+   cols[r]  = clrSilver;
+   ncols[r++] = HEAD_CLR;
    names[r] = "PDH / PDL";
    vals[r]  = HL(iHigh(_Symbol, PERIOD_D1, 1), iLow(_Symbol, PERIOD_D1, 1));
    cols[r++] = clrAqua;
@@ -649,6 +660,10 @@ void DrawPanel()
    vals[r]  = HL(iHigh(_Symbol, PERIOD_W1, 1), iLow(_Symbol, PERIOD_W1, 1));
    cols[r++] = clrMagenta;
 
+   names[r] = "RSI";
+   vals[r]  = " ";
+   cols[r]  = clrSilver;
+   ncols[r++] = HEAD_CLR;
    double rsis[3];
    int    pers[3];
    rsis[0] = R1[last]; rsis[1] = R2[last]; rsis[2] = R3[last];
@@ -696,13 +711,17 @@ void DrawPanel()
      }
    else if(nb > 0 && ns > 0)
       basket = StringFormat("%d buys %.2f / %d sells %.2f", nb, vb, ns, vs);
+   names[r] = "BASKET";
+   vals[r]  = " ";
+   cols[r]  = clrSilver;
+   ncols[r++] = HEAD_CLR;
    names[r] = "Basket";
    vals[r]  = basket;
    cols[r++] = clrWhite;
    names[r] = "Basket P/L";
    vals[r]  = (nb + ns > 0) ? "$" + DoubleToString(pl, 2) : "-";
    cols[r++] = (pl >= 0) ? clrLime : clrRed;
-   names[r] = "Distance to entry";
+   names[r] = "Dist. to entry";
    vals[r]  = dist;
    cols[r++] = clrWhite;
 
@@ -715,6 +734,10 @@ void DrawPanel()
      { bias = "STRONG BULLISH"; bc = clrLime; }
    else if(bear >= MinScore)
      { bias = "STRONG BEARISH"; bc = clrRed; }
+   names[r] = "SCORE";
+   vals[r]  = " ";
+   cols[r]  = clrSilver;
+   ncols[r++] = HEAD_CLR;
    names[r] = "Bias";
    vals[r]  = bias;
    cols[r++] = bc;
@@ -729,12 +752,16 @@ void DrawPanel()
      {
       int done = gStatWins + gStatLosses;
       double rr = StatsTpAtr / StatsSlAtr;
+      names[r] = "SIGNAL STATS";
+      vals[r]  = " ";
+      cols[r]  = clrSilver;
+      ncols[r++] = HEAD_CLR;
       names[r] = "Signals W/L/exp";
       vals[r]  = StringFormat("%d / %d / %d", gStatWins, gStatLosses, gStatExpired);
       cols[r++] = clrWhite;
       names[r] = "Win rate";
-      vals[r]  = (done > 0) ? DoubleToString(100.0 * gStatWins / done, 1) + "%  (TP " +
-                 DoubleToString(StatsTpAtr, 1) + " / SL " + DoubleToString(StatsSlAtr, 1) + " ATR)" : "-";
+      vals[r]  = (done > 0) ? DoubleToString(100.0 * gStatWins / done, 1) + "% (" +
+                 DoubleToString(StatsTpAtr, 1) + "/" + DoubleToString(StatsSlAtr, 1) + " ATR)" : "-";
       cols[r++] = clrWhite;
       double avgR = (done > 0) ? (gStatWins * rr - gStatLosses) / done : 0.0;
       names[r] = "Avg R per trade";
@@ -746,7 +773,7 @@ void DrawPanel()
    for(int k = 0; k < r; k++)
      {
       int y = PanelY + PanelFontSize / 2 + (k + 1) * rowH;
-      Lbl("P_N" + IntegerToString(k), PanelX + 8, y, names[k], clrSilver);
+      Lbl("P_N" + IntegerToString(k), PanelX + 8, y, names[k], ncols[k]);
       Lbl("P_V" + IntegerToString(k), PanelX + 8 + colW, y, vals[k], cols[k]);
      }
   }
