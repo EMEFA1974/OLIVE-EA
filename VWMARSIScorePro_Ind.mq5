@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|                                             VWMARSIScore_Ind.mq5 |
+//|                                          VWMARSIScorePro_Ind.mq5 |
 //|                                                                  |
 //| 5-point bull/bear score built from four VWMAs (on High, tick     |
 //| volume) and three RSIs, plus session / day / week levels.        |
@@ -24,7 +24,7 @@
 //|      Wick-only spikes (fakeouts) don't count.                    |
 //| The panel scores every past signal with those stops and targets. |
 //+------------------------------------------------------------------+
-#property version     "2.00"
+#property version     "2.01"
 #property description "Four VWMAs on High + three RSIs -> 5-point bull/bear score."
 #property description "Arrows: trend pullbacks and level breakouts, with level-based stop and target."
 #property indicator_chart_window
@@ -236,7 +236,7 @@ int OnInit()
       PlotIndexSetInteger(p, PLOT_ARROW_SHIFT, (p % 2 == 0 ? 1 : -1) * (8 + 4 * aw));
      }
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "VWMARSIScore_Ind");
+   IndicatorSetString(INDICATOR_SHORTNAME, "VWMARSIScorePro_Ind");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
    hR1 = iRSI(_Symbol, _Period, RSI1, PRICE_CLOSE);
@@ -261,7 +261,7 @@ int OnInit()
    gTxtH    = TextH(PanelFontSize);
    gRowH    = gTxtH + MathMax(1, gTxtH / 8);
    gToggleW = TextW(ShortToString((ushort)0x25BC), PanelFontSize + 2);
-   gTitleW  = TextW("VWMARSIScore_Ind", PanelFontSize);
+   gTitleW  = TextW("VWMARSIScorePro_Ind", PanelFontSize);
    gHdrH    = MathMax(gTxtH, TextH(PanelFontSize + 2)) + 4;
    gPanelW  = 8 + gToggleW + 8 + gTitleW + 12;
    if(ShowPanel)
@@ -739,7 +739,7 @@ void SendAlerts(const int sig, const double entry, const double sl, const double
                              DoubleToString(entry, _Digits), DoubleToString(sl, _Digits), DoubleToString(tp, _Digits));
    if(AlertPopup) Alert(msg);
    if(AlertPush)  SendNotification(msg);
-   if(AlertEmail) SendMail("VWMARSIScore_Ind", msg);
+   if(AlertEmail) SendMail("VWMARSIScorePro_Ind", msg);
   }
 
 //+------------------------------------------------------------------+
@@ -973,7 +973,7 @@ void DrawHeader()
    ObjectSetInteger(0, n, OBJPROP_XDISTANCE, gPX + 6);
    ObjectSetInteger(0, n, OBJPROP_YDISTANCE, gPY + (gHdrH - TextH(PanelFontSize + 2)) / 2);
    ObjectSetString(0, n, OBJPROP_TEXT, ShortToString((ushort)(gPanelOn ? 0x25BC : 0x25BA)));
-   Lbl("TITLE", gPX + 8 + gToggleW + 8, gPY + (gHdrH - gTxtH) / 2, "VWMARSIScore_Ind", clrGold);
+   Lbl("TITLE", gPX + 8 + gToggleW + 8, gPY + (gHdrH - gTxtH) / 2, "VWMARSIScorePro_Ind", clrGold);
   }
 
 //+------------------------------------------------------------------+
