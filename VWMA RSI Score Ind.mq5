@@ -5,11 +5,10 @@
 //| volume) and three RSIs, plus session / day / week levels.        |
 //|                                                                  |
 //| Score checks (bull and bear are counted separately):             |
-//|   1-3. RSI 14 / 9 / 7:  bull > RsiMid, bear < RsiSellBelow       |
-//|        (bear < RsiMid when the neutral zone is off)              |
-//|   4.   Red VWMA1 (85): bull = whole bar above (Low > red),       |
-//|        bear = whole bar below (High < red); or Close/High vs red |
-//|        when UseWholeBarCheck is off                              |
+//|   1-3. RSI 14 / 9 / 7:  bull > RsiMid, bear < RsiMid (default)   |
+//|        (bear < RsiSellBelow when the neutral zone is on)         |
+//|   4.   Red VWMA1 (85): bull = Close above red, bear = below      |
+//|        (whole bar beyond red when UseWholeBarCheck is on)        |
 //|   5.   Yellow VWMA3 (18) vs orange VWMA2 (37)                    |
 //| Signal = score >= MinScore plus optional gates: green VWMA4 vs   |
 //| yellow, red line slope, RSI14 not overbought/oversold, signal    |
@@ -18,7 +17,7 @@
 //| direction re-arms only after its score fell to ReArmScore.       |
 //| The panel scores every past signal (TP/SL in ATR multiples).     |
 //+------------------------------------------------------------------+
-#property version     "1.31"
+#property version     "1.32"
 #property description "Four VWMAs on High + three RSIs -> 5-point bull/bear score."
 #property description "Arrow on the bar where the score first reaches MinScore."
 #property indicator_chart_window
@@ -79,7 +78,7 @@ input int               RSI3              = 7;     // RSI3 period
 input double            RsiOB             = 70.0;  // RSI14 overbought: no buys above (OB/OS filter)
 input double            RsiMid            = 55.0;  // RSI bull threshold (votes bull above)
 input double            RsiOS             = 30.0;  // RSI14 oversold: no sells below (OB/OS filter)
-input bool              UseRsiNeutralZone = true;  // Bear vote needs RSI < RsiSellBelow (else < RsiMid)
+input bool              UseRsiNeutralZone = false; // Bear vote needs RSI < RsiSellBelow (off = every RSI votes bull or bear, like the original)
 input double            RsiSellBelow      = 45.0;  // RSI bear threshold when neutral zone is on
 input int               SydS              = 21;    // Sydney start hour (UTC)
 input int               SydE              = 6;     // Sydney end hour (UTC)
@@ -89,7 +88,7 @@ input int               LonS              = 7;     // London start hour (UTC)
 input int               LonE              = 16;    // London end hour (UTC)
 input int               NyS               = 12;    // New York start hour (UTC)
 input int               NyE               = 21;    // New York end hour (UTC)
-input bool              UseWholeBarCheck  = true;  // Check 4: whole bar beyond red (Low > red / High < red)
+input bool              UseWholeBarCheck  = false; // Check 4: whole bar beyond red (off = Close vs red, like the original)
 input ENUM_CHECK4_PRICE Check4Price       = CHECK4_CLOSE; // Check 4 price when whole-bar check is off
 input bool              UseFastGate       = true;  // Signal also needs green VWMA4 vs yellow VWMA3 to agree
 input bool              UseRedSlope       = true;  // Buy only while red VWMA1 rises, sell only while it falls
