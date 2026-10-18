@@ -24,7 +24,7 @@
 //|      Wick-only spikes (fakeouts) don't count.                    |
 //| The panel scores every past signal with those stops and targets. |
 //+------------------------------------------------------------------+
-#property version     "2.01"
+#property version     "2.02"
 #property description "Four VWMAs on High + three RSIs -> 5-point bull/bear score."
 #property description "Arrows: trend pullbacks and level breakouts, with level-based stop and target."
 #property indicator_chart_window
@@ -137,6 +137,10 @@ input bool              ShowLinePrices    = true;  // Price of each VWMA line at
 input int               LinePriceFontSize = 7;     // Font size of the line prices
 input color             LinePriceColor    = clrLightGray; // Colour of the line prices
 input int               LinePriceBarsRight = 4;    // Bars right of the last candle for the line prices
+input bool              ShowTradeLevels   = true;  // Draw entry, stop and target of the latest arrow
+input color             StopColor         = clrRed;    // Stop line colour
+input color             TargetColor       = clrLime;   // Target line colour
+input color             EntryColor        = clrSilver; // Entry line colour
 
 double V1[], V2[], V3[], V4[];
 double BuyArr[], SellArr[], BoBuyArr[], BoSellArr[];
@@ -725,6 +729,8 @@ int OnCalculate(const int rates_total,
       DrawLevels();
    if(ShowVwmaLines && ShowLinePrices)
       DrawLinePrices(rates_total, time);
+   if(ShowTradeLevels)
+      DrawTradeLevels(rates_total, time, high, low, close);
    if(ShowPanel)
       DrawPanel();
    return rates_total;
@@ -891,6 +897,78 @@ int TextH(const int size)
    TextSetFont("Arial", -size * 10);
    TextGetSize("Ag", w, h);
    return (int)h;
+  }
+
+//+------------------------------------------------------------------+
+//| One trade line: segment from t1 to t2 plus a price label         |
+//+------------------------------------------------------------------+
+void TradeLine(const string name, const string tag, const datetime t1, const datetime t2,
+               const double price, const color clr, const ENUM_LINE_STYLE style)
+  {
+   string n = PFX + name;
+   if(ObjectFind(0, n) < 0)
+     {
+      ObjectCreate(0, n, OBJ_TREND, 0, t1, price, t2, price);
+      ObjectSetInteger(0, n, OBJPROP_RAY_RIGHT, false);
+      ObjectSetInteger(0, n, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, n, OBJPROP_HIDDEN, true);
+      ObjectSetInteger(0, n, OBJPROP_BACK, true);
+     }
+   ObjectMove(0, n, 0, t1, price);
+   ObjectMove(0, n, 1, t2, price);
+   ObjectSetInteger(0, n, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, n, OBJPROP_STYLE, style);
+   ObjectSetInteger(0, n, OBJPROP_WIDTH, (style == STYLE_SOLID) ? 2 : 1);
+
+   string l = n + "_L";
+   if(ObjectFind(0, l) < 0)
+     {
+      ObjectCreate(0, l, OBJ_TEXT, 0, t2, price);
+      ObjectSetInteger(0, l, OBJPROP_ANCHOR, ANCHOR_LEFT);
+      ObjectSetInteger(0, l, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, l, OBJPROP_HIDDEN, true);
+      ObjectSetString(0, l, OBJPROP_FONT, "Arial");
+      ObjectSetInteger(0, l, OBJPROP_FONTSIZE, LinePriceFontSize);
+     }
+   ObjectMove(0, l, 0, t2, price);
+   ObjectSetInteger(0, l, OBJPROP_COLOR, clr);
+   ObjectSetString(0, l, OBJPROP_TEXT, " " + tag + " " + DoubleToString(price, _Digits));
+  }
+
+//+------------------------------------------------------------------+
+//| Entry, stop and target of the latest arrow. The lines run to the |
+//| bar where the stop or target was hit, or on to the current bar   |
+//| while the trade is still open.                                   |
+//+------------------------------------------------------------------+
+void DrawTradeLevels(const int total, const datetime &time[], const double &high[],
+                     const double &low[], const double &close[])
+  {
+   int last = total - 1;
+   int ls = -1;
+   for(int k = last - (SignalOnClosedBar ? 1 : 0); k >= gMaxPeriod && k > last - 1000; k--)
+      if(Sig[k] != 0)
+        { ls = k; break; }
+   if(ls < 0 || SigSL[ls] <= 0.0 || SigTP[ls] <= 0.0)
+     {
+      ObjectsDeleteAll(0, PFX + "T_");
+      return;
+     }
+   int    dir = (Sig[ls] > 0) ? 1 : -1;
+   double sl = SigSL[ls], tp = SigTP[ls];
+   int  end = last;
+   bool hit = false, slHit = false;
+   for(int j = ls + 1; j <= last && !hit; j++)
+     {
+      slHit = (dir > 0) ? low[j] <= sl : high[j] >= sl;
+      hit   = slHit || ((dir > 0) ? high[j] >= tp : low[j] <= tp);
+      if(hit)
+         end = j;
+     }
+   datetime t1 = time[ls];
+   datetime t2 = time[end] + (datetime)((hit ? 1 : MathMax(1, LinePriceBarsRight)) * PeriodSeconds());
+   TradeLine("T_EN", "Entry", t1, t2, close[ls], EntryColor, STYLE_DOT);
+   TradeLine("T_SL", slHit ? "SL hit" : "SL", t1, t2, sl, StopColor, STYLE_DASH);
+   TradeLine("T_TP", (hit && !slHit) ? "TP hit" : "TP", t1, t2, tp, TargetColor, STYLE_DASH);
   }
 
 //+------------------------------------------------------------------+
