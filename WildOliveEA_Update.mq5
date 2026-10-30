@@ -126,14 +126,14 @@ input double InpVolMinRatio      = 0.7;  // ATR / avg ATR lower bound
 input double InpVolMaxRatio      = 2.0;  // ATR / avg ATR upper bound
 
 input group "=== Circuit Breakers ==="
-input int    InpCooldownBars             = 3;     // Bars to wait after any basket close
+input int    InpCooldownBars             = 2;     // Bars to wait after any basket close
 input int    InpLossPauseMinutes         = 60;    // Pause new trades after a loss, then resume (0 = off)
 input double InpDailyProfitLockPct       = 0.0;   // Close all + stop for the day (0 = off)
 
 input group "=== Account Drawdown (last resort) ==="
 input bool          InpEnableDD          = true;
 input eDrawdownType InpDrawdownType      = DD_EQUITY;
-input double        InpEquityDDPercent   = 40.0;
+input double        InpEquityDDPercent   = 25.0;
 input double        InpPipDD             = 100.0;
 input double        InpCashDD            = 1000.0;
 
