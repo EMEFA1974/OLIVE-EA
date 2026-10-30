@@ -36,7 +36,7 @@ input group "=== Core Trade Settings ==="
 input double InpMainTradeLot     = 0.80;
 input double InpMainTradeTP      = 500.0;   // Main trade TP (pips)
 input double InpGridTradesLot    = 0.80;    // Grid base lot (keep = main lot)
-input double InpGridTradesTP     = 200.0;   // Basket TP from average (pips) - see grid trailing note
+input double InpGridTradesTP     = 200.0;   // Basket TP from average (pips); kept when > grid trail start
 input int    InpSlippage         = 3;
 
 //--- === MAIN TRADE PROTECTION ===
@@ -54,11 +54,11 @@ input double InpTrailLock2Pips   = 250.0;   // Step 2: SL locks this profit
 input double InpTrailAfterPips   = 0.0;     // After step 2: trail at this distance (0 = off)
 
 input group "=== Grid Basket: 2-Step Trailing (from basket average) ==="
-input bool   InpTrailGrid          = true;  // When on and Grid TP <= start, basket exits by trailing only
-input double InpGridTrailStartPips = 300.0;
-input double InpGridTrailLock1Pips = 100.0;
-input double InpGridTrailStep2Pips = 400.0;
-input double InpGridTrailLock2Pips = 250.0;
+input bool   InpTrailGrid          = true;  // Basket TP stays while it is above the trail start
+input double InpGridTrailStartPips = 150.0;   // Step 1 trigger (pips above basket average)
+input double InpGridTrailLock1Pips = 60.0;    // Step 1: SL locks this profit
+input double InpGridTrailStep2Pips = 180.0;   // Step 2 trigger (below basket TP)
+input double InpGridTrailLock2Pips = 120.0;   // Step 2: SL locks this profit
 input double InpGridTrailAfterPips = 0.0;
 
 //--- === GRID SETTINGS ===
