@@ -7,8 +7,8 @@
 //|  - Spread / session / volatility filters                          |
 //|  - Breakeven + 2-step trailing (main trade and grid basket)       |
 //|  - Capped grid: ATR step, reversal-confirmed adds, basket stop    |
-//|  - Circuit breakers: cooldown, stop after losing basket, daily    |
-//|    loss limit, account drawdown pauses until next day             |
+//|  - Circuit breakers: cooldown, timed pause after losing basket,  |
+//|    daily loss limit, account drawdown pauses until next day       |
 //| Attach to an M5 chart.                                           |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, Crispin Tibilla"
@@ -127,7 +127,7 @@ input double InpVolMaxRatio      = 2.0;  // ATR / avg ATR upper bound
 
 input group "=== Circuit Breakers ==="
 input int    InpCooldownBars             = 3;     // Bars to wait after any basket close
-input bool   InpStopDayAfterLosingBasket = true;  // No new trades until next day after a losing basket
+input int    InpLossPauseMinutes         = 120;   // Pause new trades after a losing basket (0 = off)
 input double InpDailyLossPct             = 3.0;   // Close all + stop for the day (0 = off)
 input double InpDailyProfitLockPct       = 0.0;   // Close all + stop for the day (0 = off)
 
@@ -456,8 +456,8 @@ void TrackBasket(const BasketInfo &b)
       g_lastCloseTime = TimeCurrent();
       double pl = BasketRealizedPL(g_basketStart);
       PrintFormat("Basket closed | P/L = %.2f", pl);
-      if(pl < 0 && InpStopDayAfterLosingBasket)
-         BlockUntilNextDay("losing basket");
+      if(pl < 0 && InpLossPauseMinutes > 0)
+         BlockUntil(TimeCurrent() + InpLossPauseMinutes * 60, "losing basket");
       g_basketStep  = 0;
       g_basketStart = 0;
      }
@@ -483,14 +483,18 @@ double BasketRealizedPL(datetime from)
   }
 
 //+------------------------------------------------------------------+
-void BlockUntilNextDay(string reason)
+void BlockUntil(datetime until, string reason)
   {
-   datetime until = DayStart(TimeCurrent()) + 86400;
    if(until > g_blockUntil)
      {
       g_blockUntil = until;
       Print("New trades blocked until ", TimeToString(until), " (", reason, ")");
      }
+  }
+
+void BlockUntilNextDay(string reason)
+  {
+   BlockUntil(DayStart(TimeCurrent()) + 86400, reason);
   }
 
 void UpdateDay()
