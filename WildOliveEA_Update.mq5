@@ -7,8 +7,8 @@
 //|  - Spread / session / volatility filters                          |
 //|  - Breakeven + 2-step trailing (main trade and grid basket)       |
 //|  - Capped grid: ATR step, reversal-confirmed adds, basket stop    |
-//|  - Circuit breakers: cooldown, timed pause after losing basket,  |
-//|    daily loss limit, account drawdown pauses until next day       |
+//|  - Circuit breakers: cooldown, 1-hour pause after any loss       |
+//|    (losing basket or account drawdown stop)                       |
 //| Attach to an M5 chart.                                           |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, Crispin Tibilla"
@@ -127,8 +127,7 @@ input double InpVolMaxRatio      = 2.0;  // ATR / avg ATR upper bound
 
 input group "=== Circuit Breakers ==="
 input int    InpCooldownBars             = 3;     // Bars to wait after any basket close
-input int    InpLossPauseMinutes         = 120;   // Pause new trades after a losing basket (0 = off)
-input double InpDailyLossPct             = 3.0;   // Close all + stop for the day (0 = off)
+input int    InpLossPauseMinutes         = 60;    // Pause new trades after a loss, then resume (0 = off)
 input double InpDailyProfitLockPct       = 0.0;   // Close all + stop for the day (0 = off)
 
 input group "=== Account Drawdown (last resort) ==="
@@ -509,19 +508,13 @@ void UpdateDay()
 
 void CheckDailyLimits()
   {
-   if(g_dayStartBalance <= 0) return;
+   if(InpDailyProfitLockPct <= 0 || g_dayStartBalance <= 0) return;
    BasketInfo b;
    GetBasket(b);
-   if(b.count == 0 && TimeCurrent() < g_blockUntil) return;   // already handled today
+   if(b.count == 0 && TimeCurrent() < g_blockUntil) return;   // already handled
    double change = AccountInfoDouble(ACCOUNT_EQUITY) - g_dayStartBalance;
 
-   if(InpDailyLossPct > 0 && change <= -g_dayStartBalance * InpDailyLossPct / 100.0)
-     {
-      Print("DAILY LOSS LIMIT HIT – closing all positions");
-      hf_closeAll();
-      BlockUntilNextDay("daily loss limit");
-     }
-   else if(InpDailyProfitLockPct > 0 && change >= g_dayStartBalance * InpDailyProfitLockPct / 100.0)
+   if(InpDailyProfitLockPct > 0 && change >= g_dayStartBalance * InpDailyProfitLockPct / 100.0)
      {
       Print("DAILY PROFIT TARGET HIT – closing all positions");
       hf_closeAll();
@@ -617,7 +610,8 @@ void hf_equityProtection()
      {
       Print("DRAWDOWN LIMIT HIT – closing all positions");
       hf_closeAll();
-      BlockUntilNextDay("account drawdown limit");
+      if(InpLossPauseMinutes > 0)
+         BlockUntil(TimeCurrent() + InpLossPauseMinutes * 60, "account drawdown limit");
      }
   }
 
